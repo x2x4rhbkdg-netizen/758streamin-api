@@ -6,6 +6,7 @@ const { authJwt } = require("../middleware/authJwt.cjs");
 const { pool } = require("../db/pool.cjs");
 const { decryptString } = require("../utils/cryptoVault.cjs");
 const { buildXuiM3uUrl } = require("../utils/xui.cjs");
+const { env } = require("../config/env.cjs");
 
 const router = Router();
 
@@ -32,7 +33,7 @@ router.get("/playlist.m3u8", authJwt, async (req, res) => {
     const password = decryptString(row.enc_password);
 
     const upstreamUrl = buildXuiM3uUrl({
-      upstream_base_url: row.upstream_base_url,
+      upstream_base_url: env.XUI_BASE_URL,
       username,
       password,
     });

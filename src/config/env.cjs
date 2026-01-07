@@ -1,11 +1,18 @@
 /** =========================
  *  ENV (Passenger CommonJS)
+ *  - Reads from process.env (Passenger/Apache)
+ *  - Optional local .env loading ONLY when explicitly enabled
+ *    (set USE_DOTENV=1 for local dev if you want)
  *  ========================= */
-const path = require("path");
 
-try {
-  require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
-} catch {}
+// Optional local dev support (OFF by default)
+// Passenger deployments should set env vars in cPanel/Apache, not in a repo .env file.
+if (process.env.USE_DOTENV === "1") {
+  try {
+    // eslint-disable-next-line global-require
+    require("dotenv").config();
+  } catch {}
+}
 
 function must(name) {
   const v = process.env[name];
@@ -16,7 +23,10 @@ function must(name) {
 function list(name) {
   const v = (process.env[name] || "").trim();
   if (!v) return [];
-  return v.split(",").map(s => s.trim()).filter(Boolean);
+  return v
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 const env = {
@@ -29,12 +39,11 @@ const env = {
 
   ALLOWED_ORIGINS: list("ALLOWED_ORIGINS"),
 
-DB_HOST: must("DB_HOST"),
-DB_USER: must("DB_USER"),
-DB_PASSWORD: must("DB_PASSWORD"),
-DB_NAME: must("DB_NAME"),
-DB_PORT: process.env.DB_PORT || 3306,
-
+  DB_HOST: must("DB_HOST"),
+  DB_USER: must("DB_USER"),
+  DB_PASSWORD: must("DB_PASSWORD"),
+  DB_NAME: must("DB_NAME"),
+  DB_PORT: Number(process.env.DB_PORT || 3306),
 };
 
 module.exports = { env };
