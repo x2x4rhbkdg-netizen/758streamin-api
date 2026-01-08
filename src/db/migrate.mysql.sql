@@ -1,4 +1,4 @@
-/** =========================================
+/****************************************
  *  MYSQL SCHEMA: 758 Streamin API
  *  ========================================= */
 
@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS devices (
   id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   device_uuid  CHAR(36) NOT NULL,
   device_code  VARCHAR(32) NOT NULL,
+  customer_name VARCHAR(255) NULL,
   status       ENUM('pending','active','suspended') NOT NULL DEFAULT 'pending',
   platform     VARCHAR(64) NULL,
   model        VARCHAR(128) NULL,
@@ -42,3 +43,24 @@ CREATE TABLE IF NOT EXISTS device_upstream (
     FOREIGN KEY (device_id) REFERENCES devices(id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+/** =========================================
+ *  VIEW: Admin Devices (dashboard-friendly)
+ *  ========================================= */
+CREATE OR REPLACE VIEW v_admin_devices AS
+SELECT
+  d.id,
+  d.device_uuid,
+  d.device_code      AS code,
+  d.customer_name,
+  d.status,
+  d.platform,
+  d.model,
+  d.app_version      AS app,
+  da.max_streams,
+  d.last_seen_at,
+  d.created_at       AS created,
+  d.updated_at
+FROM devices d
+LEFT JOIN device_access da
+  ON da.device_id = d.id;
