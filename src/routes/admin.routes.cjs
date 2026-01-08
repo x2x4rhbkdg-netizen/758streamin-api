@@ -87,6 +87,85 @@ router.get("/devices", async (req, res) => {
 });
 
 /** =========================================
+ *  PATCH /v1/admin/devices/:code
+ *  body: { customer_name?, status?, max_streams?, expires_at? }
+ *  - updates device fields + optional access limits
+ *  ========================================= */
+router.patch("/devices/:code", async (req, res) => {
+  try {
+    const code = String(req.params.code || "").trim();
+    if (!code) return res.status(400).json({ error: "device code required" });
+
+    const { customer_name, status, max_streams, expires_at } = req.body || {};
+
+    const nextStatus = status ? String(status).trim().toLowerCase() : null;
+    if (nextStatus && !["pending", "active", "suspended"].includes(nextStatus)) {
+      return res.status(400).json({ error: "invalid status" });
+    }
+
+    const hasCustomer = typeof customer_name !== "undefined";
+    const hasStatus = typeof nextStatus === "string" && nextStatus.length > 0;
+    const hasAccess =
+      typeof max_streams !== "undefined" || typeof expires_at !== "undefined";
+
+    if (!hasCustomer && !hasStatus && !hasAccess) {
+      return res.status(400).json({ error: "no fields to update" });
+    }
+
+    const [devRows] = await pool.execute(
+      `SELECT id FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+
+    if (hasCustomer || hasStatus) {
+      const updates = [];
+      const params = [];
+
+      if (hasCustomer) {
+        updates.push("customer_name=?");
+        params.push(customer_name === null ? null : String(customer_name));
+      }
+
+      if (hasStatus) {
+        updates.push("status=?");
+        params.push(nextStatus);
+      }
+
+      params.push(dev.id);
+      await pool.execute(
+        `UPDATE devices SET ${updates.join(", ")}, updated_at=NOW() WHERE id=?`,
+        params
+      );
+    }
+
+    if (hasAccess) {
+      const exp = toMysqlDatetime(expires_at);
+      const ms = Math.max(1, Number(max_streams || 1));
+
+      await pool.execute(
+        `
+        INSERT INTO device_access (device_id, expires_at, max_streams, updated_at)
+        VALUES (?, ?, ?, NOW())
+        ON DUPLICATE KEY UPDATE
+          expires_at=VALUES(expires_at),
+          max_streams=VALUES(max_streams),
+          updated_at=NOW()
+        `,
+        [dev.id, exp, ms]
+      );
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/devices/update] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
  *  POST /v1/admin/devices/:code/activate
  *  body: { expires_at, max_streams }
  *  - sets device active
