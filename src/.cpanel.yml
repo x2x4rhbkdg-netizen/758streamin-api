@@ -1,0 +1,27 @@
+---
+# /** ============================= */
+# /** cPanel Git Deployment Config  */
+# /** Repo: api                     */
+# /** ============================= */
+
+deployment:
+  tasks:
+    # /** ===== Set target deploy path (subdomain docroot) ===== */
+    - export DEPLOYPATH=/home/streamin758/api.758streamin.com
+
+    # /** ===== Ensure folders exist ===== */
+    - /bin/mkdir -p $DEPLOYPATH
+    - /bin/mkdir -p $DEPLOYPATH/tmp
+
+    # /** ===== Deploy code (clean sync) ===== */
+    - /usr/bin/rsync -a --delete \
+        --exclude=".git/" \
+        --exclude="node_modules/" \
+        --exclude=".env" \
+        ./ $DEPLOYPATH/
+
+    # /** ===== Optional: install prod deps (only if you want cPanel to build) ===== */
+    # - cd $DEPLOYPATH && /usr/bin/npm ci --omit=dev
+
+    # /** ===== Restart Node app (Passenger-style) ===== */
+    - /bin/date > $DEPLOYPATH/tmp/restart.txt
