@@ -43,6 +43,15 @@ const env = {
   PLAYBACK_BASE_URL: process.env.PLAYBACK_BASE_URL || "",
   PLAYBACK_TOKEN_TTL: Number(process.env.PLAYBACK_TOKEN_TTL || 3600),
 
+  ADMIN_RESET_BASE_URL: process.env.ADMIN_RESET_BASE_URL || "",
+  ADMIN_RESET_TOKEN_TTL: Number(process.env.ADMIN_RESET_TOKEN_TTL || 3600),
+  SMTP_HOST: process.env.SMTP_HOST || "",
+  SMTP_PORT: Number(process.env.SMTP_PORT || 587),
+  SMTP_SECURE: String(process.env.SMTP_SECURE || "").toLowerCase() === "true",
+  SMTP_USER: process.env.SMTP_USER || "",
+  SMTP_PASS: process.env.SMTP_PASS || "",
+  SMTP_FROM: process.env.SMTP_FROM || "",
+
   DB_HOST: must("DB_HOST"),
   DB_USER: must("DB_USER"),
   DB_PASSWORD: must("DB_PASSWORD"),

@@ -236,7 +236,136 @@ Response 200:
 { "ok": true, "id": 123 }
 ```
 
-## Admin (requires x-admin-key)
+## Admin (requires x-admin-key unless noted)
+### POST /v1/admin/auth/login
+Authenticates an admin (email or username + password).
+
+Body:
+```json
+{
+  "identifier": "email_or_username",
+  "password": "string"
+}
+```
+
+Response 200:
+```json
+{
+  "admin": {
+    "id": 1,
+    "name": "string",
+    "username": "string",
+    "email": "string",
+    "role": "super_admin|admin|reseller"
+  }
+}
+```
+
+Errors:
+- 400: `identifier + password required`
+- 401: `invalid credentials`
+- 403: `admin disabled`
+- 500: `internal error`
+
+### POST /v1/admin/auth/reset/request
+Sends a password reset email (no admin key required).
+
+Body:
+```json
+{ "email": "user@example.com" }
+```
+
+Response 200:
+```json
+{ "ok": true }
+```
+
+Errors:
+- 400: `email required`
+- 500: `email not configured` or `missing ADMIN_RESET_BASE_URL`
+
+### POST /v1/admin/auth/reset/confirm
+Confirms a reset token and sets a new password (no admin key required).
+
+Body:
+```json
+{
+  "token": "string",
+  "password": "string"
+}
+```
+
+Response 200:
+```json
+{ "ok": true }
+```
+
+Errors:
+- 400: `token + password required` or `password too short` or `invalid token` or `token expired`
+- 500: `internal error`
+
+### GET /v1/admin/admins
+Lists admin users (super admin only).
+
+Headers:
+- `x-admin-key: <ADMIN_API_KEY>`
+
+Query:
+- `role` (optional: `super_admin|admin|reseller`)
+
+Response 200:
+```json
+{ "admins": [] }
+```
+
+### POST /v1/admin/admins
+Creates an admin user (super admin only).
+
+Headers:
+- `x-admin-key: <ADMIN_API_KEY>`
+
+Body:
+```json
+{
+  "name": "string",
+  "username": "string",
+  "email": "string",
+  "role": "super_admin|admin|reseller",
+  "password": "string"
+}
+```
+
+Response 200:
+```json
+{ "ok": true }
+```
+
+### PATCH /v1/admin/admins/:id
+Updates an admin user (super admin only).
+
+Headers:
+- `x-admin-key: <ADMIN_API_KEY>`
+
+Body:
+```json
+{
+  "name": "string",
+  "username": "string",
+  "email": "string",
+  "role": "super_admin|admin|reseller",
+  "status": "active|disabled"
+}
+```
+
+Response 200:
+```json
+{ "ok": true }
+```
+
+Errors:
+- 400: `invalid admin id` or `invalid role` or `invalid status` or `no fields to update`
+- 404: `admin not found`
+- 409: `admin already exists`
 ### GET /v1/admin/devices?search=
 Lists up to 200 recent devices, with optional search.
 
@@ -254,6 +383,8 @@ Response 200:
       "platform": "string",
       "model": "string",
       "app_version": "string",
+      "reseller_admin_id": 2,
+      "reseller_name": "string",
       "last_seen_at": "2025-01-01 00:00:00",
       "created_at": "2025-01-01 00:00:00",
       "updated_at": "2025-01-01 00:00:00",
@@ -280,7 +411,8 @@ Body:
   "customer_name": "string",
   "status": "pending|active|suspended",
   "max_streams": 1,
-  "expires_at": "2025-01-01T00:00:00Z"
+  "expires_at": "2025-01-01T00:00:00Z",
+  "reseller_admin_id": 2
 }
 ```
 
@@ -392,6 +524,14 @@ Optional:
 - `XUI_BASE_URL` (fallback upstream base URL)
 - `PLAYBACK_BASE_URL` (public base URL for playback links)
 - `PLAYBACK_TOKEN_TTL` (seconds, default 3600)
+- `ADMIN_RESET_BASE_URL` (public URL for reset page)
+- `ADMIN_RESET_TOKEN_TTL` (seconds, default 3600)
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_SECURE` (true/false)
+- `SMTP_USER`
+- `SMTP_PASS`
+- `SMTP_FROM`
 
 ## Database Schema (MySQL)
 Tables:
