@@ -308,4 +308,27 @@ router.post("/devices/:code/upstream", async (req, res) => {
   }
 });
 
+/** =========================================
+ *  DELETE /v1/admin/devices/:code
+ *  - deletes device + cascades access/upstream/analytics
+ *  ========================================= */
+router.delete("/devices/:code", async (req, res) => {
+  try {
+    const code = String(req.params.code || "").trim();
+    if (!code) return res.status(400).json({ error: "device code required" });
+
+    const [result] = await pool.execute(
+      `DELETE FROM devices WHERE device_code=?`,
+      [code]
+    );
+
+    if (!result.affectedRows) return res.status(404).json({ error: "device not found" });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/delete] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
 module.exports = router;

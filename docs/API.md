@@ -334,6 +334,22 @@ Errors:
 - 404: `device not found`
 - 500: `internal error`
 
+### DELETE /v1/admin/devices/:code
+Deletes a device (and its access/upstream/analytics records).
+
+Headers:
+- `x-admin-key: <ADMIN_API_KEY>`
+
+Response 200:
+```json
+{ "ok": true }
+```
+
+Errors:
+- 400: `device code required`
+- 404: `device not found`
+- 500: `internal error`
+
 ### POST /v1/admin/devices/:code/upstream
 Stores upstream credentials for a device.
 
