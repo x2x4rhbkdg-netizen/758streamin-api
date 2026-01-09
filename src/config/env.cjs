@@ -39,6 +39,10 @@ const env = {
 
   ALLOWED_ORIGINS: list("ALLOWED_ORIGINS"),
 
+  XUI_BASE_URL: process.env.XUI_BASE_URL || "",
+  PLAYBACK_BASE_URL: process.env.PLAYBACK_BASE_URL || "",
+  PLAYBACK_TOKEN_TTL: Number(process.env.PLAYBACK_TOKEN_TTL || 3600),
+
   DB_HOST: must("DB_HOST"),
   DB_USER: must("DB_USER"),
   DB_PASSWORD: must("DB_PASSWORD"),

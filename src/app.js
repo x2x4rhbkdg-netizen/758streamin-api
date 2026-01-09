@@ -5,9 +5,12 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 
-const { env } = require("./config/env.cjs");                 
+const { env } = require("./config/env.cjs");
 const deviceRoutes = require("./routes/device.routes.cjs");
 const playlistRoutes = require("./routes/playlist.routes.cjs");
+const catalogRoutes = require("./routes/catalog.routes.cjs");
+const playbackRoutes = require("./routes/playback.routes.cjs");
+const analyticsRoutes = require("./routes/analytics.routes.cjs");
 const adminRoutes = require("./routes/admin.routes.cjs");
 
 const app = express();
@@ -37,6 +40,9 @@ app.get("/", (_req, res) => {
 });
 app.use("/v1", deviceRoutes);
 app.use("/v1", playlistRoutes);
+app.use("/v1", catalogRoutes);
+app.use("/v1", playbackRoutes);
+app.use("/v1", analyticsRoutes);
 app.use("/v1/admin", adminRoutes);
 
 

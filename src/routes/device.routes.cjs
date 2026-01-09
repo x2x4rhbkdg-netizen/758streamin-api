@@ -33,12 +33,12 @@ function isUuidLike(v) {
  *  ========================================= */
 router.post("/device/register", async (req, res) => {
   try {
-    const device_uuid = normStr(req.body?.device_uuid, 64);
+    const device_uuid = normStr(req.body?.device_uuid ?? req.body?.device_id, 64);
     const platform = normStr(req.body?.platform, 32) || null;
     const model = normStr(req.body?.model, 80) || null;
     const app_version = normStr(req.body?.app_version, 32) || null;
 
-    if (!device_uuid) return res.status(400).json({ error: "device_uuid required" });
+    if (!device_uuid) return res.status(400).json({ error: "device_uuid or device_id required" });
     if (!isUuidLike(device_uuid)) return res.status(400).json({ error: "invalid device_uuid" });
 
     // Existing?
@@ -118,7 +118,7 @@ router.post("/device/register", async (req, res) => {
  *  ========================================= */
 router.post("/device/auth", async (req, res) => {
   try {
-    const device_uuid = normStr(req.body?.device_uuid, 64);
+    const device_uuid = normStr(req.body?.device_uuid ?? req.body?.device_id, 64);
     const device_code = normStr(req.body?.device_code, 32);
 
     if (!device_uuid || !device_code) {

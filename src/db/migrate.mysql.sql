@@ -44,6 +44,25 @@ CREATE TABLE IF NOT EXISTS device_upstream (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS analytics_events (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  device_id        BIGINT UNSIGNED NOT NULL,
+  event_type       VARCHAR(32) NOT NULL,
+  content_id       VARCHAR(64) NULL,
+  content_type     VARCHAR(16) NULL,
+  position_seconds INT NULL,
+  duration_seconds INT NULL,
+  error_code       VARCHAR(64) NULL,
+  meta_json        TEXT NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_analytics_device (device_id),
+  KEY idx_analytics_type (event_type),
+  CONSTRAINT fk_analytics_device
+    FOREIGN KEY (device_id) REFERENCES devices(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 /** =========================================
  *  VIEW: Admin Devices (dashboard-friendly)
  *  ========================================= */

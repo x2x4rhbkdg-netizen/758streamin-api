@@ -61,6 +61,7 @@ router.get("/devices", async (req, res) => {
       `
       SELECT
         d.device_code,
+        d.customer_name,
         d.status,
         d.platform,
         d.model,
@@ -158,7 +159,29 @@ router.patch("/devices/:code", async (req, res) => {
       );
     }
 
-    return res.json({ ok: true });
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        d.device_code,
+        d.customer_name,
+        d.status,
+        d.platform,
+        d.model,
+        d.app_version,
+        d.last_seen_at,
+        d.created_at,
+        d.updated_at,
+        a.expires_at,
+        a.max_streams
+      FROM devices d
+      LEFT JOIN device_access a ON a.device_id = d.id
+      WHERE d.id=?
+      LIMIT 1
+      `,
+      [dev.id]
+    );
+
+    return res.json({ ok: true, device: rows[0] || null });
   } catch (err) {
     console.error("[admin/devices/update] error:", err);
     return res.status(500).json({ error: "internal error" });

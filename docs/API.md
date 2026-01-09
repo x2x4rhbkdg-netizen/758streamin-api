@@ -32,6 +32,7 @@ Body:
 ```json
 {
   "device_uuid": "string",
+  "device_id": "string",
   "platform": "string",
   "model": "string",
   "app_version": "string"
@@ -47,7 +48,7 @@ Response 200:
 ```
 
 Errors:
-- 400: `device_uuid required`
+- 400: `device_uuid or device_id required`
 - 400: `invalid device_uuid`
 - 500: `device_code collision` or `internal error`
 
@@ -94,6 +95,147 @@ Errors:
 - 502: `upstream failed`
 - 500: `internal error`
 
+## Catalog
+### GET /v1/catalog/home
+Returns home rails (Trending, New, Live Now, Categories).
+
+Headers:
+- `Authorization: Bearer <token>`
+
+Query:
+- `limit` (optional, default 20)
+
+Response 200:
+```json
+{
+  "rails": [
+    { "key": "trending", "title": "Trending", "type": "vod", "items": [] },
+    { "key": "new", "title": "New", "type": "vod", "items": [] },
+    { "key": "live_now", "title": "Live Now", "type": "live", "items": [] },
+    { "key": "categories", "title": "Categories", "type": "category", "items": [] }
+  ]
+}
+```
+
+### GET /v1/catalog/category/:id
+Returns items within a category.
+
+Headers:
+- `Authorization: Bearer <token>`
+
+Query:
+- `type` (optional: `live|vod|series`)
+- `limit` (optional, default 100)
+
+Response 200:
+```json
+{
+  "category_id": "123",
+  "type": "vod",
+  "items": []
+}
+```
+
+## Content
+### GET /v1/content/:id
+Returns content metadata (vod/series/live), plus related items.
+
+Headers:
+- `Authorization: Bearer <token>`
+
+Query:
+- `type` (optional: `vod|series|live`)
+- `related_limit` (optional, default 20)
+
+Response 200 (vod example):
+```json
+{
+  "id": "55",
+  "type": "vod",
+  "info": {},
+  "movie_data": {},
+  "related": []
+}
+```
+
+## Live
+### GET /v1/live
+Returns live channels/events.
+
+Headers:
+- `Authorization: Bearer <token>`
+
+Query:
+- `limit` (optional, default 200)
+
+Response 200:
+```json
+{
+  "live": []
+}
+```
+
+## Playback
+### POST /v1/playback/token
+Returns signed playback URLs and expiry.
+
+Headers:
+- `Authorization: Bearer <token>`
+
+Body:
+```json
+{
+  "type": "live|vod|series",
+  "stream_id": "string",
+  "episode_id": "string",
+  "ttl_sec": 3600
+}
+```
+
+Response 200:
+```json
+{
+  "token": "jwt",
+  "expires_at": "2025-01-01T00:00:00.000Z",
+  "urls": {
+    "hls": "/v1/playback/stream?token=...&format=hls",
+    "dash": "/v1/playback/stream?token=...&format=dash"
+  }
+}
+```
+
+### GET /v1/playback/stream
+Redirects to upstream stream URL after validating token.
+
+Query:
+- `token` (required)
+- `format` (optional: `hls|dash`)
+
+## Analytics
+### POST /v1/analytics/event
+Stores playback analytics events.
+
+Headers:
+- `Authorization: Bearer <token>`
+
+Body:
+```json
+{
+  "event_type": "play|pause|error|time_watched",
+  "content_id": "string",
+  "content_type": "live|vod|series",
+  "position_seconds": 120,
+  "duration_seconds": 240,
+  "error_code": "string",
+  "meta": { "any": "json" }
+}
+```
+
+Response 200:
+```json
+{ "ok": true, "id": 123 }
+```
+
 ## Admin (requires x-admin-key)
 ### GET /v1/admin/devices?search=
 Lists up to 200 recent devices, with optional search.
@@ -107,6 +249,7 @@ Response 200:
   "devices": [
     {
       "device_code": "string",
+      "customer_name": "string",
       "status": "pending|active|suspended",
       "platform": "string",
       "model": "string",
@@ -230,6 +373,9 @@ Optional:
 - `ALLOWED_ORIGINS` (comma-separated)
 - `PORT` (default 3000)
 - `DB_PORT` (default 3306)
+- `XUI_BASE_URL` (fallback upstream base URL)
+- `PLAYBACK_BASE_URL` (public base URL for playback links)
+- `PLAYBACK_TOKEN_TTL` (seconds, default 3600)
 
 ## Database Schema (MySQL)
 Tables:
