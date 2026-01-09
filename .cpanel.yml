@@ -1,7 +1,7 @@
 ---
 deployment:
   tasks:
-    - export DEPLOYPATH=/home/streamin758/api.758758streamin.com
+    - export DEPLOYPATH=/home/streamin758/api.758streamin.com
     - /bin/mkdir -p $DEPLOYPATH
     - /usr/bin/rsync -a --delete --exclude=".git/" --exclude="node_modules/" --exclude=".env" ./ $DEPLOYPATH/
     - /bin/mkdir -p $DEPLOYPATH/tmp
