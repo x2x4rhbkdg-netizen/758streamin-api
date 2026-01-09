@@ -22,7 +22,7 @@ function parseTtl(v, fallback) {
 function normalizeBaseUrl(v) {
   let s = String(v || "").trim();
   if (!s) return "";
-  if (!/^https?:\/\/i.test(s)) s = `https://${s}`;
+  if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
   return s.replace(/\/+$/, "");
 }
 
