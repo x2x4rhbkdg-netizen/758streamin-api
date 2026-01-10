@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS devices (
   device_uuid  CHAR(36) NOT NULL,
   device_code  VARCHAR(32) NOT NULL,
   customer_name VARCHAR(255) NULL,
+  customer_phone VARCHAR(32) NULL,
   status       ENUM('pending','active','suspended') NOT NULL DEFAULT 'pending',
   platform     VARCHAR(64) NULL,
   model        VARCHAR(128) NULL,

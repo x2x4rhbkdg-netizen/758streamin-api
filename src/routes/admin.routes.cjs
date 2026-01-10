@@ -397,9 +397,9 @@ router.get("/devices", adminAuth, async (req, res) => {
     if (search) {
       const s = `%${search}%`;
       whereParts.push(
-        `(LOWER(d.device_code) LIKE LOWER(?) OR LOWER(COALESCE(d.platform,'')) LIKE LOWER(?) OR LOWER(COALESCE(d.model,'')) LIKE LOWER(?))`
+        `(LOWER(d.device_code) LIKE LOWER(?) OR LOWER(COALESCE(d.platform,'')) LIKE LOWER(?) OR LOWER(COALESCE(d.model,'')) LIKE LOWER(?) OR LOWER(COALESCE(d.customer_phone,'')) LIKE LOWER(?))`
       );
-      params.push(s, s, s);
+      params.push(s, s, s, s);
     }
 
     if (req.admin?.role !== "super_admin") {
@@ -414,6 +414,7 @@ router.get("/devices", adminAuth, async (req, res) => {
       SELECT
         d.device_code,
         d.customer_name,
+        d.customer_phone,
         d.status,
         d.platform,
         d.model,
@@ -444,7 +445,7 @@ router.get("/devices", adminAuth, async (req, res) => {
 
 /** =========================================
  *  PATCH /v1/admin/devices/:code
- *  body: { customer_name?, status?, max_streams?, expires_at?, reseller_admin_id? }
+ *  body: { customer_name?, customer_phone?, status?, max_streams?, expires_at?, reseller_admin_id? }
  *  - updates device fields + optional access limits
  *  ========================================= */
 router.patch("/devices/:code", adminAuth, async (req, res) => {
@@ -452,7 +453,8 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
     const code = String(req.params.code || "").trim();
     if (!code) return res.status(400).json({ error: "device code required" });
 
-    const { customer_name, status, max_streams, expires_at, reseller_admin_id } = req.body || {};
+    const { customer_name, customer_phone, status, max_streams, expires_at, reseller_admin_id } =
+      req.body || {};
 
     const nextStatus = status ? String(status).trim().toLowerCase() : null;
     if (nextStatus && !["pending", "active", "suspended"].includes(nextStatus)) {
@@ -460,13 +462,14 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
     }
 
     const hasCustomer = typeof customer_name !== "undefined";
+    const hasPhone = typeof customer_phone !== "undefined";
     const hasStatus = typeof nextStatus === "string" && nextStatus.length > 0;
     const hasAccess =
       typeof max_streams !== "undefined" || typeof expires_at !== "undefined";
     const hasReseller =
       typeof reseller_admin_id !== "undefined" && req.admin?.role === "super_admin";
 
-    if (!hasCustomer && !hasStatus && !hasAccess && !hasReseller) {
+    if (!hasCustomer && !hasPhone && !hasStatus && !hasAccess && !hasReseller) {
       return res.status(400).json({ error: "no fields to update" });
     }
 
@@ -481,13 +484,17 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
 
-    if (hasCustomer || hasStatus || hasReseller) {
+    if (hasCustomer || hasPhone || hasStatus || hasReseller) {
       const updates = [];
       const params = [];
 
       if (hasCustomer) {
         updates.push("customer_name=?");
         params.push(customer_name === null ? null : String(customer_name));
+      }
+      if (hasPhone) {
+        updates.push("customer_phone=?");
+        params.push(customer_phone === null ? null : String(customer_phone));
       }
 
       if (hasStatus) {
@@ -533,6 +540,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       SELECT
         d.device_code,
         d.customer_name,
+        d.customer_phone,
         d.status,
         d.platform,
         d.model,

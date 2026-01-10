@@ -379,6 +379,7 @@ Response 200:
     {
       "device_code": "string",
       "customer_name": "string",
+      "customer_phone": "string",
       "status": "pending|active|suspended",
       "platform": "string",
       "model": "string",
@@ -409,6 +410,7 @@ Body:
 ```json
 {
   "customer_name": "string",
+  "customer_phone": "string",
   "status": "pending|active|suspended",
   "max_streams": 1,
   "expires_at": "2025-01-01T00:00:00Z",
