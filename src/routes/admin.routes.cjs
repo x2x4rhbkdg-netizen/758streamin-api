@@ -662,12 +662,16 @@ router.post("/devices/:code/upstream", adminAuth, async (req, res) => {
     const { upstream_base_url, username, password } = req.body || {};
 
     if (!code) return res.status(400).json({ error: "device code required" });
-    if (!upstream_base_url || !username || !password) {
-      return res.status(400).json({ error: "upstream_base_url + username + password required" });
+    if (!username || !password) {
+      return res.status(400).json({ error: "username + password required" });
     }
 
-    const base = normalizeBaseUrl(upstream_base_url);
-    if (!base) return res.status(400).json({ error: "invalid upstream_base_url" });
+    const baseInput = String(upstream_base_url || "").trim();
+    const baseCandidate = baseInput || env.XUI_BASE_URL;
+    const base = normalizeBaseUrl(baseCandidate);
+    if (!base) {
+      return res.status(400).json({ error: "missing upstream_base_url" });
+    }
 
     const [devRows] = await pool.execute(
       `SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1`,
