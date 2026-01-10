@@ -124,18 +124,20 @@ router.post("/device/auth", async (req, res) => {
     if (!device_uuid || !device_code) {
       return res.status(400).json({ error: "device_uuid + device_code required" });
     }
+    if (!isUuidLike(device_uuid)) return res.status(400).json({ error: "invalid device_uuid" });
 
     const [rows] = await pool.execute(
       `SELECT
          d.id,
+         d.device_uuid,
          d.status,
          a.expires_at,
          a.max_streams
        FROM devices d
        LEFT JOIN device_access a ON a.device_id = d.id
-       WHERE d.device_uuid=? AND d.device_code=?
+       WHERE d.device_code=?
        LIMIT 1`,
-      [device_uuid, device_code]
+      [device_code]
     );
 
     const dev = rows[0];
@@ -147,6 +149,29 @@ router.post("/device/auth", async (req, res) => {
       if (!Number.isNaN(exp) && exp < Date.now()) {
         return res.status(403).json({ error: "device expired" });
       }
+    }
+
+    if (String(dev.device_uuid) !== String(device_uuid)) {
+      const [uuidRows] = await pool.execute(
+        `SELECT id, status FROM devices WHERE device_uuid=? LIMIT 1`,
+        [device_uuid]
+      );
+
+      const uuidDev = uuidRows[0];
+      if (uuidDev && Number(uuidDev.id) !== Number(dev.id)) {
+        if (uuidDev.status === "pending") {
+          await pool.execute(`DELETE FROM devices WHERE id=?`, [uuidDev.id]);
+        } else {
+          return res.status(409).json({ error: "device already active" });
+        }
+      }
+
+      await pool.execute(
+        `UPDATE devices
+         SET device_uuid=?, updated_at=NOW()
+         WHERE id=?`,
+        [device_uuid, dev.id]
+      );
     }
 
     await pool.execute(
