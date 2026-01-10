@@ -7,6 +7,7 @@ const { authJwt } = require("../middleware/authJwt.cjs");
 const { env } = require("../config/env.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
 const { buildUrl } = require("../utils/xui.cjs");
+const { pool } = require("../db/pool.cjs");
 
 const router = Router();
 
@@ -117,6 +118,24 @@ router.get("/playback/stream", async (req, res) => {
       audience: PLAYBACK_AUD,
       issuer: PLAYBACK_ISS,
     });
+
+    const [rows] = await pool.execute(
+      `SELECT d.status, a.expires_at
+       FROM devices d
+       LEFT JOIN device_access a ON a.device_id = d.id
+       WHERE d.id=?
+       LIMIT 1`,
+      [payload.device_id]
+    );
+    const dev = rows[0];
+    if (!dev) return res.status(401).json({ error: "device not found" });
+    if (dev.status !== "active") return res.status(403).json({ error: "device not active" });
+    if (dev.expires_at) {
+      const exp = new Date(dev.expires_at).getTime();
+      if (!Number.isNaN(exp) && exp < Date.now()) {
+        return res.status(403).json({ error: "device expired" });
+      }
+    }
 
     const upstream = await getDeviceUpstream(payload.device_id);
     if (!upstream) return res.status(404).json({ error: "no upstream configured for device" });
