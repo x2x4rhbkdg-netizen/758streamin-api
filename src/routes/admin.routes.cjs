@@ -8,8 +8,8 @@ const { Router } = require("express");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const { adminAuth } = require("../middleware/adminAuth.cjs");
+const { decryptString, encryptString } = require("../utils/cryptoVault.cjs");
 const { pool } = require("../db/pool.cjs");
-const { encryptString } = require("../utils/cryptoVault.cjs");
 const { sendResetEmail } = require("../utils/email.cjs");
 const { env } = require("../config/env.cjs");
 
@@ -722,6 +722,59 @@ router.post("/devices/:code/suspend", adminAuth, async (req, res) => {
  *  body: { upstream_base_url, username, password }
  *  - stores encrypted upstream creds per device
  *  ========================================= */
+/** =========================================
+ *  GET /v1/admin/devices/:code/upstream
+ *  - returns stored upstream creds for admin UI
+ *  ========================================= */
+router.get("/devices/:code/upstream", adminAuth, async (req, res) => {
+  try {
+    const code = String(req.params.code || "").trim();
+    if (!code) return res.status(400).json({ error: "device code required" });
+
+    const [devRows] = await pool.execute(
+      `SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT upstream_base_url, enc_username, enc_password
+       FROM device_upstream
+       WHERE device_id=?
+       LIMIT 1`,
+      [dev.id]
+    );
+
+    const row = rows[0];
+    if (!row) {
+      return res.json({
+        configured: false,
+        upstream_base_url: "",
+        username: "",
+        password: ""
+      });
+    }
+
+    const username = decryptString(row.enc_username);
+    const password = decryptString(row.enc_password);
+
+    return res.json({
+      configured: true,
+      upstream_base_url: row.upstream_base_url || "",
+      username,
+      password
+    });
+  } catch (err) {
+    console.error("[admin/upstream/get] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
 router.post("/devices/:code/upstream", adminAuth, async (req, res) => {
   try {
     const code = String(req.params.code || "").trim();
