@@ -444,6 +444,72 @@ router.get("/devices", adminAuth, async (req, res) => {
 });
 
 /** =========================================
+ *  GET /v1/admin/analytics/streams?days=30&limit=8
+ *  - Top played streams from analytics_events
+ *  - Reseller admins only see their devices
+ *  ========================================= */
+router.get("/analytics/streams", adminAuth, async (req, res) => {
+  try {
+    const daysRaw = Number(req.query.days || 30);
+    const limitRaw = Number(req.query.limit || 8);
+    const days = Number.isFinite(daysRaw) ? Math.min(90, Math.max(1, daysRaw)) : 30;
+    const limit = Number.isFinite(limitRaw) ? Math.min(50, Math.max(3, limitRaw)) : 8;
+
+    const whereParts = [
+      "ae.event_type='play'",
+      "ae.content_id IS NOT NULL",
+      "ae.created_at >= (NOW() - INTERVAL ? DAY)"
+    ];
+    const params = [days];
+
+    if (req.admin?.role !== "super_admin") {
+      whereParts.push("d.reseller_admin_id=?");
+      params.push(req.admin.id);
+    }
+
+    const where = `WHERE ${whereParts.join(" AND ")}`;
+
+    const [totalRows] = await pool.execute(
+      `
+      SELECT COUNT(*) AS total
+      FROM analytics_events ae
+      JOIN devices d ON d.id = ae.device_id
+      ${where}
+      `,
+      params
+    );
+
+    const totalPlays = Number(totalRows?.[0]?.total || 0);
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        ae.content_id,
+        ae.content_type,
+        COUNT(*) AS plays,
+        MAX(ae.created_at) AS last_played_at
+      FROM analytics_events ae
+      JOIN devices d ON d.id = ae.device_id
+      ${where}
+      GROUP BY ae.content_id, ae.content_type
+      ORDER BY plays DESC
+      LIMIT ${limit}
+      `,
+      params
+    );
+
+    return res.json({
+      range_days: days,
+      total_plays: totalPlays,
+      items: rows
+    });
+  } catch (err) {
+    console.error("[admin/analytics/streams] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
  *  PATCH /v1/admin/devices/:code
  *  body: { customer_name?, customer_phone?, status?, max_streams?, expires_at?, reseller_admin_id? }
  *  - updates device fields + optional access limits
