@@ -9,6 +9,7 @@ const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const { adminAuth } = require("../middleware/adminAuth.cjs");
 const { decryptString, encryptString } = require("../utils/cryptoVault.cjs");
+const { buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
 const { pool } = require("../db/pool.cjs");
 const { sendResetEmail } = require("../utils/email.cjs");
 const { env } = require("../config/env.cjs");
@@ -52,6 +53,77 @@ function hashToken(token) {
 function normalizePin(pin) {
   const s = String(pin || "").trim();
   return /^\d{4}$/.test(s) ? s : null;
+}
+
+async function fetchXuiJson(upstream, action, params = {}) {
+  const base = buildXuiPlayerApiUrl({
+    upstream_base_url: upstream.upstream_base_url,
+    username: upstream.username,
+    password: upstream.password,
+  });
+
+  const url = new URL(base);
+  if (action) url.searchParams.set("action", action);
+  Object.entries(params).forEach(([k, val]) => {
+    if (val === undefined || val === null || val === "") return;
+    url.searchParams.set(k, String(val));
+  });
+
+  const resp = await fetch(url.toString(), {
+    method: "GET",
+    headers: { "User-Agent": "streamin-api/1.0" },
+  });
+
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    const err = new Error("upstream failed");
+    err.status = resp.status;
+    err.body = txt.slice(0, 200);
+    throw err;
+  }
+
+  const txt = await resp.text();
+  try {
+    return JSON.parse(txt);
+  } catch {
+    const err = new Error("upstream returned invalid JSON");
+    err.status = 502;
+    err.body = txt.slice(0, 200);
+    throw err;
+  }
+}
+
+async function getAnalyticsUpstream(admin) {
+  const params = [];
+  let where = "WHERE du.enc_username IS NOT NULL AND du.enc_password IS NOT NULL";
+  if (admin?.role !== "super_admin") {
+    where += " AND d.reseller_admin_id=?";
+    params.push(admin.id);
+  }
+
+  const [rows] = await pool.execute(
+    `
+    SELECT d.id, du.upstream_base_url, du.enc_username, du.enc_password
+    FROM device_upstream du
+    JOIN devices d ON d.id = du.device_id
+    ${where}
+    ORDER BY du.updated_at DESC
+    LIMIT 1
+    `,
+    params
+  );
+
+  const row = rows[0];
+  if (!row) return null;
+
+  const upstreamBaseUrl = row.upstream_base_url || env.XUI_BASE_URL || "";
+  if (!upstreamBaseUrl) return null;
+
+  return {
+    upstream_base_url: upstreamBaseUrl,
+    username: decryptString(row.enc_username),
+    password: decryptString(row.enc_password),
+  };
 }
 
 /** =========================================
@@ -503,10 +575,56 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
       params
     );
 
+    let items = rows;
+    try {
+      const upstream = await getAnalyticsUpstream(req.admin);
+      if (upstream && rows.length) {
+        const types = new Set(
+          rows.map((row) => String(row.content_type || "live").toLowerCase())
+        );
+        const nameMap = new Map();
+
+        if (types.has("live")) {
+          const live = await fetchXuiJson(upstream, "get_live_streams");
+          (Array.isArray(live) ? live : []).forEach((item) => {
+            const id = String(item?.stream_id || "");
+            const name = String(item?.name || "");
+            if (id && name) nameMap.set(`live:${id}`, name);
+          });
+        }
+        if (types.has("vod")) {
+          const vod = await fetchXuiJson(upstream, "get_vod_streams");
+          (Array.isArray(vod) ? vod : []).forEach((item) => {
+            const id = String(item?.stream_id || "");
+            const name = String(item?.name || "");
+            if (id && name) nameMap.set(`vod:${id}`, name);
+          });
+        }
+        if (types.has("series")) {
+          const series = await fetchXuiJson(upstream, "get_series");
+          (Array.isArray(series) ? series : []).forEach((item) => {
+            const id = String(item?.series_id || item?.stream_id || "");
+            const name = String(item?.name || "");
+            if (id && name) nameMap.set(`series:${id}`, name);
+          });
+        }
+
+        items = rows.map((row) => {
+          const type = String(row.content_type || "live").toLowerCase();
+          const id = String(row.content_id || "");
+          const key = `${type}:${id}`;
+          const content_name = nameMap.get(key) || null;
+          return { ...row, content_name };
+        });
+      }
+    } catch (err) {
+      console.warn("[admin/analytics/streams] name resolve skipped:", err?.message || err);
+    }
+
     return res.json({
       range_days: days,
       total_plays: totalPlays,
-      items: rows
+      items
     });
   } catch (err) {
     console.error("[admin/analytics/streams] error:", err);
