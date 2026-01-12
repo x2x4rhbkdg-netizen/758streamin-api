@@ -49,6 +49,11 @@ function hashToken(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
+function normalizePin(pin) {
+  const s = String(pin || "").trim();
+  return /^\d{4}$/.test(s) ? s : null;
+}
+
 /** =========================================
  *  AUTH: Login
  *  POST /v1/admin/auth/login
@@ -822,6 +827,114 @@ router.post("/devices/:code/upstream", adminAuth, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("[admin/upstream] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
+ *  GET /v1/admin/devices/:code/parental
+ *  - returns whether adult PIN is configured
+ *  ========================================= */
+router.get("/devices/:code/parental", adminAuth, async (req, res) => {
+  try {
+    const code = String(req.params.code || "").trim();
+    if (!code) return res.status(400).json({ error: "device code required" });
+
+    const [devRows] = await pool.execute(
+      `SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT adult_pin_enc FROM device_access WHERE device_id=? LIMIT 1`,
+      [dev.id]
+    );
+    const enabled = Boolean(rows[0]?.adult_pin_enc);
+
+    return res.json({ enabled });
+  } catch (err) {
+    console.error("[admin/parental/get] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
+ *  PUT /v1/admin/devices/:code/parental
+ *  body: { pin }
+ *  - stores encrypted adult PIN per device
+ *  ========================================= */
+router.put("/devices/:code/parental", adminAuth, async (req, res) => {
+  try {
+    const code = String(req.params.code || "").trim();
+    const pin = normalizePin(req.body?.pin);
+    if (!code) return res.status(400).json({ error: "device code required" });
+    if (!pin) return res.status(400).json({ error: "pin must be 4 digits" });
+
+    const [devRows] = await pool.execute(
+      `SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const encPin = encryptString(pin);
+
+    await pool.execute(
+      `
+      INSERT INTO device_access (device_id, adult_pin_enc, updated_at)
+      VALUES (?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        adult_pin_enc=VALUES(adult_pin_enc),
+        updated_at=NOW()
+      `,
+      [dev.id, encPin]
+    );
+
+    return res.json({ ok: true, enabled: true });
+  } catch (err) {
+    console.error("[admin/parental/set] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
+ *  DELETE /v1/admin/devices/:code/parental
+ *  - clears adult PIN for a device
+ *  ========================================= */
+router.delete("/devices/:code/parental", adminAuth, async (req, res) => {
+  try {
+    const code = String(req.params.code || "").trim();
+    if (!code) return res.status(400).json({ error: "device code required" });
+
+    const [devRows] = await pool.execute(
+      `SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    await pool.execute(
+      `UPDATE device_access SET adult_pin_enc=NULL, updated_at=NOW() WHERE device_id=?`,
+      [dev.id]
+    );
+
+    return res.json({ ok: true, enabled: false });
+  } catch (err) {
+    console.error("[admin/parental/reset] error:", err);
     return res.status(500).json({ error: "internal error" });
   }
 });

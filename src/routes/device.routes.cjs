@@ -8,6 +8,8 @@ const { Router } = require("express");
 const jwt = require("jsonwebtoken");
 const { pool } = require("../db/pool.cjs");
 const { makeDeviceCode } = require("../utils/deviceCode.cjs");
+const { authJwt } = require("../middleware/authJwt.cjs");
+const { decryptString, encryptString } = require("../utils/cryptoVault.cjs");
 const { env } = require("../config/env.cjs");
 
 const router = Router();
@@ -25,6 +27,11 @@ function isUuidLike(v) {
   // Accept strict UUID, but keep it permissive enough for platform UUID formats
   // If you want strict only, use: /^[0-9a-f]{8}-...$/i
   return typeof v === "string" && v.trim().length >= 8 && v.trim().length <= 64;
+}
+
+function normalizePin(pin) {
+  const s = String(pin || "").trim();
+  return /^\d{4}$/.test(s) ? s : null;
 }
 
 /** =========================================
@@ -198,6 +205,109 @@ router.post("/device/auth", async (req, res) => {
     });
   } catch (err) {
     console.error("[device/auth] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
+ *  POST /v1/device/adult/verify
+ *  body: { pin }
+ *  - verifies per-device adult PIN (encrypted in device_access)
+ *  ========================================= */
+router.post("/device/adult/verify", authJwt, async (req, res) => {
+  try {
+    const pin = normalizePin(req.body?.pin);
+    if (!pin) {
+      return res.status(400).json({ error: "pin must be 4 digits" });
+    }
+
+    const deviceId = req.device.device_id;
+    const [rows] = await pool.execute(
+      `SELECT adult_pin_enc FROM device_access WHERE device_id=? LIMIT 1`,
+      [deviceId]
+    );
+
+    const encPin = rows[0]?.adult_pin_enc;
+    if (!encPin) return res.status(404).json({ error: "pin not set" });
+
+    const stored = decryptString(encPin);
+    if (stored !== pin) {
+      return res.status(403).json({ error: "invalid pin" });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[device/adult/verify] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
+ *  POST /v1/device/adult/set
+ *  body: { pin }
+ *  - sets adult PIN for this device
+ *  ========================================= */
+router.post("/device/adult/set", authJwt, async (req, res) => {
+  try {
+    const pin = normalizePin(req.body?.pin);
+    if (!pin) {
+      return res.status(400).json({ error: "pin must be 4 digits" });
+    }
+
+    const deviceId = req.device.device_id;
+    const encPin = encryptString(pin);
+
+    await pool.execute(
+      `
+      INSERT INTO device_access (device_id, adult_pin_enc, updated_at)
+      VALUES (?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        adult_pin_enc=VALUES(adult_pin_enc),
+        updated_at=NOW()
+      `,
+      [deviceId, encPin]
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[device/adult/set] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
+ *  DELETE /v1/device/adult/reset
+ *  - clears adult PIN for this device
+ *  ========================================= */
+router.delete("/device/adult/reset", authJwt, async (req, res) => {
+  try {
+    const deviceId = req.device.device_id;
+    await pool.execute(
+      `UPDATE device_access SET adult_pin_enc=NULL, updated_at=NOW() WHERE device_id=?`,
+      [deviceId]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[device/adult/reset] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+/** =========================================
+ *  GET /v1/device/adult/status
+ *  - returns whether adult PIN is configured
+ *  ========================================= */
+router.get("/device/adult/status", authJwt, async (req, res) => {
+  try {
+    const deviceId = req.device.device_id;
+    const [rows] = await pool.execute(
+      `SELECT adult_pin_enc FROM device_access WHERE device_id=? LIMIT 1`,
+      [deviceId]
+    );
+    const enabled = Boolean(rows[0]?.adult_pin_enc);
+    return res.json({ enabled });
+  } catch (err) {
+    console.error("[device/adult/status] error:", err);
     return res.status(500).json({ error: "internal error" });
   }
 });
