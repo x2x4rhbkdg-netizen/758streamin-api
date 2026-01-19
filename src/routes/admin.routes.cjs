@@ -498,6 +498,8 @@ router.get("/devices", adminAuth, async (req, res) => {
         d.app_version,
         d.reseller_admin_id,
         r.name AS reseller_name,
+        d.plan_name,
+        d.trial_expires_at,
         d.last_seen_at,
         d.created_at,
         d.updated_at,
@@ -642,8 +644,16 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
     const code = String(req.params.code || "").trim();
     if (!code) return res.status(400).json({ error: "device code required" });
 
-    const { customer_name, customer_phone, status, max_streams, expires_at, reseller_admin_id } =
-      req.body || {};
+    const {
+      customer_name,
+      customer_phone,
+      status,
+      max_streams,
+      expires_at,
+      reseller_admin_id,
+      plan_name,
+      trial_expires_at
+    } = req.body || {};
 
     const nextStatus = status ? String(status).trim().toLowerCase() : null;
     if (nextStatus && !["pending", "active", "suspended"].includes(nextStatus)) {
@@ -657,8 +667,18 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       typeof max_streams !== "undefined" || typeof expires_at !== "undefined";
     const hasReseller =
       typeof reseller_admin_id !== "undefined" && req.admin?.role === "super_admin";
+    const hasPlan = typeof plan_name !== "undefined";
+    const hasTrial = typeof trial_expires_at !== "undefined";
 
-    if (!hasCustomer && !hasPhone && !hasStatus && !hasAccess && !hasReseller) {
+    if (
+      !hasCustomer &&
+      !hasPhone &&
+      !hasStatus &&
+      !hasAccess &&
+      !hasReseller &&
+      !hasPlan &&
+      !hasTrial
+    ) {
       return res.status(400).json({ error: "no fields to update" });
     }
 
@@ -673,7 +693,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
 
-    if (hasCustomer || hasPhone || hasStatus || hasReseller) {
+    if (hasCustomer || hasPhone || hasStatus || hasReseller || hasPlan || hasTrial) {
       const updates = [];
       const params = [];
 
@@ -689,6 +709,16 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       if (hasStatus) {
         updates.push("status=?");
         params.push(nextStatus);
+      }
+
+      if (hasPlan) {
+        updates.push("plan_name=?");
+        params.push(plan_name === null ? null : String(plan_name));
+      }
+
+      if (hasTrial) {
+        updates.push("trial_expires_at=?");
+        params.push(toMysqlDatetime(trial_expires_at));
       }
 
       if (hasReseller) {
@@ -736,6 +766,8 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
         d.app_version,
         d.reseller_admin_id,
         r.name AS reseller_name,
+        d.plan_name,
+        d.trial_expires_at,
         d.last_seen_at,
         d.created_at,
         d.updated_at,
