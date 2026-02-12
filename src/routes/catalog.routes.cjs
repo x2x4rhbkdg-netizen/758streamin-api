@@ -11,10 +11,10 @@ const router = Router();
 /** =========================================
  *  HELPERS
  *  ========================================= */
-function parseLimit(v, fallback = 20) {
+function parseLimit(v, fallback = 20, max = 100) {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
-  return Math.max(1, Math.min(100, n));
+  return Math.max(1, Math.min(max, n));
 }
 
 function asArray(v) {
@@ -160,7 +160,7 @@ router.get("/catalog/category/:id", authJwt, async (req, res) => {
     if (!categoryId) return res.status(400).json({ error: "category id required" });
 
     const type = String(req.query.type || "").trim().toLowerCase();
-    const limit = parseLimit(req.query.limit, 100);
+    const limit = parseLimit(req.query.limit, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
 
     const typeMap = {
       live: "get_live_streams",

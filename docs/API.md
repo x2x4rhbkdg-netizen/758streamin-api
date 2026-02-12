@@ -125,7 +125,7 @@ Headers:
 
 Query:
 - `type` (optional: `live|vod|series`)
-- `limit` (optional, default 100)
+- `limit` (optional, defaults to all items in the category)
 
 Response 200:
 ```json
