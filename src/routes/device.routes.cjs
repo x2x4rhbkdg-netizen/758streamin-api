@@ -312,4 +312,45 @@ router.get("/device/adult/status", authJwt, async (req, res) => {
   }
 });
 
+/** =========================================
+ *  GET /v1/device/profile
+ *  - returns basic device profile details for the authenticated device
+ *  ========================================= */
+router.get("/device/profile", authJwt, async (req, res) => {
+  try {
+    const deviceId = req.device.device_id;
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        d.device_code,
+        d.customer_name,
+        d.plan_name,
+        d.trial_expires_at,
+        a.expires_at,
+        a.max_streams
+      FROM devices d
+      LEFT JOIN device_access a ON a.device_id = d.id
+      WHERE d.id=?
+      LIMIT 1
+      `,
+      [deviceId]
+    );
+
+    const device = rows[0];
+    if (!device) return res.status(404).json({ error: "device not found" });
+
+    return res.json({
+      device_code: device.device_code || req.device.device_code || null,
+      customer_name: device.customer_name || null,
+      plan_name: device.plan_name || null,
+      trial_expires_at: device.trial_expires_at || null,
+      expires_at: device.expires_at || null,
+      max_streams: Number(device.max_streams || 1),
+    });
+  } catch (err) {
+    console.error("[device/profile] error:", err);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
 module.exports = router;
