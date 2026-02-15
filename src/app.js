@@ -11,6 +11,7 @@ const playlistRoutes = require("./routes/playlist.routes.cjs");
 const catalogRoutes = require("./routes/catalog.routes.cjs");
 const playbackRoutes = require("./routes/playback.routes.cjs");
 const analyticsRoutes = require("./routes/analytics.routes.cjs");
+const epgRoutes = require("./routes/epg.routes.cjs");
 const adminRoutes = require("./routes/admin.routes.cjs");
 
 const app = express();
@@ -43,6 +44,7 @@ app.use("/v1", playlistRoutes);
 app.use("/v1", catalogRoutes);
 app.use("/v1", playbackRoutes);
 app.use("/v1", analyticsRoutes);
+app.use("/v1", epgRoutes);
 app.use("/v1/admin", adminRoutes);
 
 
