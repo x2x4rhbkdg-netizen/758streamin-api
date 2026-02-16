@@ -6,7 +6,7 @@ const jwt = require("jsonwebtoken");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { env } = require("../config/env.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
-const { buildUrl } = require("../utils/xui.cjs");
+const { buildUrl, buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
 const { pool } = require("../db/pool.cjs");
 
 const router = Router();
@@ -30,6 +30,104 @@ function normalizeBaseUrl(v) {
 function normalizeLiveOutput(v) {
   const out = String(v || "m3u8").trim().toLowerCase();
   return out === "ts" ? "ts" : "m3u8";
+}
+
+function normalizeSourceMode(v) {
+  const mode = String(v || "auto").trim().toLowerCase();
+  return ["path", "auto", "stream_source"].includes(mode) ? mode : "auto";
+}
+
+function parseFirstHttpUrl(value) {
+  if (!value) return null;
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = parseFirstHttpUrl(entry);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const raw = value.trim();
+  if (!raw) return null;
+
+  if ((raw.startsWith("[") && raw.endsWith("]")) || (raw.startsWith("{") && raw.endsWith("}"))) {
+    try {
+      const parsed = JSON.parse(raw);
+      return parseFirstHttpUrl(parsed);
+    } catch {
+      // keep checking raw string below
+    }
+  }
+
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return null;
+}
+
+async function fetchXuiJson(upstream, action, params = {}) {
+  const base = buildXuiPlayerApiUrl({
+    upstream_base_url: upstream.upstream_base_url,
+    username: upstream.username,
+    password: upstream.password,
+  });
+
+  const url = new URL(base);
+  if (action) url.searchParams.set("action", action);
+  Object.entries(params).forEach(([k, val]) => {
+    if (val === undefined || val === null || val === "") return;
+    url.searchParams.set(k, String(val));
+  });
+
+  const resp = await fetch(url.toString(), {
+    method: "GET",
+    headers: { "User-Agent": "streamin-api/1.0" },
+  });
+
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    const err = new Error("upstream failed");
+    err.status = resp.status;
+    err.body = txt.slice(0, 200);
+    throw err;
+  }
+
+  const txt = await resp.text();
+  try {
+    return JSON.parse(txt);
+  } catch {
+    const err = new Error("upstream returned invalid JSON");
+    err.status = 502;
+    err.body = txt.slice(0, 200);
+    throw err;
+  }
+}
+
+async function resolveLiveDirectSource(upstream, streamId) {
+  if (!streamId) return null;
+  const streams = await fetchXuiJson(upstream, "get_live_streams");
+  const list = Array.isArray(streams) ? streams : [];
+  const wanted = String(streamId);
+  const match = list.find((item) => String(item?.stream_id || "") === wanted);
+  if (!match) return null;
+
+  const candidates = [
+    match?.stream_source,
+    match?.direct_source,
+    match?.source,
+    match?.stream_url,
+    match?.url,
+  ];
+
+  for (const candidate of candidates) {
+    const direct = parseFirstHttpUrl(candidate);
+    if (direct) return direct;
+  }
+
+  return null;
 }
 
 function buildStreamUrl({ upstream, type, streamId, episodeId, format, liveHlsOutput }) {
@@ -148,6 +246,23 @@ router.get("/playback/stream", async (req, res) => {
     if (!upstream) return res.status(404).json({ error: "no upstream configured for device" });
 
     const format = String(req.query.format || "hls").trim().toLowerCase();
+    const sourceMode = normalizeSourceMode(env.LIVE_SOURCE_MODE);
+
+    if (payload.type === "live" && sourceMode !== "path") {
+      try {
+        const direct = await resolveLiveDirectSource(upstream, payload.stream_id);
+        if (direct) {
+          res.setHeader("Cache-Control", "no-store");
+          return res.redirect(302, direct);
+        }
+      } catch (err) {
+        console.warn("[playback/stream] live source lookup failed:", err?.message || err);
+      }
+
+      if (sourceMode === "stream_source") {
+        return res.status(502).json({ error: "live stream source unavailable" });
+      }
+    }
 
     const url = buildStreamUrl({
       upstream,
