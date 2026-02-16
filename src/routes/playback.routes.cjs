@@ -27,9 +27,16 @@ function normalizeBaseUrl(v) {
   return s.replace(/\/+$/, "");
 }
 
-function buildStreamUrl({ upstream, type, streamId, episodeId, format }) {
+function normalizeLiveOutput(v) {
+  const out = String(v || "m3u8").trim().toLowerCase();
+  return out === "ts" ? "ts" : "m3u8";
+}
+
+function buildStreamUrl({ upstream, type, streamId, episodeId, format, liveHlsOutput }) {
   const fmt = String(format || "hls").toLowerCase();
-  const ext = fmt === "dash" ? "mpd" : "m3u8";
+  const ext = fmt === "dash"
+    ? "mpd"
+    : (type === "live" ? normalizeLiveOutput(liveHlsOutput) : "m3u8");
   const user = encodeURIComponent(upstream.username);
   const pass = encodeURIComponent(upstream.password);
 
@@ -148,6 +155,7 @@ router.get("/playback/stream", async (req, res) => {
       streamId: payload.stream_id,
       episodeId: payload.episode_id,
       format,
+      liveHlsOutput: env.LIVE_HLS_OUTPUT,
     });
 
     res.setHeader("Cache-Control", "no-store");

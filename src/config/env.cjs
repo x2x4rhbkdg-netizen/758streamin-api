@@ -42,6 +42,7 @@ const env = {
   XUI_BASE_URL: process.env.XUI_BASE_URL || "",
   PLAYBACK_BASE_URL: process.env.PLAYBACK_BASE_URL || "",
   PLAYBACK_TOKEN_TTL: Number(process.env.PLAYBACK_TOKEN_TTL || 3600),
+  LIVE_HLS_OUTPUT: process.env.LIVE_HLS_OUTPUT || "ts", // set to "ts" to force live ts links
 
   ADMIN_RESET_BASE_URL: process.env.ADMIN_RESET_BASE_URL || "",
   ADMIN_RESET_TOKEN_TTL: Number(process.env.ADMIN_RESET_TOKEN_TTL || 3600),
