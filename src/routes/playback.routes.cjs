@@ -68,6 +68,35 @@ function parseFirstHttpUrl(value) {
   return null;
 }
 
+function isLikelyHlsUrl(value) {
+  const raw = String(value || "").toLowerCase();
+  if (!raw) return false;
+  if (raw.includes(".m3u8")) return true;
+  return /[?&](output|type|format)=(m3u8|hls)\b/.test(raw);
+}
+
+function isLikelyMpegTsUrl(value) {
+  const raw = String(value || "").toLowerCase();
+  if (!raw) return false;
+  if (raw.includes(".ts")) return true;
+  return /[?&](output|type|format)=ts\b/.test(raw);
+}
+
+function isLikelyDashUrl(value) {
+  const raw = String(value || "").toLowerCase();
+  if (!raw) return false;
+  if (raw.includes(".mpd")) return true;
+  return /[?&](type|format)=dash\b/.test(raw);
+}
+
+function isWebPlayableLiveSource(url, format) {
+  if (!/^https?:\/\//i.test(String(url || ""))) return false;
+  const fmt = String(format || "hls").trim().toLowerCase();
+  if (fmt === "dash") return isLikelyDashUrl(url);
+  // HLS players on TVs usually accept .m3u8 and some also accept MPEG-TS .ts.
+  return isLikelyHlsUrl(url) || isLikelyMpegTsUrl(url);
+}
+
 async function fetchXuiJson(upstream, action, params = {}) {
   const base = buildXuiPlayerApiUrl({
     upstream_base_url: upstream.upstream_base_url,
@@ -249,18 +278,30 @@ router.get("/playback/stream", async (req, res) => {
     const sourceMode = normalizeSourceMode(env.LIVE_SOURCE_MODE);
 
     if (payload.type === "live" && sourceMode !== "path") {
+      let sawDirect = false;
+      let usedDirect = false;
+
       try {
         const direct = await resolveLiveDirectSource(upstream, payload.stream_id);
         if (direct) {
-          res.setHeader("Cache-Control", "no-store");
-          return res.redirect(302, direct);
+          sawDirect = true;
+          if (isWebPlayableLiveSource(direct, format)) {
+            usedDirect = true;
+            res.setHeader("Cache-Control", "no-store");
+            return res.redirect(302, direct);
+          }
+
+          console.warn("[playback/stream] skipping non-web-playable direct source:", direct);
         }
       } catch (err) {
         console.warn("[playback/stream] live source lookup failed:", err?.message || err);
       }
 
       if (sourceMode === "stream_source") {
-        return res.status(502).json({ error: "live stream source unavailable" });
+        const reason = sawDirect && !usedDirect
+          ? "live stream source unsupported for web playback"
+          : "live stream source unavailable";
+        return res.status(502).json({ error: reason });
       }
     }
 

@@ -40,6 +40,55 @@ function decodeMaybeBase64(value) {
   }
 }
 
+function normalizeText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function unwrapBracketLabel(value) {
+  const text = normalizeText(value);
+  const m = text.match(/^\[([^\]]+)\]$/);
+  return m ? normalizeText(m[1]) : text;
+}
+
+function isWeakTitle(value) {
+  const text = normalizeText(value).toLowerCase();
+  if (!text) return true;
+  if (["unknown", "n/a", "na", "none", "null", "undefined", "-"] .includes(text)) return true;
+  if (/^\d{1,2}:\d{2}(\s*-\s*\d{1,2}:\d{2})?$/.test(text)) return true;
+  if (/^\d{1,2}:\d{2}\s*(am|pm)?\s*-\s*\d{1,2}:\d{2}\s*(am|pm)?$/.test(text)) return true;
+  return false;
+}
+
+function pickProgramTitle(item) {
+  const candidates = [
+    item?.program_title,
+    item?.name,
+    item?.epg_title,
+    item?.title,
+    item?.title_en,
+    item?.title_local,
+  ];
+
+  let fallback = "";
+  for (const candidate of candidates) {
+    const decoded = unwrapBracketLabel(decodeMaybeBase64(candidate));
+    if (!decoded) continue;
+    if (!fallback) fallback = decoded;
+    if (!isWeakTitle(decoded)) return decoded;
+  }
+
+  return fallback || "Unknown";
+}
+
+function pickProgramDescription(item) {
+  const candidates = [item?.description, item?.desc, item?.plot];
+  for (const candidate of candidates) {
+    const decoded = normalizeText(decodeMaybeBase64(candidate));
+    if (decoded) return decoded;
+  }
+  return "";
+}
+
 function toMs(value) {
   if (value === undefined || value === null || value === "") return null;
 
@@ -65,20 +114,8 @@ function toMs(value) {
 function normalizeProgram(item) {
   if (!item || typeof item !== "object") return null;
 
-  const title = decodeMaybeBase64(
-    item.title ||
-      item.program_title ||
-      item.name ||
-      item.epg_title ||
-      ""
-  );
-
-  const description = decodeMaybeBase64(
-    item.description ||
-      item.desc ||
-      item.plot ||
-      ""
-  );
+  const title = pickProgramTitle(item);
+  const description = pickProgramDescription(item);
 
   const startMs = toMs(
     item.start_timestamp ||
@@ -99,8 +136,8 @@ function normalizeProgram(item) {
   );
 
   return {
-    title: title || "Unknown",
-    description: description || "",
+    title,
+    description,
     start: startMs ? new Date(startMs).toISOString() : null,
     end: endMs ? new Date(endMs).toISOString() : null,
     start_ms: startMs,
@@ -197,14 +234,16 @@ router.get("/live/epg", authJwt, async (req, res) => {
       }
     }
 
-    const items = asArray(listings)
+    const rawWithMs = asArray(listings)
       .map(normalizeProgram)
       .filter(Boolean)
       .sort((a, b) => {
         const aStart = Number(a.start_ms || 0);
         const bStart = Number(b.start_ms || 0);
         return aStart - bStart;
-      })
+      });
+
+    const items = rawWithMs
       .slice(0, limit)
       .map((item) => ({
         title: item.title,
@@ -216,15 +255,6 @@ router.get("/live/epg", authJwt, async (req, res) => {
     const nowMs = Date.now();
     let nowItem = null;
     let nextItem = null;
-
-    const rawWithMs = asArray(listings)
-      .map(normalizeProgram)
-      .filter(Boolean)
-      .sort((a, b) => {
-        const aStart = Number(a.start_ms || 0);
-        const bStart = Number(b.start_ms || 0);
-        return aStart - bStart;
-      });
 
     for (const item of rawWithMs) {
       if (item.start_ms && item.end_ms && item.start_ms <= nowMs && nowMs < item.end_ms) {
