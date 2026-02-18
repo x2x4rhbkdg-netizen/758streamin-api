@@ -8,7 +8,7 @@ const { buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
 
 const router = Router();
 
-function parseLimit(v, fallback = 4, max = 20) {
+function parseLimit(v, fallback = 4, max = 120) {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(1, Math.min(max, n));
@@ -156,7 +156,7 @@ function extractListings(payload) {
 }
 
 /** =========================================
- *  GET /v1/live/epg?stream_id=123&limit=4
+ *  GET /v1/live/epg?stream_id=123&limit=96
  *  - Returns normalized Now/Next from upstream short EPG.
  *  ========================================= */
 router.get("/live/epg", authJwt, async (req, res) => {
@@ -164,7 +164,7 @@ router.get("/live/epg", authJwt, async (req, res) => {
     const streamId = String(req.query.stream_id || "").trim();
     if (!streamId) return res.status(400).json({ error: "stream_id required" });
 
-    const limit = parseLimit(req.query.limit, 4, 20);
+    const limit = parseLimit(req.query.limit, 4, 120);
 
     const upstream = await getDeviceUpstream(req.device.device_id);
     if (!upstream) {

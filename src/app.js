@@ -19,13 +19,29 @@ const app = express();
 app.use(helmet());
 app.use(express.json({ limit: "1mb" }));
 
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true);
-    if (!env.ALLOWED_ORIGINS.length) return cb(null, true);
-    return env.ALLOWED_ORIGINS.includes(origin) ? cb(null, true) : cb(new Error("CORS blocked"));
-  }
-}));
+const corsOptionsDelegate = (req, cb) => {
+  const origin = req.header("Origin");
+  const allowList = env.ALLOWED_ORIGINS || [];
+  const isLocalDev = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin || "");
+
+  const allowed =
+    !origin || // non-browser/server calls
+    origin === "null" || // webOS/simulator file:// origins
+    !allowList.length || // permissive fallback when list is empty
+    allowList.includes(origin) ||
+    isLocalDev;
+
+  return cb(null, {
+    origin: allowed ? origin || true : false,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+    credentials: false,
+    maxAge: 86400,
+  });
+};
+
+app.use(cors(corsOptionsDelegate));
+app.options("*", cors(corsOptionsDelegate));
 
 //app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 /** =========================================
