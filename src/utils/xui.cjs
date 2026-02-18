@@ -7,7 +7,7 @@
 /** =========================================
  *  HELPERS: Coerce a safe base URL
  *  - trims whitespace
- *  - fixes missing scheme (defaults to https://)
+ *  - fixes missing scheme (infers from port where possible)
  *  - trims trailing slashes
  *  - rejects obviously bad values
  *  ========================================= */
@@ -19,13 +19,26 @@ function normalizeBaseUrl(v) {
 
   // Common copy/paste mistakes
   s = s.replace(/,+$/g, ""); // trailing commas
-  s = s.replace(/:(['\"])(\d+)\1/g, ":$2"); // :"443" or :'443' -> :443
+  s = s.replace(/:(['"])(\d+)\1/g, ":$2"); // :"443" or :'443' -> :443
 
   if (!s) return "";
 
-  // If user passes host:port without scheme, default to https
+  // If host:port was saved without scheme, infer best transport:
+  // - 443/8443 -> https
+  // - any other explicit port -> http (common Xtream setup: 80/8080/8880)
+  // - no port -> https
   if (!/^https?:\/\//i.test(s)) {
-    s = `https://${s}`;
+    let inferred = "https";
+    try {
+      const probe = new URL(`http://${s}`);
+      const port = String(probe.port || "");
+      if (port && port !== "443" && port !== "8443") {
+        inferred = "http";
+      }
+    } catch {
+      // keep default inferred scheme
+    }
+    s = `${inferred}://${s}`;
   }
 
   // Validate + coerce to origin only (base host + port, no path)
