@@ -40,7 +40,7 @@ const env = {
   ALLOWED_ORIGINS: list("ALLOWED_ORIGINS"),
 
   XUI_BASE_URL: process.env.XUI_BASE_URL || "",
-  PLAYBACK_BASE_URL: process.env.PLAYBACK_BASE_URL || "",
+  PLAYBACK_BASE_URL: process.env.PLAYBACK_BASE_URL || "https://admin.758streamin.com/api",
   PLAYBACK_TOKEN_TTL: Number(process.env.PLAYBACK_TOKEN_TTL || 3600),
   LIVE_HLS_OUTPUT: process.env.LIVE_HLS_OUTPUT || "m3u8", // live path extension when using /live/... path
   LIVE_SOURCE_MODE: process.env.LIVE_SOURCE_MODE || "auto", // path | auto | stream_source
