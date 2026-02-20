@@ -63,6 +63,18 @@ function validHttpUrl(v) {
   }
 }
 
+function sendDebugError(res, scope, err, extra = {}) {
+  console.error(`[${scope}] error:`, err);
+  return res.status(500).json({
+    error: "internal error",
+    code: err?.code || null,
+    sqlState: err?.sqlState || null,
+    errno: typeof err?.errno === "number" ? err.errno : null,
+    sqlMessage: err?.sqlMessage || err?.message || null,
+    hint: extra.hint || null,
+  });
+}
+
 router.get("/app-updates", adminAuth, async (req, res) => {
   try {
     if (!requireSuperAdmin(req, res)) return;
@@ -123,8 +135,9 @@ router.get("/app-updates", adminAuth, async (req, res) => {
         hint: "Run DB migration to create app_updates table",
       });
     }
-    console.error("[admin/app-updates/list] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendDebugError(res, "admin/app-updates/list", err, {
+      hint: "Check app_updates table columns and admins table name column",
+    });
   }
 });
 
@@ -193,8 +206,7 @@ router.post("/app-updates", adminAuth, async (req, res) => {
         hint: "Run DB migration to create app_updates table",
       });
     }
-    console.error("[admin/app-updates/create] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendDebugError(res, "admin/app-updates/create", err);
   }
 });
 
@@ -302,8 +314,7 @@ router.patch("/app-updates/:id", adminAuth, async (req, res) => {
     if (err?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "version already exists for channel/platform" });
     }
-    console.error("[admin/app-updates/update] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendDebugError(res, "admin/app-updates/update", err);
   }
 });
 
@@ -323,8 +334,7 @@ router.delete("/app-updates/:id", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[admin/app-updates/delete] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendDebugError(res, "admin/app-updates/delete", err);
   }
 });
 
