@@ -87,15 +87,15 @@ router.get("/app-updates", adminAuth, async (req, res) => {
     const where = [];
     const params = [];
     if (channel) {
-      where.push("channel=?");
+      where.push("au.channel=?");
       params.push(channel);
     }
     if (platform) {
-      where.push("platform=?");
+      where.push("au.platform=?");
       params.push(platform);
     }
     if (status) {
-      where.push("status=?");
+      where.push("au.status=?");
       params.push(status);
     }
 
