@@ -14,10 +14,70 @@ const router = Router();
 const PLAYBACK_AUD = "playback";
 const PLAYBACK_ISS = "streamin-api";
 
+const playbackTokenCache = new Map();
+const PLAYBACK_TOKEN_CACHE_MAX = 2000;
+const TOKEN_REUSE_SAFETY_SEC = Math.max(
+  5,
+  Math.min(600, Number(env.PLAYBACK_TOKEN_REUSE_SAFETY_SEC || 30) || 30)
+);
+
 function parseTtl(v, fallback) {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(60, Math.min(24 * 3600, n));
+}
+
+function tokenCacheKey({ deviceId, type, streamId, episodeId }) {
+  return [
+    String(deviceId || ""),
+    String(type || ""),
+    String(streamId || ""),
+    String(episodeId || ""),
+  ].join("|");
+}
+
+function prunePlaybackTokenCache(nowMs = Date.now()) {
+  if (!playbackTokenCache.size) return;
+
+  for (const [key, value] of playbackTokenCache.entries()) {
+    if (!value || Number(value.expiresAtMs || 0) <= nowMs) {
+      playbackTokenCache.delete(key);
+    }
+  }
+
+  if (playbackTokenCache.size <= PLAYBACK_TOKEN_CACHE_MAX) return;
+
+  const entries = Array.from(playbackTokenCache.entries()).sort(
+    (a, b) => Number(a[1]?.touchedAt || 0) - Number(b[1]?.touchedAt || 0)
+  );
+  const removeCount = playbackTokenCache.size - PLAYBACK_TOKEN_CACHE_MAX;
+  for (let i = 0; i < removeCount; i += 1) {
+    const key = entries[i]?.[0];
+    if (key) playbackTokenCache.delete(key);
+  }
+}
+
+function getCachedPlaybackToken(key, minRemainingSec = TOKEN_REUSE_SAFETY_SEC) {
+  const entry = playbackTokenCache.get(key);
+  if (!entry) return null;
+
+  const nowMs = Date.now();
+  if (Number(entry.expiresAtMs || 0) <= nowMs + Math.max(1, Number(minRemainingSec || 0)) * 1000) {
+    playbackTokenCache.delete(key);
+    return null;
+  }
+
+  entry.touchedAt = nowMs;
+  return entry;
+}
+
+function setCachedPlaybackToken(key, token, expiresAtMs) {
+  playbackTokenCache.set(key, {
+    token,
+    expiresAtMs,
+    touchedAt: Date.now(),
+  });
+  prunePlaybackTokenCache();
 }
 
 function normalizeBaseUrl(v) {
@@ -207,6 +267,32 @@ router.post("/playback/token", authJwt, async (req, res) => {
 
     const ttlSec = parseTtl(req.body?.ttl_sec, Number(env.PLAYBACK_TOKEN_TTL || 3600));
 
+    const cacheKey = tokenCacheKey({
+      deviceId: req.device.device_id,
+      type,
+      streamId: streamId || null,
+      episodeId: episodeId || null,
+    });
+
+    const cached = getCachedPlaybackToken(
+      cacheKey,
+      Math.min(TOKEN_REUSE_SAFETY_SEC, Math.max(5, Math.floor(ttlSec / 6)))
+    );
+
+    const baseUrl = env.PLAYBACK_BASE_URL || "";
+
+    if (cached) {
+      const expiresAt = new Date(cached.expiresAtMs).toISOString();
+      return res.json({
+        token: cached.token,
+        expires_at: expiresAt,
+        urls: {
+          hls: buildPlaybackLink(baseUrl, cached.token, "hls"),
+          dash: buildPlaybackLink(baseUrl, cached.token, "dash"),
+        },
+      });
+    }
+
     const token = jwt.sign(
       {
         device_id: req.device.device_id,
@@ -222,8 +308,10 @@ router.post("/playback/token", authJwt, async (req, res) => {
       }
     );
 
-    const expiresAt = new Date(Date.now() + ttlSec * 1000).toISOString();
-    const baseUrl = env.PLAYBACK_BASE_URL || "";
+    const expiresAtMs = Date.now() + ttlSec * 1000;
+    setCachedPlaybackToken(cacheKey, token, expiresAtMs);
+
+    const expiresAt = new Date(expiresAtMs).toISOString();
 
     return res.json({
       token,
