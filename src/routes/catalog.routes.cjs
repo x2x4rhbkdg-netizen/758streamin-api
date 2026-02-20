@@ -5,6 +5,7 @@ const { Router } = require("express");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
 const { buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
@@ -137,13 +138,15 @@ router.get("/catalog/home", authJwt, async (req, res) => {
       ],
     });
   } catch (err) {
-    console.error("[catalog/home] error:", err);
     const status = err?.status || 500;
-    return res.status(status).json({
-      error: err?.message || "internal error",
-      status,
-      body: err?.body,
-    });
+    if (status !== 500) {
+      return res.status(status).json({
+        error: err?.message || "upstream failed",
+        status,
+        body: err?.body,
+      });
+    }
+    return sendInternalError(req, res, "catalog/home", err);
   }
 });
 
@@ -183,13 +186,15 @@ router.get("/catalog/category/:id", authJwt, async (req, res) => {
 
     return res.json({ category_id: categoryId, type: type || null, items: [] });
   } catch (err) {
-    console.error("[catalog/category] error:", err);
     const status = err?.status || 500;
-    return res.status(status).json({
-      error: err?.message || "internal error",
-      status,
-      body: err?.body,
-    });
+    if (status !== 500) {
+      return res.status(status).json({
+        error: err?.message || "upstream failed",
+        status,
+        body: err?.body,
+      });
+    }
+    return sendInternalError(req, res, "catalog/category", err);
   }
 });
 
@@ -299,13 +304,15 @@ router.get("/content/:id", authJwt, async (req, res) => {
 
     return res.status(404).json({ error: "content not found" });
   } catch (err) {
-    console.error("[content] error:", err);
     const status = err?.status || 500;
-    return res.status(status).json({
-      error: err?.message || "internal error",
-      status,
-      body: err?.body,
-    });
+    if (status !== 500) {
+      return res.status(status).json({
+        error: err?.message || "upstream failed",
+        status,
+        body: err?.body,
+      });
+    }
+    return sendInternalError(req, res, "content", err);
   }
 });
 
@@ -321,13 +328,15 @@ router.get("/live", authJwt, async (req, res) => {
     const streams = await fetchXuiJson(upstream, "get_live_streams");
     return res.json({ live: asArray(streams).slice(0, limit) });
   } catch (err) {
-    console.error("[live] error:", err);
     const status = err?.status || 500;
-    return res.status(status).json({
-      error: err?.message || "internal error",
-      status,
-      body: err?.body,
-    });
+    if (status !== 500) {
+      return res.status(status).json({
+        error: err?.message || "upstream failed",
+        status,
+        body: err?.body,
+      });
+    }
+    return sendInternalError(req, res, "live", err);
   }
 });
 

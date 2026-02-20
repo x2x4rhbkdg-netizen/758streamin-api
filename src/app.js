@@ -1,4 +1,4 @@
-    /** =========================================
+/** =========================================
  *  PASSENGER APP: Express export (CommonJS)
  *  ========================================= */
 const express = require("express");
@@ -13,8 +13,10 @@ const playbackRoutes = require("./routes/playback.routes.cjs");
 const analyticsRoutes = require("./routes/analytics.routes.cjs");
 const epgRoutes = require("./routes/epg.routes.cjs");
 const appUpdateRoutes = require("./routes/appUpdate.routes.cjs");
+const notificationsRoutes = require("./routes/notifications.routes.cjs");
 const adminRoutes = require("./routes/admin.routes.cjs");
 const adminAppUpdateRoutes = require("./routes/admin.appUpdates.routes.cjs");
+const adminNotificationsRoutes = require("./routes/admin.notifications.routes.cjs");
 
 const app = express();
 
@@ -64,8 +66,10 @@ app.use("/v1", playbackRoutes);
 app.use("/v1", analyticsRoutes);
 app.use("/v1", epgRoutes);
 app.use("/v1", appUpdateRoutes);
+app.use("/v1", notificationsRoutes);
 app.use("/v1/admin", adminRoutes);
 app.use("/v1/admin", adminAppUpdateRoutes);
+app.use("/v1/admin", adminNotificationsRoutes);
 
 
 module.exports = app;

@@ -156,3 +156,35 @@ CREATE TABLE IF NOT EXISTS app_updates (
     FOREIGN KEY (created_by_admin_id) REFERENCES admins(id)
     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+/** =========================================
+ *  TABLE: App Notifications
+ *  ========================================= */
+CREATE TABLE IF NOT EXISTS app_notifications (
+  id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  title               VARCHAR(190) NOT NULL,
+  message             TEXT NULL,
+  status              ENUM('active','inactive') NOT NULL DEFAULT 'active',
+  target_platform     VARCHAR(32) NOT NULL DEFAULT 'all',
+  starts_at           DATETIME NULL,
+  ends_at             DATETIME NULL,
+  created_by_admin_id BIGINT UNSIGNED NULL,
+  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_app_notifications_status (status),
+  KEY idx_app_notifications_platform (target_platform),
+  KEY idx_app_notifications_window (starts_at, ends_at),
+  CONSTRAINT fk_app_notifications_admin
+    FOREIGN KEY (created_by_admin_id) REFERENCES admins(id)
+    ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+/** =========================================
+ *  APP NOTIFICATIONS TARGETING UPGRADE
+ *  - Supports mass + single-device notifications.
+ *  - If app_notifications already exists, this ALTER enables new targeting columns.
+ *  ========================================= */
+ALTER TABLE app_notifications
+  ADD COLUMN IF NOT EXISTS target_scope ENUM('mass','device') NOT NULL DEFAULT 'mass' AFTER status,
+  ADD COLUMN IF NOT EXISTS target_device_id BIGINT UNSIGNED NULL AFTER target_platform;

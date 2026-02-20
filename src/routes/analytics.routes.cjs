@@ -4,6 +4,7 @@
 const { Router } = require("express");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { pool } = require("../db/pool.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
@@ -55,8 +56,7 @@ router.post("/analytics/event", authJwt, async (req, res) => {
 
     return res.json({ ok: true, id: result.insertId });
   } catch (err) {
-    console.error("[analytics/event] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "analytics/event", err);
   }
 });
 

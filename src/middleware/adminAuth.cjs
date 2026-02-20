@@ -5,6 +5,7 @@
  *  ========================================= */
 const { env } = require("../config/env.cjs");
 const { pool } = require("../db/pool.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 async function adminAuth(req, res, next) {
   try {
@@ -41,8 +42,7 @@ async function adminAuth(req, res, next) {
     req.admin = admin;
     return next();
   } catch (err) {
-    console.error("[adminAuth] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "adminAuth", err);
   }
 }
 

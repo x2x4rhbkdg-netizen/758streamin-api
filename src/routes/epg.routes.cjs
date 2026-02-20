@@ -5,6 +5,7 @@ const { Router } = require("express");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
 const { buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
@@ -297,13 +298,15 @@ router.get("/live/epg", authJwt, async (req, res) => {
       items,
     });
   } catch (err) {
-    console.error("[live/epg] error:", err);
     const status = err?.status || 500;
-    return res.status(status).json({
-      error: err?.message || "internal error",
-      status,
-      body: err?.body,
-    });
+    if (status !== 500) {
+      return res.status(status).json({
+        error: err?.message || "upstream failed",
+        status,
+        body: err?.body,
+      });
+    }
+    return sendInternalError(req, res, "live/epg", err);
   }
 });
 

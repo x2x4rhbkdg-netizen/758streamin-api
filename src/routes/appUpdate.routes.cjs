@@ -1,5 +1,6 @@
 const { Router } = require("express");
 const { pool } = require("../db/pool.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
@@ -85,8 +86,7 @@ async function handleCheck(req, res) {
     if (err?.code === "ER_NO_SUCH_TABLE") {
       return res.json({ available: false });
     }
-    console.error("[app/update/check] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "app/update/check", err);
   }
 }
 

@@ -10,6 +10,7 @@ const crypto = require("crypto");
 const { adminAuth } = require("../middleware/adminAuth.cjs");
 const { decryptString, encryptString } = require("../utils/cryptoVault.cjs");
 const { buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 const { pool } = require("../db/pool.cjs");
 const { sendResetEmail } = require("../utils/email.cjs");
 const { env } = require("../config/env.cjs");
@@ -174,8 +175,7 @@ router.post("/auth/login", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("[admin/auth/login] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/auth/login", err);
   }
 });
 
@@ -229,8 +229,7 @@ router.post("/auth/reset/request", async (req, res) => {
     if (err?.code === "EMAIL_NOT_CONFIGURED") {
       return res.status(500).json({ error: "email not configured" });
     }
-    console.error("[admin/auth/reset/request] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/auth/reset/request", err);
   }
 });
 
@@ -285,8 +284,7 @@ router.post("/auth/reset/confirm", async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[admin/auth/reset/confirm] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/auth/reset/confirm", err);
   }
 });
 
@@ -316,8 +314,7 @@ router.get("/admins", adminAuth, async (req, res) => {
 
     return res.json({ admins: rows });
   } catch (err) {
-    console.error("[admin/admins/list] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/admins/list", err);
   }
 });
 
@@ -368,8 +365,7 @@ router.post("/admins", adminAuth, async (req, res) => {
     if (err?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "admin already exists" });
     }
-    console.error("[admin/admins/create] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/admins/create", err);
   }
 });
 
@@ -454,8 +450,7 @@ router.patch("/admins/:id", adminAuth, async (req, res) => {
     if (err?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "admin already exists" });
     }
-    console.error("[admin/admins/update] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/admins/update", err);
   }
 });
 
@@ -517,8 +512,7 @@ router.get("/devices", adminAuth, async (req, res) => {
 
     return res.json({ devices: rows });
   } catch (err) {
-    console.error("[admin/devices] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/devices", err);
   }
 });
 
@@ -629,8 +623,7 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
       items
     });
   } catch (err) {
-    console.error("[admin/analytics/streams] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/analytics/streams", err);
   }
 });
 
@@ -784,8 +777,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
 
     return res.json({ ok: true, device: rows[0] || null });
   } catch (err) {
-    console.error("[admin/devices/update] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/devices/update", err);
   }
 });
 
@@ -835,8 +827,7 @@ router.post("/devices/:code/activate", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[admin/activate] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/activate", err);
   }
 });
 
@@ -867,8 +858,7 @@ router.post("/devices/:code/suspend", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[admin/suspend] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/suspend", err);
   }
 });
 
@@ -925,8 +915,7 @@ router.get("/devices/:code/upstream", adminAuth, async (req, res) => {
       password
     });
   } catch (err) {
-    console.error("[admin/upstream/get] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/upstream/get", err);
   }
 });
 
@@ -976,8 +965,7 @@ router.post("/devices/:code/upstream", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[admin/upstream] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/upstream", err);
   }
 });
 
@@ -1009,8 +997,7 @@ router.get("/devices/:code/parental", adminAuth, async (req, res) => {
 
     return res.json({ enabled });
   } catch (err) {
-    console.error("[admin/parental/get] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/parental/get", err);
   }
 });
 
@@ -1052,8 +1039,7 @@ router.put("/devices/:code/parental", adminAuth, async (req, res) => {
 
     return res.json({ ok: true, enabled: true });
   } catch (err) {
-    console.error("[admin/parental/set] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/parental/set", err);
   }
 });
 
@@ -1084,8 +1070,7 @@ router.delete("/devices/:code/parental", adminAuth, async (req, res) => {
 
     return res.json({ ok: true, enabled: false });
   } catch (err) {
-    console.error("[admin/parental/reset] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/parental/reset", err);
   }
 });
 
@@ -1112,8 +1097,7 @@ router.delete("/devices/:code", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[admin/delete] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "admin/delete", err);
   }
 });
 

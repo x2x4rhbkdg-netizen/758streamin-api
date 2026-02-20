@@ -8,6 +8,7 @@ const { env } = require("../config/env.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
 const { buildUrl, buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
 const { pool } = require("../db/pool.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
@@ -322,8 +323,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("[playback/token] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "playback/token", err);
   }
 });
 

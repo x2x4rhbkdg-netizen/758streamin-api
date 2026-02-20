@@ -11,6 +11,7 @@ const { makeDeviceCode } = require("../utils/deviceCode.cjs");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { decryptString, encryptString } = require("../utils/cryptoVault.cjs");
 const { env } = require("../config/env.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
@@ -114,8 +115,7 @@ router.post("/device/register", async (req, res) => {
 
     return res.json({ device_code: code, status: "pending" });
   } catch (err) {
-    console.error("[device/register] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "device/register", err);
   }
 });
 
@@ -204,8 +204,7 @@ router.post("/device/auth", async (req, res) => {
       expires_at: dev.expires_at || null,
     });
   } catch (err) {
-    console.error("[device/auth] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "device/auth", err);
   }
 });
 
@@ -237,8 +236,7 @@ router.post("/device/adult/verify", authJwt, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[device/adult/verify] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "device/adult/verify", err);
   }
 });
 
@@ -270,8 +268,7 @@ router.post("/device/adult/set", authJwt, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[device/adult/set] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "device/adult/set", err);
   }
 });
 
@@ -288,8 +285,7 @@ router.delete("/device/adult/reset", authJwt, async (req, res) => {
     );
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[device/adult/reset] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "device/adult/reset", err);
   }
 });
 
@@ -307,8 +303,7 @@ router.get("/device/adult/status", authJwt, async (req, res) => {
     const enabled = Boolean(rows[0]?.adult_pin_enc);
     return res.json({ enabled });
   } catch (err) {
-    console.error("[device/adult/status] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "device/adult/status", err);
   }
 });
 
@@ -348,8 +343,7 @@ router.get("/device/profile", authJwt, async (req, res) => {
       max_streams: Number(device.max_streams || 1),
     });
   } catch (err) {
-    console.error("[device/profile] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "device/profile", err);
   }
 });
 

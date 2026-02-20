@@ -32,6 +32,9 @@ function list(name) {
 const env = {
   NODE_ENV: process.env.NODE_ENV || "production",
   PORT: Number(process.env.PORT || 3000),
+  API_DEBUG_ERRORS: String(process.env.API_DEBUG_ERRORS || "").toLowerCase() === "true",
+  API_DEBUG_ERRORS_ALLOW_HEADER:
+    String(process.env.API_DEBUG_ERRORS_ALLOW_HEADER || "true").toLowerCase() !== "false",
 
   JWT_SECRET: must("JWT_SECRET"),
   ADMIN_API_KEY: must("ADMIN_API_KEY"),

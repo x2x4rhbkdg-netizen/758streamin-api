@@ -5,6 +5,7 @@ const { Router } = require("express");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
 const { buildXuiM3uUrl } = require("../utils/xui.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
@@ -47,8 +48,7 @@ router.get("/playlist.m3u8", authJwt, async (req, res) => {
     if (err?.message === "missing upstream base URL") {
       return res.status(500).json({ error: "missing upstream base URL" });
     }
-    console.error("[playlist] error:", err);
-    return res.status(500).json({ error: "internal error" });
+    return sendInternalError(req, res, "playlist", err);
   }
 });
 

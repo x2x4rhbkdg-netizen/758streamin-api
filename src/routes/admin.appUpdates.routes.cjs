@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const { adminAuth } = require("../middleware/adminAuth.cjs");
 const { pool } = require("../db/pool.cjs");
+const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
@@ -63,18 +64,6 @@ function validHttpUrl(v) {
   }
 }
 
-function sendDebugError(res, scope, err, extra = {}) {
-  console.error(`[${scope}] error:`, err);
-  return res.status(500).json({
-    error: "internal error",
-    code: err?.code || null,
-    sqlState: err?.sqlState || null,
-    errno: typeof err?.errno === "number" ? err.errno : null,
-    sqlMessage: err?.sqlMessage || err?.message || null,
-    hint: extra.hint || null,
-  });
-}
-
 router.get("/app-updates", adminAuth, async (req, res) => {
   try {
     if (!requireSuperAdmin(req, res)) return;
@@ -135,7 +124,7 @@ router.get("/app-updates", adminAuth, async (req, res) => {
         hint: "Run DB migration to create app_updates table",
       });
     }
-    return sendDebugError(res, "admin/app-updates/list", err, {
+    return sendInternalError(req, res, "admin/app-updates/list", err, {
       hint: "Check app_updates table columns and admins table name column",
     });
   }
@@ -206,7 +195,7 @@ router.post("/app-updates", adminAuth, async (req, res) => {
         hint: "Run DB migration to create app_updates table",
       });
     }
-    return sendDebugError(res, "admin/app-updates/create", err);
+    return sendInternalError(req, res, "admin/app-updates/create", err);
   }
 });
 
@@ -314,7 +303,7 @@ router.patch("/app-updates/:id", adminAuth, async (req, res) => {
     if (err?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "version already exists for channel/platform" });
     }
-    return sendDebugError(res, "admin/app-updates/update", err);
+    return sendInternalError(req, res, "admin/app-updates/update", err);
   }
 });
 
@@ -334,7 +323,7 @@ router.delete("/app-updates/:id", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    return sendDebugError(res, "admin/app-updates/delete", err);
+    return sendInternalError(req, res, "admin/app-updates/delete", err);
   }
 });
 
