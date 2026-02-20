@@ -12,7 +12,9 @@ const catalogRoutes = require("./routes/catalog.routes.cjs");
 const playbackRoutes = require("./routes/playback.routes.cjs");
 const analyticsRoutes = require("./routes/analytics.routes.cjs");
 const epgRoutes = require("./routes/epg.routes.cjs");
+const appUpdateRoutes = require("./routes/appUpdate.routes.cjs");
 const adminRoutes = require("./routes/admin.routes.cjs");
+const adminAppUpdateRoutes = require("./routes/admin.appUpdates.routes.cjs");
 
 const app = express();
 
@@ -61,7 +63,9 @@ app.use("/v1", catalogRoutes);
 app.use("/v1", playbackRoutes);
 app.use("/v1", analyticsRoutes);
 app.use("/v1", epgRoutes);
+app.use("/v1", appUpdateRoutes);
 app.use("/v1/admin", adminRoutes);
+app.use("/v1/admin", adminAppUpdateRoutes);
 
 
 module.exports = app;

@@ -129,3 +129,30 @@ LEFT JOIN admins a
   ON a.id = d.reseller_admin_id
 LEFT JOIN device_access da
   ON da.device_id = d.id;
+
+/** =========================================
+ *  TABLE: App Updates (direct/sideload + store channels)
+ *  ========================================= */
+CREATE TABLE IF NOT EXISTS app_updates (
+  id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  channel            ENUM('direct','play','amazon') NOT NULL DEFAULT 'direct',
+  platform           VARCHAR(32) NOT NULL DEFAULT 'android_tv',
+  version_code       INT UNSIGNED NOT NULL,
+  version_name       VARCHAR(64) NOT NULL,
+  apk_url            TEXT NOT NULL,
+  sha256             CHAR(64) NULL,
+  force_update       TINYINT(1) NOT NULL DEFAULT 0,
+  status             ENUM('active','inactive') NOT NULL DEFAULT 'active',
+  notes              TEXT NULL,
+  created_by_admin_id BIGINT UNSIGNED NULL,
+  created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_app_updates_scope_version (channel, platform, version_code),
+  KEY idx_app_updates_status (status),
+  KEY idx_app_updates_channel_platform (channel, platform),
+  KEY idx_app_updates_updated (updated_at),
+  CONSTRAINT fk_app_updates_admin
+    FOREIGN KEY (created_by_admin_id) REFERENCES admins(id)
+    ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
