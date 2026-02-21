@@ -55,6 +55,11 @@ function validSha256(v) {
   return /^[a-f0-9]{64}$/i.test(String(v).trim());
 }
 
+function isSchemaMismatch(err) {
+  const code = String(err?.code || "").trim();
+  return ["ER_NO_SUCH_TABLE", "ER_BAD_FIELD_ERROR", "ER_BAD_TABLE_ERROR"].includes(code);
+}
+
 function validHttpUrl(v) {
   try {
     const u = new URL(String(v || ""));
@@ -118,10 +123,10 @@ router.get("/app-updates", adminAuth, async (req, res) => {
 
     return res.json({ updates: rows });
   } catch (err) {
-    if (err?.code === "ER_NO_SUCH_TABLE") {
+    if (isSchemaMismatch(err)) {
       return res.status(500).json({
         error: "app_updates table missing",
-        hint: "Run DB migration to create app_updates table",
+        hint: "Run DB migration for app_updates table/columns",
       });
     }
     return sendInternalError(req, res, "admin/app-updates/list", err, {
@@ -189,10 +194,10 @@ router.post("/app-updates", adminAuth, async (req, res) => {
     if (err?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "version already exists for channel/platform" });
     }
-    if (err?.code === "ER_NO_SUCH_TABLE") {
+    if (isSchemaMismatch(err)) {
       return res.status(500).json({
         error: "app_updates table missing",
-        hint: "Run DB migration to create app_updates table",
+        hint: "Run DB migration for app_updates table/columns",
       });
     }
     return sendInternalError(req, res, "admin/app-updates/create", err);
@@ -303,6 +308,12 @@ router.patch("/app-updates/:id", adminAuth, async (req, res) => {
     if (err?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "version already exists for channel/platform" });
     }
+    if (isSchemaMismatch(err)) {
+      return res.status(500).json({
+        error: "app_updates schema mismatch",
+        hint: "Run DB migration for app_updates table/columns",
+      });
+    }
     return sendInternalError(req, res, "admin/app-updates/update", err);
   }
 });
@@ -323,6 +334,12 @@ router.delete("/app-updates/:id", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
+    if (isSchemaMismatch(err)) {
+      return res.status(500).json({
+        error: "app_updates schema mismatch",
+        hint: "Run DB migration for app_updates table/columns",
+      });
+    }
     return sendInternalError(req, res, "admin/app-updates/delete", err);
   }
 });

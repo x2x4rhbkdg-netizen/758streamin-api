@@ -43,6 +43,11 @@ function normScope(v) {
   return s;
 }
 
+function isSchemaMismatch(err) {
+  const code = String(err?.code || "").trim();
+  return ["ER_NO_SUCH_TABLE", "ER_BAD_FIELD_ERROR", "ER_BAD_TABLE_ERROR"].includes(code);
+}
+
 function toSqlDateTime(value) {
   if (value === null || typeof value === "undefined" || value === "") return null;
   const d = new Date(value);
@@ -139,10 +144,10 @@ router.get("/notifications", adminAuth, async (req, res) => {
 
     return res.json({ notifications: rows });
   } catch (err) {
-    if (err?.code === "ER_NO_SUCH_TABLE") {
+    if (isSchemaMismatch(err)) {
       return res.status(500).json({
         error: "app_notifications table missing",
-        hint: "Run DB migration to create app_notifications table",
+        hint: "Run DB migration for app_notifications table/columns (target_scope, target_device_id)",
       });
     }
     return sendInternalError(req, res, "admin/notifications/list", err);
@@ -198,10 +203,10 @@ router.post("/notifications", adminAuth, async (req, res) => {
 
     return res.status(201).json({ ok: true });
   } catch (err) {
-    if (err?.code === "ER_NO_SUCH_TABLE") {
+    if (isSchemaMismatch(err)) {
       return res.status(500).json({
         error: "app_notifications table missing",
-        hint: "Run DB migration to create app_notifications table",
+        hint: "Run DB migration for app_notifications table/columns (target_scope, target_device_id)",
       });
     }
     return sendInternalError(req, res, "admin/notifications/create", err);
@@ -299,10 +304,10 @@ router.patch("/notifications/:id", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    if (err?.code === "ER_NO_SUCH_TABLE") {
+    if (isSchemaMismatch(err)) {
       return res.status(500).json({
         error: "app_notifications table missing",
-        hint: "Run DB migration to create app_notifications table",
+        hint: "Run DB migration for app_notifications table/columns (target_scope, target_device_id)",
       });
     }
     return sendInternalError(req, res, "admin/notifications/update", err);
@@ -325,10 +330,10 @@ router.delete("/notifications/:id", adminAuth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    if (err?.code === "ER_NO_SUCH_TABLE") {
+    if (isSchemaMismatch(err)) {
       return res.status(500).json({
         error: "app_notifications table missing",
-        hint: "Run DB migration to create app_notifications table",
+        hint: "Run DB migration for app_notifications table/columns (target_scope, target_device_id)",
       });
     }
     return sendInternalError(req, res, "admin/notifications/delete", err);

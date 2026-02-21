@@ -109,6 +109,10 @@ function toMysqlDateOnly(v) {
   return toMysqlDatetime(raw);
 }
 
+function isSchemaMismatch(err) {
+  return ["ER_BAD_FIELD_ERROR", "ER_DUP_FIELDNAME", "ER_NO_SUCH_TABLE"].includes(err?.code);
+}
+
 async function fetchWhmcsServiceById(serviceId) {
   const apiUrl = String(env.WHMCS_API_URL || "").trim();
   const identifier = String(env.WHMCS_API_IDENTIFIER || "").trim();
@@ -1038,10 +1042,11 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       });
     }
 
-    if (err?.code === "ER_NO_SUCH_TABLE") {
+    if (isSchemaMismatch(err)) {
       return res.status(500).json({
-        error: "Required table missing",
-        hint: "Run DB migration to create required tables",
+        error: "Database schema mismatch",
+        hint:
+          "Run DB migration for devices WHMCS fields (whmcs_client_id, whmcs_service_id, whmcs_billing_status, whmcs_next_due_date, whmcs_last_sync_at) and app_notifications table",
       });
     }
 
