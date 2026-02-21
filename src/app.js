@@ -17,6 +17,7 @@ const notificationsRoutes = require("./routes/notifications.routes.cjs");
 const adminRoutes = require("./routes/admin.routes.cjs");
 const adminAppUpdateRoutes = require("./routes/admin.appUpdates.routes.cjs");
 const adminNotificationsRoutes = require("./routes/admin.notifications.routes.cjs");
+const adminWhmcsReminderRoutes = require("./routes/admin.whmcsReminders.routes.cjs");
 
 const app = express();
 
@@ -70,6 +71,7 @@ app.use("/v1", notificationsRoutes);
 app.use("/v1/admin", adminRoutes);
 app.use("/v1/admin", adminAppUpdateRoutes);
 app.use("/v1/admin", adminNotificationsRoutes);
+app.use("/v1/admin", adminWhmcsReminderRoutes);
 
 
 module.exports = app;

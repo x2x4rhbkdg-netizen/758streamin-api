@@ -14,6 +14,8 @@ const { sendInternalError } = require("../utils/errorResponse.cjs");
 const { pool } = require("../db/pool.cjs");
 const { sendResetEmail } = require("../utils/email.cjs");
 const { env } = require("../config/env.cjs");
+const whmcsReminderRoutes = require("./admin.whmcsReminders.routes.cjs");
+const createWhmcsReminderIfNeeded = whmcsReminderRoutes.createReminderIfNeeded;
 
 const router = Router();
 
@@ -92,6 +94,92 @@ async function fetchXuiJson(upstream, action, params = {}) {
     err.body = txt.slice(0, 200);
     throw err;
   }
+}
+
+function normalizeWhmcsStatus(v) {
+  const raw = String(v || "").trim();
+  if (!raw) return null;
+  return raw.length > 64 ? raw.slice(0, 64) : raw;
+}
+
+function toMysqlDateOnly(v) {
+  const raw = String(v || "").trim();
+  if (!raw || raw === "0000-00-00") return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw} 00:00:00`;
+  return toMysqlDatetime(raw);
+}
+
+async function fetchWhmcsServiceById(serviceId) {
+  const apiUrl = String(env.WHMCS_API_URL || "").trim();
+  const identifier = String(env.WHMCS_API_IDENTIFIER || "").trim();
+  const secret = String(env.WHMCS_API_SECRET || "").trim();
+
+  if (!apiUrl || !identifier || !secret) {
+    const err = new Error("WHMCS API not configured");
+    err.status = 500;
+    throw err;
+  }
+
+  const body = new URLSearchParams({
+    action: "GetClientsProducts",
+    serviceid: String(serviceId),
+    identifier,
+    secret,
+    responsetype: "json",
+  });
+
+  const resp = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "streamin-api/1.0",
+    },
+    body: body.toString(),
+  });
+
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    const err = new Error("WHMCS returned invalid JSON");
+    err.status = 502;
+    err.body = text.slice(0, 300);
+    throw err;
+  }
+
+  if (!resp.ok) {
+    const err = new Error("WHMCS request failed");
+    err.status = resp.status;
+    err.body = text.slice(0, 300);
+    throw err;
+  }
+
+  if (String(data?.result || "").toLowerCase() !== "success") {
+    const err = new Error(data?.message || "WHMCS API error");
+    err.status = 502;
+    throw err;
+  }
+
+  let products = data?.products?.product || [];
+  if (!Array.isArray(products)) {
+    products = products && typeof products === "object" ? [products] : [];
+  }
+
+  const matched =
+    products.find((p) => Number(p?.id || p?.serviceid || 0) === Number(serviceId)) ||
+    products[0] ||
+    null;
+
+  if (!matched) return null;
+
+  return {
+    service_id: Number(matched?.id || matched?.serviceid || serviceId) || Number(serviceId),
+    client_id: Number(matched?.clientid || 0) || null,
+    status: normalizeWhmcsStatus(matched?.status),
+    next_due_date: toMysqlDateOnly(matched?.nextduedate),
+    raw: matched,
+  };
 }
 
 async function getAnalyticsUpstream(admin) {
@@ -495,6 +583,11 @@ router.get("/devices", adminAuth, async (req, res) => {
         r.name AS reseller_name,
         d.plan_name,
         d.trial_expires_at,
+        d.whmcs_client_id,
+        d.whmcs_service_id,
+        d.whmcs_billing_status,
+        d.whmcs_next_due_date,
+        d.whmcs_last_sync_at,
         d.last_seen_at,
         d.created_at,
         d.updated_at,
@@ -645,7 +738,12 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       expires_at,
       reseller_admin_id,
       plan_name,
-      trial_expires_at
+      trial_expires_at,
+      whmcs_client_id,
+      whmcs_service_id,
+      whmcs_billing_status,
+      whmcs_next_due_date,
+      whmcs_last_sync_at
     } = req.body || {};
 
     const nextStatus = status ? String(status).trim().toLowerCase() : null;
@@ -662,6 +760,14 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       typeof reseller_admin_id !== "undefined" && req.admin?.role === "super_admin";
     const hasPlan = typeof plan_name !== "undefined";
     const hasTrial = typeof trial_expires_at !== "undefined";
+    const canEditWhmcs = req.admin?.role === "super_admin";
+    const hasWhmcs =
+      canEditWhmcs &&
+      (typeof whmcs_client_id !== "undefined" ||
+        typeof whmcs_service_id !== "undefined" ||
+        typeof whmcs_billing_status !== "undefined" ||
+        typeof whmcs_next_due_date !== "undefined" ||
+        typeof whmcs_last_sync_at !== "undefined");
 
     if (
       !hasCustomer &&
@@ -670,7 +776,8 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       !hasAccess &&
       !hasReseller &&
       !hasPlan &&
-      !hasTrial
+      !hasTrial &&
+      !hasWhmcs
     ) {
       return res.status(400).json({ error: "no fields to update" });
     }
@@ -686,7 +793,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
 
-    if (hasCustomer || hasPhone || hasStatus || hasReseller || hasPlan || hasTrial) {
+    if (hasCustomer || hasPhone || hasStatus || hasReseller || hasPlan || hasTrial || hasWhmcs) {
       const updates = [];
       const params = [];
 
@@ -721,6 +828,47 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
         }
         updates.push("reseller_admin_id=?");
         params.push(resellerId);
+      }
+
+      if (hasWhmcs) {
+        if (typeof whmcs_client_id !== "undefined") {
+          const clientId =
+            whmcs_client_id === null || whmcs_client_id === ""
+              ? null
+              : Number(whmcs_client_id);
+          if (clientId !== null && (!Number.isFinite(clientId) || clientId <= 0)) {
+            return res.status(400).json({ error: "invalid whmcs_client_id" });
+          }
+          updates.push("whmcs_client_id=?");
+          params.push(clientId);
+        }
+
+        if (typeof whmcs_service_id !== "undefined") {
+          const serviceId =
+            whmcs_service_id === null || whmcs_service_id === ""
+              ? null
+              : Number(whmcs_service_id);
+          if (serviceId !== null && (!Number.isFinite(serviceId) || serviceId <= 0)) {
+            return res.status(400).json({ error: "invalid whmcs_service_id" });
+          }
+          updates.push("whmcs_service_id=?");
+          params.push(serviceId);
+        }
+
+        if (typeof whmcs_billing_status !== "undefined") {
+          updates.push("whmcs_billing_status=?");
+          params.push(normalizeWhmcsStatus(whmcs_billing_status));
+        }
+
+        if (typeof whmcs_next_due_date !== "undefined") {
+          updates.push("whmcs_next_due_date=?");
+          params.push(toMysqlDateOnly(whmcs_next_due_date));
+        }
+
+        if (typeof whmcs_last_sync_at !== "undefined") {
+          updates.push("whmcs_last_sync_at=?");
+          params.push(toMysqlDatetime(whmcs_last_sync_at));
+        }
       }
 
       params.push(dev.id);
@@ -761,6 +909,11 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
         r.name AS reseller_name,
         d.plan_name,
         d.trial_expires_at,
+        d.whmcs_client_id,
+        d.whmcs_service_id,
+        d.whmcs_billing_status,
+        d.whmcs_next_due_date,
+        d.whmcs_last_sync_at,
         d.last_seen_at,
         d.created_at,
         d.updated_at,
@@ -778,6 +931,99 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
     return res.json({ ok: true, device: rows[0] || null });
   } catch (err) {
     return sendInternalError(req, res, "admin/devices/update", err);
+  }
+});
+
+
+/** =========================================
+ *  POST /v1/admin/devices/:code/whmcs-sync
+ *  body: { whmcs_service_id? }
+ *  - super admin only
+ *  - fetches WHMCS service details and updates due date/status on device
+ *  ========================================= */
+router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
+  try {
+    if (!requireSuperAdmin(req, res)) return;
+
+    const code = String(req.params.code || "").trim();
+    if (!code) return res.status(400).json({ error: "device code required" });
+
+    const [devRows] = await pool.execute(
+      `SELECT id, device_code, whmcs_client_id, whmcs_service_id FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+
+    const serviceIdInput = req.body?.whmcs_service_id;
+    const resolvedServiceId = serviceIdInput ? Number(serviceIdInput) : Number(dev.whmcs_service_id || 0);
+    if (!Number.isFinite(resolvedServiceId) || resolvedServiceId <= 0) {
+      return res.status(400).json({ error: "whmcs_service_id required" });
+    }
+
+    const service = await fetchWhmcsServiceById(resolvedServiceId);
+    if (!service) return res.status(404).json({ error: "WHMCS service not found" });
+
+    await pool.execute(
+      `
+      UPDATE devices
+      SET
+        whmcs_client_id=?,
+        whmcs_service_id=?,
+        whmcs_billing_status=?,
+        whmcs_next_due_date=?,
+        whmcs_last_sync_at=NOW(),
+        updated_at=NOW()
+      WHERE id=?
+      `,
+      [
+        service.client_id,
+        service.service_id,
+        service.status,
+        service.next_due_date,
+        dev.id,
+      ]
+    );
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        d.id,
+        d.device_code,
+        d.customer_name,
+        d.plan_name,
+        d.status,
+        d.whmcs_client_id,
+        d.whmcs_service_id,
+        d.whmcs_billing_status,
+        d.whmcs_next_due_date,
+        d.whmcs_last_sync_at
+      FROM devices d
+      WHERE d.id=?
+      LIMIT 1
+      `,
+      [dev.id]
+    );
+
+    let reminder = { created: false, reason: "helper_unavailable" };
+    if (rows[0] && typeof createWhmcsReminderIfNeeded === "function") {
+      reminder = await createWhmcsReminderIfNeeded(rows[0], req.admin?.id || null);
+    }
+
+    return res.json({
+      ok: true,
+      device: rows[0] || null,
+      whmcs: {
+        service_id: service.service_id,
+        client_id: service.client_id,
+        status: service.status,
+        next_due_date: service.next_due_date,
+      },
+      reminder,
+    });
+  } catch (err) {
+    return sendInternalError(req, res, "admin/devices/whmcs-sync", err);
   }
 });
 

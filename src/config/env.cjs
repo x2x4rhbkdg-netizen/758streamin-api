@@ -56,6 +56,10 @@ const env = {
   SMTP_PASS: process.env.SMTP_PASS || "",
   SMTP_FROM: process.env.SMTP_FROM || "",
 
+  WHMCS_API_URL: process.env.WHMCS_API_URL || "",
+  WHMCS_API_IDENTIFIER: process.env.WHMCS_API_IDENTIFIER || "",
+  WHMCS_API_SECRET: process.env.WHMCS_API_SECRET || "",
+
   DB_HOST: must("DB_HOST"),
   DB_USER: must("DB_USER"),
   DB_PASSWORD: must("DB_PASSWORD"),

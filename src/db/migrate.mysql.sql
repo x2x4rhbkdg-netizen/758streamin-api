@@ -188,3 +188,16 @@ CREATE TABLE IF NOT EXISTS app_notifications (
 ALTER TABLE app_notifications
   ADD COLUMN IF NOT EXISTS target_scope ENUM('mass','device') NOT NULL DEFAULT 'mass' AFTER status,
   ADD COLUMN IF NOT EXISTS target_device_id BIGINT UNSIGNED NULL AFTER target_platform;
+
+/** =========================================
+ *  DEVICES: WHMCS BILLING LINK UPGRADE
+ *  - Maps each device to WHMCS client/service.
+ *  - Caches billing sync status for dashboard + notifications.
+ *  ========================================= */
+ALTER TABLE devices
+  ADD COLUMN IF NOT EXISTS whmcs_client_id BIGINT UNSIGNED NULL AFTER reseller_admin_id,
+  ADD COLUMN IF NOT EXISTS whmcs_service_id BIGINT UNSIGNED NULL AFTER whmcs_client_id,
+  ADD COLUMN IF NOT EXISTS whmcs_billing_status VARCHAR(64) NULL AFTER whmcs_service_id,
+  ADD COLUMN IF NOT EXISTS whmcs_next_due_date DATETIME NULL AFTER whmcs_billing_status,
+  ADD COLUMN IF NOT EXISTS whmcs_last_sync_at DATETIME NULL AFTER whmcs_next_due_date;
+
