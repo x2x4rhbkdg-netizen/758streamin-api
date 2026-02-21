@@ -78,7 +78,7 @@ async function resolveDeviceId({ targetScope, targetDeviceId, targetDeviceCode }
   if (!code) return undefined;
 
   const [rows] = await pool.execute(
-    `SELECT id FROM devices WHERE device_code=? LIMIT 1`,
+    `SELECT id FROM devices WHERE UPPER(device_code)=? LIMIT 1`,
     [code]
   );
 

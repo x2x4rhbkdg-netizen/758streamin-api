@@ -576,6 +576,7 @@ router.get("/devices", adminAuth, async (req, res) => {
     const [rows] = await pool.execute(
       `
       SELECT
+        d.id,
         d.device_code,
         d.customer_name,
         d.customer_phone,
@@ -1050,10 +1051,14 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       });
     }
 
-    if (err?.status === 502) {
+    if (typeof err?.status === "number" && err.status >= 400 && err.status < 600) {
+      const upstreamStatus = Number(err.status);
+      const upstreamBody = String(err?.body || "").trim();
       return res.status(502).json({
-        error: err?.message || "WHMCS upstream error",
-        hint: "Check WHMCS_API_URL and WHMCS API credentials",
+        error: `WHMCS request failed (HTTP ${upstreamStatus})`,
+        hint:
+          "Check WHMCS_API_URL (usually /includes/api.php), WHMCS API credentials, and firewall/IP allowlist",
+        ...(upstreamBody ? { upstream: upstreamBody.slice(0, 240) } : {}),
       });
     }
 
