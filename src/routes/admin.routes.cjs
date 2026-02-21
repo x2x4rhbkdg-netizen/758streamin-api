@@ -1008,7 +1008,15 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
 
     let reminder = { created: false, reason: "helper_unavailable" };
     if (rows[0] && typeof createWhmcsReminderIfNeeded === "function") {
-      reminder = await createWhmcsReminderIfNeeded(rows[0], req.admin?.id || null);
+      try {
+        reminder = await createWhmcsReminderIfNeeded(rows[0], req.admin?.id || null);
+      } catch (remErr) {
+        console.warn("[admin/devices/whmcs-sync] reminder creation skipped:", remErr?.message || remErr);
+        reminder = {
+          created: false,
+          reason: remErr?.code === "ER_NO_SUCH_TABLE" ? "app_notifications_missing" : "reminder_failed",
+        };
+      }
     }
 
     return res.json({
@@ -1023,6 +1031,27 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       reminder,
     });
   } catch (err) {
+    if (err?.message === "WHMCS API not configured") {
+      return res.status(500).json({
+        error: "WHMCS API not configured",
+        hint: "Set WHMCS_API_URL, WHMCS_API_IDENTIFIER, WHMCS_API_SECRET",
+      });
+    }
+
+    if (err?.code === "ER_NO_SUCH_TABLE") {
+      return res.status(500).json({
+        error: "Required table missing",
+        hint: "Run DB migration to create required tables",
+      });
+    }
+
+    if (err?.status === 502) {
+      return res.status(502).json({
+        error: err?.message || "WHMCS upstream error",
+        hint: "Check WHMCS_API_URL and WHMCS API credentials",
+      });
+    }
+
     return sendInternalError(req, res, "admin/devices/whmcs-sync", err);
   }
 });
