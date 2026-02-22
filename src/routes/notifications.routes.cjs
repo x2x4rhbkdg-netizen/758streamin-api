@@ -62,6 +62,8 @@ router.get("/notifications", authJwt, async (req, res) => {
         n.id,
         n.title,
         n.message,
+        n.is_ticker,
+        n.ticker_text,
         n.target_scope,
         n.target_platform,
         n.starts_at,

@@ -43,6 +43,19 @@ function normScope(v) {
   return s;
 }
 
+function normBool(v) {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") {
+    if (v === 1) return true;
+    if (v === 0) return false;
+  }
+  const s = String(v ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (["1", "true", "yes", "on"].includes(s)) return true;
+  if (["0", "false", "no", "off"].includes(s)) return false;
+  return null;
+}
+
 function isSchemaMismatch(err) {
   const code = String(err?.code || "").trim();
   return ["ER_NO_SUCH_TABLE", "ER_BAD_FIELD_ERROR", "ER_BAD_TABLE_ERROR"].includes(code);
@@ -121,6 +134,8 @@ router.get("/notifications", adminAuth, async (req, res) => {
         n.id,
         n.title,
         n.message,
+        n.is_ticker,
+        n.ticker_text,
         n.status,
         n.target_scope,
         n.target_platform,
@@ -160,6 +175,8 @@ router.post("/notifications", adminAuth, async (req, res) => {
 
     const title = normStr(req.body?.title, 190);
     const message = normStr(req.body?.message, 3000) || null;
+    const isTicker = normBool(req.body?.is_ticker);
+    const tickerText = normStr(req.body?.ticker_text, 3000) || null;
     const status = normStatus(req.body?.status || "active");
     const targetScope = normScope(req.body?.target_scope || req.body?.scope || "mass");
     const targetPlatform = normPlatform(req.body?.target_platform || req.body?.platform || "all");
@@ -172,6 +189,9 @@ router.post("/notifications", adminAuth, async (req, res) => {
     });
 
     if (!title) return res.status(400).json({ error: "title required" });
+    if (req.body && Object.prototype.hasOwnProperty.call(req.body, "is_ticker") && isTicker === null) {
+      return res.status(400).json({ error: "invalid is_ticker" });
+    }
     if (!status) return res.status(400).json({ error: "invalid status" });
     if (!targetScope) return res.status(400).json({ error: "invalid target_scope" });
     if (typeof startsAt === "undefined") return res.status(400).json({ error: "invalid starts_at" });
@@ -184,13 +204,15 @@ router.post("/notifications", adminAuth, async (req, res) => {
     await pool.execute(
       `
       INSERT INTO app_notifications
-        (title, message, status, target_scope, target_platform, target_device_id, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
+        (title, message, is_ticker, ticker_text, status, target_scope, target_platform, target_device_id, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `,
       [
         title,
         message,
+        isTicker ? 1 : 0,
+        tickerText,
         status,
         targetScope,
         targetScope === "mass" ? (targetPlatform || "all") : "all",
@@ -234,6 +256,19 @@ router.patch("/notifications/:id", adminAuth, async (req, res) => {
       const message = normStr(req.body?.message, 3000) || null;
       updates.push("message=?");
       params.push(message);
+    }
+
+    if (typeof req.body?.is_ticker !== "undefined") {
+      const isTicker = normBool(req.body?.is_ticker);
+      if (isTicker === null) return res.status(400).json({ error: "invalid is_ticker" });
+      updates.push("is_ticker=?");
+      params.push(isTicker ? 1 : 0);
+    }
+
+    if (typeof req.body?.ticker_text !== "undefined") {
+      const tickerText = normStr(req.body?.ticker_text, 3000) || null;
+      updates.push("ticker_text=?");
+      params.push(tickerText);
     }
 
     if (typeof req.body?.status !== "undefined") {
