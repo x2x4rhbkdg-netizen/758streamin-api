@@ -73,9 +73,15 @@ router.get("/app-updates", adminAuth, async (req, res) => {
   try {
     if (!requireSuperAdmin(req, res)) return;
 
-    const channel = normChannel(req.query.channel) || null;
-    const platform = normPlatform(req.query.platform) || null;
-    const status = normStatus(req.query.status) || null;
+    const channel = Object.prototype.hasOwnProperty.call(req.query, "channel")
+      ? (normChannel(req.query.channel) || null)
+      : null;
+    const platform = Object.prototype.hasOwnProperty.call(req.query, "platform")
+      ? (normPlatform(req.query.platform) || null)
+      : null;
+    const status = Object.prototype.hasOwnProperty.call(req.query, "status")
+      ? (normStatus(req.query.status) || null)
+      : null;
     const limit = Math.max(1, Math.min(500, toInt(req.query.limit) || 200));
 
     const where = [];
