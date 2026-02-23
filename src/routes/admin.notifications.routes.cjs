@@ -80,6 +80,33 @@ function toSqlDateTime(value) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
+function toIsoUtcDateTime(value) {
+  if (value === null || typeof value === "undefined" || value === "") return null;
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    return value.toISOString();
+  }
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) {
+    return raw.replace(" ", "T") + "Z";
+  }
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toISOString();
+}
+
+function normalizeNotificationTimestamps(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    ...row,
+    starts_at: toIsoUtcDateTime(row.starts_at),
+    ends_at: toIsoUtcDateTime(row.ends_at),
+    created_at: toIsoUtcDateTime(row.created_at),
+    updated_at: toIsoUtcDateTime(row.updated_at),
+  };
+}
+
 async function resolveDeviceId({ targetScope, targetDeviceId, targetDeviceCode }) {
   if (targetScope !== "device") return null;
 
@@ -163,7 +190,7 @@ router.get("/notifications", adminAuth, async (req, res) => {
       params
     );
 
-    return res.json({ notifications: rows });
+    return res.json({ notifications: rows.map(normalizeNotificationTimestamps) });
   } catch (err) {
     if (isSchemaMismatch(err)) {
       return res.status(500).json({
