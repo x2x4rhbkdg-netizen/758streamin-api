@@ -26,8 +26,8 @@ const MIME_EXT = {
 const POSTER_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const MEDIA_MIMES = new Set([...POSTER_MIMES, "video/mp4", "video/webm", "video/quicktime", "video/x-m4v"]);
 
-const MAX_POSTER_BYTES = 5 * 1024 * 1024;
-const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
+const MAX_POSTER_BYTES = 20 * 1024 * 1024;
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 
 function requireSuperAdmin(req, res) {
   if (!req.admin || req.admin.role !== "super_admin") {
@@ -87,6 +87,79 @@ function sanitizeFileStem(name) {
   return (base || "asset").slice(0, 64);
 }
 
+async function storeHomeAdUpload(req, res, { slotKey, kind, fileName, mime, bytes }) {
+  if (!VALID_SLOT_KEYS.has(slotKey)) return res.status(400).json({ error: "invalid slot_key" });
+  if (!VALID_KINDS.has(kind)) return res.status(400).json({ error: "invalid kind" });
+  if (!Buffer.isBuffer(bytes) || !bytes.length) return res.status(400).json({ error: "empty file" });
+
+  const allowed = kind === "poster" ? POSTER_MIMES : MEDIA_MIMES;
+  const maxBytes = kind === "poster" ? MAX_POSTER_BYTES : MAX_MEDIA_BYTES;
+
+  if (!allowed.has(mime)) {
+    return res.status(400).json({ error: `unsupported file type: ${mime}` });
+  }
+  if (bytes.length > maxBytes) {
+    return res.status(400).json({ error: `file too large (max ${Math.floor(maxBytes / (1024 * 1024))}MB)` });
+  }
+
+  const ext = MIME_EXT[mime] || "bin";
+  const stem = sanitizeFileStem(fileName);
+  const stamp = Date.now();
+  const rand = crypto.randomBytes(4).toString("hex");
+  const finalName = `${slotKey}-${kind}-${stem}-${stamp}-${rand}.${ext}`;
+
+  const rootDir = getHomeAdsUploadDir();
+  const slotDir = path.join(rootDir, slotKey);
+  await fs.promises.mkdir(slotDir, { recursive: true });
+
+  const filePath = path.join(slotDir, finalName);
+  await fs.promises.writeFile(filePath, bytes);
+
+  const publicBase = getPublicBase(req);
+  const url = `${publicBase.replace(/\/+$/, "")}/${slotKey}/${encodeURIComponent(finalName)}`;
+
+  return res.json({
+    ok: true,
+    slot_key: slotKey,
+    kind,
+    mime_type: mime,
+    size_bytes: bytes.length,
+    url,
+  });
+}
+
+router.post(
+  "/uploads/home-ads-binary",
+  adminAuth,
+  express.raw({ type: () => true, limit: "30mb" }),
+  async (req, res) => {
+    try {
+      if (!requireSuperAdmin(req, res)) return;
+
+      const slotKey = normStr(req.headers["x-upload-slot-key"], 32).toLowerCase();
+      const kind = normStr(req.headers["x-upload-kind"], 32).toLowerCase();
+      const fileName = decodeURIComponent(normStr(req.headers["x-upload-file-name"], 255) || "asset");
+      const mime = normStr(req.headers["content-type"], 120).toLowerCase();
+      const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+
+      return await storeHomeAdUpload(req, res, { slotKey, kind, fileName, mime, bytes });
+    } catch (err) {
+      const code = String(err?.code || "");
+      const pathValue = String(err?.path || "");
+      let hint = undefined;
+      if (code === "EACCES" || code === "EPERM") {
+        hint = `Upload path not writable. Set HOME_AD_UPLOAD_DIR to a writable cPanel path (current: ${getHomeAdsUploadDir()})`;
+      } else if (code === "ENOENT") {
+        hint = `Upload path not found. Check HOME_AD_UPLOAD_DIR (current: ${getHomeAdsUploadDir()})`;
+      } else if (code === "ENOSPC") {
+        hint = "Server disk is full (ENOSPC).";
+      }
+      if (!hint && pathValue) hint = `Upload path: ${pathValue}`;
+      return sendInternalError(req, res, "admin/uploads/home-ads-binary", err, hint ? { hint } : {});
+    }
+  }
+);
+
 router.post(
   "/uploads/home-ads",
   adminAuth,
@@ -100,45 +173,10 @@ router.post(
       const fileName = normStr(req.body?.file_name, 255);
       const parsed = parseDataUrl(req.body?.data_url);
 
-      if (!VALID_SLOT_KEYS.has(slotKey)) return res.status(400).json({ error: "invalid slot_key" });
-      if (!VALID_KINDS.has(kind)) return res.status(400).json({ error: "invalid kind" });
       if (!parsed) return res.status(400).json({ error: "invalid data_url" });
 
       const { mime, bytes } = parsed;
-      const allowed = kind === "poster" ? POSTER_MIMES : MEDIA_MIMES;
-      const maxBytes = kind === "poster" ? MAX_POSTER_BYTES : MAX_MEDIA_BYTES;
-
-      if (!allowed.has(mime)) {
-        return res.status(400).json({ error: `unsupported file type: ${mime}` });
-      }
-      if (bytes.length > maxBytes) {
-        return res.status(400).json({ error: `file too large (max ${Math.floor(maxBytes / (1024 * 1024))}MB)` });
-      }
-
-      const ext = MIME_EXT[mime] || "bin";
-      const stem = sanitizeFileStem(fileName);
-      const stamp = Date.now();
-      const rand = crypto.randomBytes(4).toString("hex");
-      const finalName = `${slotKey}-${kind}-${stem}-${stamp}-${rand}.${ext}`;
-
-      const rootDir = getHomeAdsUploadDir();
-      const slotDir = path.join(rootDir, slotKey);
-      await fs.promises.mkdir(slotDir, { recursive: true });
-
-      const filePath = path.join(slotDir, finalName);
-      await fs.promises.writeFile(filePath, bytes);
-
-      const publicBase = getPublicBase(req);
-      const url = `${publicBase.replace(/\/+$/, "")}/${slotKey}/${encodeURIComponent(finalName)}`;
-
-      return res.json({
-        ok: true,
-        slot_key: slotKey,
-        kind,
-        mime_type: mime,
-        size_bytes: bytes.length,
-        url,
-      });
+      return await storeHomeAdUpload(req, res, { slotKey, kind, fileName, mime, bytes });
     } catch (err) {
       const code = String(err?.code || "");
       const pathValue = String(err?.path || "");
