@@ -140,7 +140,18 @@ router.post(
         url,
       });
     } catch (err) {
-      return sendInternalError(req, res, "admin/uploads/home-ads", err);
+      const code = String(err?.code || "");
+      const pathValue = String(err?.path || "");
+      let hint = undefined;
+      if (code === "EACCES" || code === "EPERM") {
+        hint = `Upload path not writable. Set HOME_AD_UPLOAD_DIR to a writable cPanel path (current: ${getHomeAdsUploadDir()})`;
+      } else if (code === "ENOENT") {
+        hint = `Upload path not found. Check HOME_AD_UPLOAD_DIR (current: ${getHomeAdsUploadDir()})`;
+      } else if (code === "ENOSPC") {
+        hint = "Server disk is full (ENOSPC).";
+      }
+      if (!hint && pathValue) hint = `Upload path: ${pathValue}`;
+      return sendInternalError(req, res, "admin/uploads/home-ads", err, hint ? { hint } : {});
     }
   }
 );
