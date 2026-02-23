@@ -31,6 +31,11 @@ if (homeAdsUploadStaticDir) {
   try { fs.mkdirSync(homeAdsUploadStaticDir, { recursive: true }); } catch {}
   app.use("/uploads/home-ads", express.static(homeAdsUploadStaticDir, { fallthrough: true, maxAge: "30d" }));
 }
+const notificationImagesUploadStaticDir = String(process.env.NOTIFICATION_IMAGE_UPLOAD_DIR || path.join(__dirname, "..", "tmp", "uploads", "notifications")).trim();
+if (notificationImagesUploadStaticDir) {
+  try { fs.mkdirSync(notificationImagesUploadStaticDir, { recursive: true }); } catch {}
+  app.use("/uploads/notifications", express.static(notificationImagesUploadStaticDir, { fallthrough: true, maxAge: "30d" }));
+}
 
 app.use(helmet());
 app.use("/v1/admin", adminUploadsRoutes);

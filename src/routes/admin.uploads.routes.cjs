@@ -28,6 +28,7 @@ const MEDIA_MIMES = new Set([...POSTER_MIMES, "video/mp4", "video/webm", "video/
 
 const MAX_POSTER_BYTES = 10 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+const MAX_NOTIFICATION_IMAGE_BYTES = 2 * 1024 * 1024;
 
 function requireSuperAdmin(req, res) {
   if (!req.admin || req.admin.role !== "super_admin") {
@@ -49,6 +50,12 @@ function getHomeAdsUploadDir() {
   return path.join(__dirname, "..", "..", "tmp", "uploads", "home-ads");
 }
 
+function getNotificationsUploadDir() {
+  const configured = normStr(process.env.NOTIFICATION_IMAGE_UPLOAD_DIR, 2000);
+  if (configured) return configured;
+  return path.join(__dirname, "..", "..", "tmp", "uploads", "notifications");
+}
+
 function getPublicBase(req) {
   const configured = normStr(process.env.HOME_AD_UPLOAD_PUBLIC_BASE_URL, 2000).replace(/\/+$/, "");
   if (configured) return configured;
@@ -60,6 +67,19 @@ function getPublicBase(req) {
     .trim();
   if (!host) return "/uploads/home-ads";
   return `${proto}://${host}/uploads/home-ads`;
+}
+
+function getNotificationsPublicBase(req) {
+  const configured = normStr(process.env.NOTIFICATION_IMAGE_UPLOAD_PUBLIC_BASE_URL, 2000).replace(/\/+$/, "");
+  if (configured) return configured;
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https")
+    .split(",")[0]
+    .trim() || "https";
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+    .split(",")[0]
+    .trim();
+  if (!host) return "/uploads/notifications";
+  return `${proto}://${host}/uploads/notifications`;
 }
 
 function parseDataUrl(input) {
@@ -128,6 +148,37 @@ async function storeHomeAdUpload(req, res, { slotKey, kind, fileName, mime, byte
   });
 }
 
+async function storeNotificationImageUpload(req, res, { fileName, mime, bytes }) {
+  if (!Buffer.isBuffer(bytes) || !bytes.length) return res.status(400).json({ error: "empty file" });
+  if (!POSTER_MIMES.has(mime)) return res.status(400).json({ error: `unsupported file type: ${mime}` });
+  if (bytes.length > MAX_NOTIFICATION_IMAGE_BYTES) {
+    return res.status(400).json({
+      error: `file too large (max ${Math.floor(MAX_NOTIFICATION_IMAGE_BYTES / (1024 * 1024))}MB)`,
+    });
+  }
+
+  const ext = MIME_EXT[mime] || "bin";
+  const stem = sanitizeFileStem(fileName);
+  const stamp = Date.now();
+  const rand = crypto.randomBytes(4).toString("hex");
+  const finalName = `notification-image-${stem}-${stamp}-${rand}.${ext}`;
+
+  const rootDir = getNotificationsUploadDir();
+  await fs.promises.mkdir(rootDir, { recursive: true });
+  const filePath = path.join(rootDir, finalName);
+  await fs.promises.writeFile(filePath, bytes);
+
+  const publicBase = getNotificationsPublicBase(req);
+  const url = `${publicBase.replace(/\/+$/, "")}/${encodeURIComponent(finalName)}`;
+
+  return res.json({
+    ok: true,
+    mime_type: mime,
+    size_bytes: bytes.length,
+    url,
+  });
+}
+
 router.post(
   "/uploads/home-ads-binary",
   adminAuth,
@@ -190,6 +241,35 @@ router.post(
       }
       if (!hint && pathValue) hint = `Upload path: ${pathValue}`;
       return sendInternalError(req, res, "admin/uploads/home-ads", err, hint ? { hint } : {});
+    }
+  }
+);
+
+router.post(
+  "/uploads/notifications-image",
+  adminAuth,
+  express.json({ limit: "6mb" }),
+  async (req, res) => {
+    try {
+      if (!requireSuperAdmin(req, res)) return;
+      const fileName = normStr(req.body?.file_name, 255);
+      const parsed = parseDataUrl(req.body?.data_url);
+      if (!parsed) return res.status(400).json({ error: "invalid data_url" });
+      const { mime, bytes } = parsed;
+      return await storeNotificationImageUpload(req, res, { fileName, mime, bytes });
+    } catch (err) {
+      const code = String(err?.code || "");
+      const pathValue = String(err?.path || "");
+      let hint = undefined;
+      if (code === "EACCES" || code === "EPERM") {
+        hint = `Upload path not writable. Set NOTIFICATION_IMAGE_UPLOAD_DIR to a writable cPanel path (current: ${getNotificationsUploadDir()})`;
+      } else if (code === "ENOENT") {
+        hint = `Upload path not found. Check NOTIFICATION_IMAGE_UPLOAD_DIR (current: ${getNotificationsUploadDir()})`;
+      } else if (code === "ENOSPC") {
+        hint = "Server disk is full (ENOSPC).";
+      }
+      if (!hint && pathValue) hint = `Upload path: ${pathValue}`;
+      return sendInternalError(req, res, "admin/uploads/notifications-image", err, hint ? { hint } : {});
     }
   }
 );
