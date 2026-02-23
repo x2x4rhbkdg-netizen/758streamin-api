@@ -93,8 +93,8 @@ router.get("/notifications", authJwt, async (req, res) => {
         n.ticker_text,
         n.target_scope,
         n.target_platform,
-        n.starts_at,
-        n.ends_at,
+        DATE_FORMAT(n.starts_at, "%Y-%m-%d %H:%i:%s") AS starts_at,
+        DATE_FORMAT(n.ends_at, "%Y-%m-%d %H:%i:%s") AS ends_at,
         n.created_at,
         n.updated_at
       FROM app_notifications n
