@@ -56,6 +56,12 @@ function normBool(v) {
   return null;
 }
 
+function wordCount(v) {
+  const s = String(v ?? "").trim();
+  if (!s) return 0;
+  return s.split(/\s+/).filter(Boolean).length;
+}
+
 function isSchemaMismatch(err) {
   const code = String(err?.code || "").trim();
   return ["ER_NO_SUCH_TABLE", "ER_BAD_FIELD_ERROR", "ER_BAD_TABLE_ERROR"].includes(code);
@@ -192,6 +198,9 @@ router.post("/notifications", adminAuth, async (req, res) => {
     if (req.body && Object.prototype.hasOwnProperty.call(req.body, "is_ticker") && isTicker === null) {
       return res.status(400).json({ error: "invalid is_ticker" });
     }
+    if (tickerText && wordCount(tickerText) > 100) {
+      return res.status(400).json({ error: "ticker_text must be 100 words or fewer" });
+    }
     if (!status) return res.status(400).json({ error: "invalid status" });
     if (!targetScope) return res.status(400).json({ error: "invalid target_scope" });
     if (typeof startsAt === "undefined") return res.status(400).json({ error: "invalid starts_at" });
@@ -267,6 +276,9 @@ router.patch("/notifications/:id", adminAuth, async (req, res) => {
 
     if (typeof req.body?.ticker_text !== "undefined") {
       const tickerText = normStr(req.body?.ticker_text, 3000) || null;
+      if (tickerText && wordCount(tickerText) > 100) {
+        return res.status(400).json({ error: "ticker_text must be 100 words or fewer" });
+      }
       updates.push("ticker_text=?");
       params.push(tickerText);
     }
