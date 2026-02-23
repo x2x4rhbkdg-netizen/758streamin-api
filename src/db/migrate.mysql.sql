@@ -158,6 +158,30 @@ CREATE TABLE IF NOT EXISTS app_updates (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 /** =========================================
+ *  TABLE: Home Screen Ads (2 slots)
+ *  ========================================= */
+CREATE TABLE IF NOT EXISTS app_home_ads (
+  id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  slot_key            ENUM('home_left','home_right') NOT NULL,
+  title               VARCHAR(190) NULL,
+  poster_url          TEXT NULL,
+  media_type          ENUM('poster','video') NOT NULL DEFAULT 'poster',
+  media_url           TEXT NULL,
+  is_active           TINYINT(1) NOT NULL DEFAULT 1,
+  starts_at           DATETIME NULL,
+  ends_at             DATETIME NULL,
+  created_by_admin_id BIGINT UNSIGNED NULL,
+  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_app_home_ads_slot (slot_key),
+  KEY idx_app_home_ads_active_window (is_active, starts_at, ends_at),
+  CONSTRAINT fk_app_home_ads_admin
+    FOREIGN KEY (created_by_admin_id) REFERENCES admins(id)
+    ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+/** =========================================
  *  TABLE: App Notifications
  *  ========================================= */
 CREATE TABLE IF NOT EXISTS app_notifications (

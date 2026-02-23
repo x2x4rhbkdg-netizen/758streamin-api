@@ -14,10 +14,12 @@ const analyticsRoutes = require("./routes/analytics.routes.cjs");
 const epgRoutes = require("./routes/epg.routes.cjs");
 const appUpdateRoutes = require("./routes/appUpdate.routes.cjs");
 const notificationsRoutes = require("./routes/notifications.routes.cjs");
+const homeAdsRoutes = require("./routes/homeAds.routes.cjs");
 const adminRoutes = require("./routes/admin.routes.cjs");
 const adminAppUpdateRoutes = require("./routes/admin.appUpdates.routes.cjs");
 const adminNotificationsRoutes = require("./routes/admin.notifications.routes.cjs");
 const adminWhmcsReminderRoutes = require("./routes/admin.whmcsReminders.routes.cjs");
+const adminHomeAdsRoutes = require("./routes/admin.homeAds.routes.cjs");
 
 const app = express();
 
@@ -68,10 +70,12 @@ app.use("/v1", analyticsRoutes);
 app.use("/v1", epgRoutes);
 app.use("/v1", appUpdateRoutes);
 app.use("/v1", notificationsRoutes);
+app.use("/v1", homeAdsRoutes);
 app.use("/v1/admin", adminRoutes);
 app.use("/v1/admin", adminAppUpdateRoutes);
 app.use("/v1/admin", adminNotificationsRoutes);
 app.use("/v1/admin", adminWhmcsReminderRoutes);
+app.use("/v1/admin", adminHomeAdsRoutes);
 
 
 module.exports = app;
