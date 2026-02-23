@@ -26,7 +26,7 @@ const MIME_EXT = {
 const POSTER_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const MEDIA_MIMES = new Set([...POSTER_MIMES, "video/mp4", "video/webm", "video/quicktime", "video/x-m4v"]);
 
-const MAX_POSTER_BYTES = 20 * 1024 * 1024;
+const MAX_POSTER_BYTES = 10 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 
 function requireSuperAdmin(req, res) {
