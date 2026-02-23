@@ -2,6 +2,8 @@
  *  PASSENGER APP: Express export (CommonJS)
  *  ========================================= */
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const cors = require("cors");
 const helmet = require("helmet");
 
@@ -20,10 +22,18 @@ const adminAppUpdateRoutes = require("./routes/admin.appUpdates.routes.cjs");
 const adminNotificationsRoutes = require("./routes/admin.notifications.routes.cjs");
 const adminWhmcsReminderRoutes = require("./routes/admin.whmcsReminders.routes.cjs");
 const adminHomeAdsRoutes = require("./routes/admin.homeAds.routes.cjs");
+const adminUploadsRoutes = require("./routes/admin.uploads.routes.cjs");
 
 const app = express();
 
+const homeAdsUploadStaticDir = String(process.env.HOME_AD_UPLOAD_DIR || path.join(__dirname, "..", "tmp", "uploads", "home-ads")).trim();
+if (homeAdsUploadStaticDir) {
+  try { fs.mkdirSync(homeAdsUploadStaticDir, { recursive: true }); } catch {}
+  app.use("/uploads/home-ads", express.static(homeAdsUploadStaticDir, { fallthrough: true, maxAge: "30d" }));
+}
+
 app.use(helmet());
+app.use("/v1/admin", adminUploadsRoutes);
 app.use(express.json({ limit: "1mb" }));
 
 const corsOptionsDelegate = (req, cb) => {
