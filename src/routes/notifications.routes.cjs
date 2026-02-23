@@ -99,8 +99,8 @@ router.get("/notifications", authJwt, async (req, res) => {
         n.updated_at
       FROM app_notifications n
       WHERE n.status='active'
-        AND (n.starts_at IS NULL OR n.starts_at <= NOW())
-        AND (n.ends_at IS NULL OR n.ends_at >= NOW())
+        AND (n.starts_at IS NULL OR n.starts_at <= UTC_TIMESTAMP())
+        AND (n.ends_at IS NULL OR n.ends_at >= UTC_TIMESTAMP())
         AND (
           (COALESCE(n.target_scope, 'mass')='device' AND n.target_device_id=?)
           OR
