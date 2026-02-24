@@ -9,6 +9,12 @@ const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
+function inferLiveCategoryType(category) {
+  const name = String(category?.category_name ?? category?.name ?? "").toLowerCase();
+  if (name.includes("radio")) return "radio";
+  return "live";
+}
+
 /** =========================================
  *  HELPERS
  *  ========================================= */
@@ -115,7 +121,7 @@ router.get("/catalog/home", authJwt, async (req, res) => {
       ...asArray(liveCats).map((c) => ({
         id: String(c.category_id ?? ""),
         name: String(c.category_name ?? ""),
-        type: "live",
+        type: inferLiveCategoryType(c),
       })),
       ...asArray(vodCats).map((c) => ({
         id: String(c.category_id ?? ""),
