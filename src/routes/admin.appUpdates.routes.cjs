@@ -69,6 +69,60 @@ function validHttpUrl(v) {
   }
 }
 
+function notificationPlatformForUpdatePlatform(platform) {
+  const p = String(platform || "").trim().toLowerCase();
+  if (!p || p === "all") return "all";
+  if (p === "android_tv") return "tv";
+  if (p === "android_mobile") return "mobile";
+  return "all";
+}
+
+function buildUpdateNotificationMessage(update) {
+  const parts = [
+    `Version ${update.version_name} is now available.`,
+  ];
+  if (update.force_update) {
+    parts.push("This update is required.");
+  }
+  if (update.notes) {
+    parts.push(`What's new: ${String(update.notes).trim()}`);
+  }
+  return parts.join(" ").trim().slice(0, 3000);
+}
+
+async function tryCreateNotificationForNewDirectUpdate(req, update) {
+  if (!update) return;
+  if (String(update.channel || "").toLowerCase() !== "direct") return;
+  if (String(update.status || "").toLowerCase() !== "active") return;
+
+  const title = `App Update Available (${update.version_name})`.slice(0, 190);
+  const message = buildUpdateNotificationMessage(update) || null;
+  const targetPlatform = notificationPlatformForUpdatePlatform(update.platform);
+
+  try {
+    await pool.execute(
+      `
+      INSERT INTO app_notifications
+        (title, message, is_ticker, ticker_text, status, target_scope, target_platform, target_device_id, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
+      VALUES
+        (?, ?, 0, NULL, 'active', 'mass', ?, NULL, NOW(), NULL, ?, NOW(), NOW())
+      `,
+      [
+        title,
+        message,
+        targetPlatform,
+        req.admin?.id || null,
+      ]
+    );
+  } catch (err) {
+    console.warn("[admin/app-updates] failed to create notification for new update", {
+      scope: "admin/app-updates/auto-notification",
+      code: err?.code,
+      message: err?.message,
+    });
+  }
+}
+
 router.get("/app-updates", adminAuth, async (req, res) => {
   try {
     if (!requireSuperAdmin(req, res)) return;
@@ -195,7 +249,10 @@ router.post("/app-updates", adminAuth, async (req, res) => {
       [result.insertId]
     );
 
-    return res.status(201).json({ ok: true, update: rows[0] || null });
+    const createdUpdate = rows[0] || null;
+    await tryCreateNotificationForNewDirectUpdate(req, createdUpdate);
+
+    return res.status(201).json({ ok: true, update: createdUpdate });
   } catch (err) {
     if (err?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "version already exists for channel/platform" });
