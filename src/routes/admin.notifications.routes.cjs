@@ -167,6 +167,7 @@ router.get("/notifications", adminAuth, async (req, res) => {
         n.id,
         n.title,
         n.message,
+        n.image_url,
         n.is_ticker,
         n.ticker_text,
         n.status,
@@ -208,6 +209,7 @@ router.post("/notifications", adminAuth, async (req, res) => {
 
     const title = normStr(req.body?.title, 190);
     const message = normStr(req.body?.message, 3000) || null;
+    const imageUrl = normStr(req.body?.image_url || req.body?.imageUrl, 2000) || null;
     const isTicker = normBool(req.body?.is_ticker);
     const tickerText = normStr(req.body?.ticker_text, 6000) || null;
     const status = normStatus(req.body?.status || "active");
@@ -240,13 +242,14 @@ router.post("/notifications", adminAuth, async (req, res) => {
     await pool.execute(
       `
       INSERT INTO app_notifications
-        (title, message, is_ticker, ticker_text, status, target_scope, target_platform, target_device_id, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
+        (title, message, image_url, is_ticker, ticker_text, status, target_scope, target_platform, target_device_id, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `,
       [
         title,
         message,
+        imageUrl,
         isTicker ? 1 : 0,
         tickerText,
         status,
@@ -292,6 +295,12 @@ router.patch("/notifications/:id", adminAuth, async (req, res) => {
       const message = normStr(req.body?.message, 3000) || null;
       updates.push("message=?");
       params.push(message);
+    }
+
+    if (typeof req.body?.image_url !== "undefined" || typeof req.body?.imageUrl !== "undefined") {
+      const imageUrl = normStr(req.body?.image_url || req.body?.imageUrl, 2000) || null;
+      updates.push("image_url=?");
+      params.push(imageUrl);
     }
 
     if (typeof req.body?.is_ticker !== "undefined") {

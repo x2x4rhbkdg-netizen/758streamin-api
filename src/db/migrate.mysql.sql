@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS app_notifications (
   id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   title               VARCHAR(190) NOT NULL,
   message             TEXT NULL,
+  image_url           TEXT NULL,
   is_ticker           TINYINT(1) NOT NULL DEFAULT 0,
   ticker_text         TEXT NULL,
   status              ENUM('active','inactive') NOT NULL DEFAULT 'active',
@@ -212,7 +213,8 @@ CREATE TABLE IF NOT EXISTS app_notifications (
  *  - If app_notifications already exists, this ALTER enables new targeting columns.
  *  ========================================= */
 ALTER TABLE app_notifications
-  ADD COLUMN IF NOT EXISTS is_ticker TINYINT(1) NOT NULL DEFAULT 0 AFTER message,
+  ADD COLUMN IF NOT EXISTS image_url TEXT NULL AFTER message,
+  ADD COLUMN IF NOT EXISTS is_ticker TINYINT(1) NOT NULL DEFAULT 0 AFTER image_url,
   ADD COLUMN IF NOT EXISTS ticker_text TEXT NULL AFTER is_ticker,
   ADD COLUMN IF NOT EXISTS target_scope ENUM('mass','device') NOT NULL DEFAULT 'mass' AFTER status,
   ADD COLUMN IF NOT EXISTS target_device_id BIGINT UNSIGNED NULL AFTER target_platform;
