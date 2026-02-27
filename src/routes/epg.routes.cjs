@@ -3,8 +3,9 @@
  *  ========================================= */
 const { Router } = require("express");
 const { authJwt } = require("../middleware/authJwt.cjs");
+const { env } = require("../config/env.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
-const { buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
+const { buildXuiPlayerApiUrls, fetchJsonWithFallback } = require("../utils/xui.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
@@ -147,41 +148,31 @@ function normalizeProgram(item) {
 }
 
 async function fetchXuiJson(upstream, action, params = {}) {
-  const base = buildXuiPlayerApiUrl({
+  const urls = buildXuiPlayerApiUrls({
     upstream_base_url: upstream.upstream_base_url,
     username: upstream.username,
     password: upstream.password,
-  });
+  }, { allowHttpFallback: env.XUI_HTTP_FALLBACK });
 
-  const url = new URL(base);
-  url.searchParams.set("action", action);
+  const actionParams = { action };
   Object.entries(params).forEach(([k, val]) => {
     if (val === undefined || val === null || val === "") return;
-    url.searchParams.set(k, String(val));
+    actionParams[k] = val;
   });
 
-  const resp = await fetch(url.toString(), {
-    method: "GET",
-    headers: { "User-Agent": "streamin-api/1.0" },
+  const requestUrls = (urls || []).map((u) => {
+    const url = new URL(u);
+    Object.entries(actionParams).forEach(([k, val]) => {
+      url.searchParams.set(k, String(val));
+    });
+    return url.toString();
   });
 
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => "");
-    const err = new Error("upstream failed");
-    err.status = resp.status;
-    err.body = txt.slice(0, 200);
-    throw err;
-  }
-
-  const txt = await resp.text();
-  try {
-    return JSON.parse(txt);
-  } catch {
-    const err = new Error("upstream returned invalid JSON");
-    err.status = 502;
-    err.body = txt.slice(0, 200);
-    throw err;
-  }
+  return fetchJsonWithFallback(
+    requestUrls,
+    { method: "GET", headers: { "User-Agent": "streamin-api/1.0" } },
+    { timeoutMs: env.XUI_REQUEST_TIMEOUT_MS }
+  );
 }
 
 function extractListings(payload) {

@@ -3,8 +3,9 @@
  *  ========================================= */
 const { Router } = require("express");
 const { authJwt } = require("../middleware/authJwt.cjs");
+const { env } = require("../config/env.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
-const { buildXuiM3uUrl } = require("../utils/xui.cjs");
+const { buildXuiM3uUrls, fetchTextWithFallback } = require("../utils/xui.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
@@ -18,28 +19,17 @@ router.get("/playlist.m3u8", authJwt, async (req, res) => {
     const upstream = await getDeviceUpstream(req.device.device_id);
     if (!upstream) return res.status(404).json({ error: "no upstream configured for device" });
 
-    const upstreamUrl = buildXuiM3uUrl({
+    const upstreamUrls = buildXuiM3uUrls({
       upstream_base_url: upstream.upstream_base_url,
       username: upstream.username,
       password: upstream.password,
-    });
+    }, { allowHttpFallback: env.XUI_HTTP_FALLBACK });
 
-    // Node 18+ has global fetch
-    const upstreamResp = await fetch(upstreamUrl, {
-      method: "GET",
-      headers: { "User-Agent": "streamin-api/1.0" },
-    });
-
-    if (!upstreamResp.ok) {
-      const txt = await upstreamResp.text().catch(() => "");
-      return res.status(502).json({
-        error: "upstream failed",
-        status: upstreamResp.status,
-        body: txt.slice(0, 200),
-      });
-    }
-
-    const m3u = await upstreamResp.text();
+    const m3u = await fetchTextWithFallback(
+      upstreamUrls,
+      { method: "GET", headers: { "User-Agent": "streamin-api/1.0" } },
+      { timeoutMs: env.XUI_REQUEST_TIMEOUT_MS }
+    );
 
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");

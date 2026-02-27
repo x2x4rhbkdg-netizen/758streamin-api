@@ -43,6 +43,8 @@ const env = {
   ALLOWED_ORIGINS: list("ALLOWED_ORIGINS"),
 
   XUI_BASE_URL: process.env.XUI_BASE_URL || "",
+  XUI_HTTP_FALLBACK: String(process.env.XUI_HTTP_FALLBACK || "true").toLowerCase() !== "false",
+  XUI_REQUEST_TIMEOUT_MS: Number(process.env.XUI_REQUEST_TIMEOUT_MS || 12000),
   PLAYBACK_BASE_URL: process.env.PLAYBACK_BASE_URL || "",
   PLAYBACK_TOKEN_TTL: Number(process.env.PLAYBACK_TOKEN_TTL || 3600),
   LIVE_HLS_OUTPUT: process.env.LIVE_HLS_OUTPUT || "m3u8", // live path extension when using /live/... path

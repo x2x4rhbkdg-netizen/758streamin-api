@@ -6,7 +6,7 @@ const jwt = require("jsonwebtoken");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { env } = require("../config/env.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
-const { buildUrl, buildXuiPlayerApiUrl } = require("../utils/xui.cjs");
+const { buildUrl, buildXuiPlayerApiUrls, fetchJsonWithFallback } = require("../utils/xui.cjs");
 const { pool } = require("../db/pool.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
 
@@ -159,41 +159,32 @@ function isWebPlayableLiveSource(url, format) {
 }
 
 async function fetchXuiJson(upstream, action, params = {}) {
-  const base = buildXuiPlayerApiUrl({
+  const urls = buildXuiPlayerApiUrls({
     upstream_base_url: upstream.upstream_base_url,
     username: upstream.username,
     password: upstream.password,
-  });
+  }, { allowHttpFallback: env.XUI_HTTP_FALLBACK });
 
-  const url = new URL(base);
-  if (action) url.searchParams.set("action", action);
+  const actionParams = {};
+  if (action) actionParams.action = action;
   Object.entries(params).forEach(([k, val]) => {
     if (val === undefined || val === null || val === "") return;
-    url.searchParams.set(k, String(val));
+    actionParams[k] = val;
   });
 
-  const resp = await fetch(url.toString(), {
-    method: "GET",
-    headers: { "User-Agent": "streamin-api/1.0" },
+  const requestUrls = (urls || []).map((u) => {
+    const url = new URL(u);
+    Object.entries(actionParams).forEach(([k, val]) => {
+      url.searchParams.set(k, String(val));
+    });
+    return url.toString();
   });
 
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => "");
-    const err = new Error("upstream failed");
-    err.status = resp.status;
-    err.body = txt.slice(0, 200);
-    throw err;
-  }
-
-  const txt = await resp.text();
-  try {
-    return JSON.parse(txt);
-  } catch {
-    const err = new Error("upstream returned invalid JSON");
-    err.status = 502;
-    err.body = txt.slice(0, 200);
-    throw err;
-  }
+  return fetchJsonWithFallback(
+    requestUrls,
+    { method: "GET", headers: { "User-Agent": "streamin-api/1.0" } },
+    { timeoutMs: env.XUI_REQUEST_TIMEOUT_MS }
+  );
 }
 
 async function resolveLiveDirectSource(upstream, streamId) {
@@ -220,7 +211,15 @@ async function resolveLiveDirectSource(upstream, streamId) {
   return null;
 }
 
-function buildStreamUrl({ upstream, type, streamId, episodeId, format, liveHlsOutput }) {
+function buildStreamUrl({
+  upstream,
+  type,
+  streamId,
+  episodeId,
+  format,
+  liveHlsOutput,
+  allowHttpFallback = true,
+}) {
   const fmt = String(format || "hls").toLowerCase();
   const ext = fmt === "dash"
     ? "mpd"
@@ -234,7 +233,7 @@ function buildStreamUrl({ upstream, type, streamId, episodeId, format, liveHlsOu
   if (type === "series") path = `/series/${user}/${pass}/${episodeId}.${ext}`;
 
   if (!path) throw new Error("invalid stream type");
-  return buildUrl(upstream.upstream_base_url, path);
+  return buildUrl(upstream.upstream_base_url, path, {}, { allowHttpFallback });
 }
 
 function buildPlaybackLink(baseUrl, token, format) {
@@ -400,6 +399,7 @@ router.get("/playback/stream", async (req, res) => {
       episodeId: payload.episode_id,
       format,
       liveHlsOutput: env.LIVE_HLS_OUTPUT,
+      allowHttpFallback: env.XUI_HTTP_FALLBACK,
     });
 
     res.setHeader("Cache-Control", "no-store");
