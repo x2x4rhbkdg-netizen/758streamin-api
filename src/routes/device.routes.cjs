@@ -321,6 +321,7 @@ router.get("/device/profile", authJwt, async (req, res) => {
         d.customer_name,
         d.plan_name,
         d.trial_expires_at,
+        d.whmcs_next_due_date,
         a.expires_at,
         a.max_streams
       FROM devices d
@@ -339,6 +340,7 @@ router.get("/device/profile", authJwt, async (req, res) => {
       customer_name: device.customer_name || null,
       plan_name: device.plan_name || null,
       trial_expires_at: device.trial_expires_at || null,
+      whmcs_next_due_date: device.whmcs_next_due_date || null,
       expires_at: device.expires_at || null,
       max_streams: Number(device.max_streams || 1),
     });

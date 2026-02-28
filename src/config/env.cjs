@@ -61,6 +61,7 @@ const env = {
   WHMCS_API_URL: process.env.WHMCS_API_URL || "",
   WHMCS_API_IDENTIFIER: process.env.WHMCS_API_IDENTIFIER || "",
   WHMCS_API_SECRET: process.env.WHMCS_API_SECRET || "",
+  WHMCS_REMINDER_SECRET: process.env.WHMCS_REMINDER_SECRET || "",
 
   DB_HOST: must("DB_HOST"),
   DB_USER: must("DB_USER"),

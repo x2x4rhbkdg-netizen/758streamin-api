@@ -16,6 +16,7 @@ const { sendResetEmail } = require("../utils/email.cjs");
 const { env } = require("../config/env.cjs");
 const whmcsReminderRoutes = require("./admin.whmcsReminders.routes.cjs");
 const createWhmcsReminderIfNeeded = whmcsReminderRoutes.createReminderIfNeeded;
+const createWhmcsPaymentConfirmationIfNeeded = whmcsReminderRoutes.createPaymentConfirmationIfNeeded;
 
 const router = Router();
 
@@ -945,7 +946,21 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
     if (!code) return res.status(400).json({ error: "device code required" });
 
     const [devRows] = await pool.execute(
-      `SELECT id, device_code, whmcs_client_id, whmcs_service_id FROM devices WHERE device_code=? LIMIT 1`,
+      `
+      SELECT
+        id,
+        device_code,
+        customer_name,
+        plan_name,
+        status,
+        whmcs_client_id,
+        whmcs_service_id,
+        whmcs_billing_status,
+        whmcs_next_due_date
+      FROM devices
+      WHERE device_code=?
+      LIMIT 1
+      `,
       [code]
     );
 
@@ -1015,6 +1030,19 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       }
     }
 
+    let payment_confirmation = { created: false, reason: "helper_unavailable" };
+    if (rows[0] && typeof createWhmcsPaymentConfirmationIfNeeded === "function") {
+      try {
+        payment_confirmation = await createWhmcsPaymentConfirmationIfNeeded(dev, rows[0], req.admin?.id || null);
+      } catch (confirmErr) {
+        console.warn("[admin/devices/whmcs-sync] payment confirmation skipped:", confirmErr?.message || confirmErr);
+        payment_confirmation = {
+          created: false,
+          reason: confirmErr?.code === "ER_NO_SUCH_TABLE" ? "app_notifications_missing" : "payment_confirmation_failed",
+        };
+      }
+    }
+
     return res.json({
       ok: true,
       device: rows[0] || null,
@@ -1025,6 +1053,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         next_due_date: service.next_due_date,
       },
       reminder,
+      payment_confirmation,
     });
   } catch (err) {
     if (err?.message === "WHMCS API not configured") {
