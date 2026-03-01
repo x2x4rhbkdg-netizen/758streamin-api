@@ -17,6 +17,8 @@ const { env } = require("../config/env.cjs");
 const whmcsReminderRoutes = require("./admin.whmcsReminders.routes.cjs");
 const createWhmcsReminderIfNeeded = whmcsReminderRoutes.createReminderIfNeeded;
 const createWhmcsPaymentConfirmationIfNeeded = whmcsReminderRoutes.createPaymentConfirmationIfNeeded;
+const createWhmcsTrialReminderIfNeeded = whmcsReminderRoutes.createTrialReminderIfNeeded;
+const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
 
 const router = Router();
 
@@ -40,6 +42,27 @@ function toMysqlDatetime(v) {
  *  ========================================= */
 function normalizeBaseUrl(v) {
   return String(v || "").trim().replace(/\/+$/, "");
+}
+
+function extractWhmcsUpstreamCredentials(rawService) {
+  const username = String(
+    rawService?.username ||
+      rawService?.service_username ||
+      rawService?.serviceusername ||
+      ""
+  ).trim();
+  const password = String(
+    rawService?.password ||
+      rawService?.service_password ||
+      rawService?.servicepassword ||
+      ""
+  ).trim();
+
+  if (!username || !password) {
+    return null;
+  }
+
+  return { username, password };
 }
 
 function requireSuperAdmin(req, res) {
@@ -895,6 +918,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
     const [rows] = await pool.execute(
       `
       SELECT
+        d.id,
         d.device_code,
         d.customer_name,
         d.customer_phone,
@@ -925,7 +949,20 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       [dev.id]
     );
 
-    return res.json({ ok: true, device: rows[0] || null });
+    let trial_reminder = { created: false, reason: "helper_unavailable" };
+    if (rows[0] && typeof createWhmcsTrialReminderIfNeeded === "function") {
+      try {
+        trial_reminder = await createWhmcsTrialReminderIfNeeded(rows[0], req.admin?.id || null);
+      } catch (trialErr) {
+        console.warn("[admin/devices/update] trial reminder skipped:", trialErr?.message || trialErr);
+        trial_reminder = {
+          created: false,
+          reason: trialErr?.code === "ER_NO_SUCH_TABLE" ? "app_notifications_missing" : "trial_reminder_failed",
+        };
+      }
+    }
+
+    return res.json({ ok: true, device: rows[0] || null, trial_reminder });
   } catch (err) {
     return sendInternalError(req, res, "admin/devices/update", err);
   }
@@ -976,10 +1013,14 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
     const service = await fetchWhmcsServiceById(resolvedServiceId);
     if (!service) return res.status(404).json({ error: "WHMCS service not found" });
 
+    const planName = extractWhmcsPlanName(service.raw) || dev.plan_name || null;
+    const whmcsUpstream = extractWhmcsUpstreamCredentials(service.raw);
+
     await pool.execute(
       `
       UPDATE devices
       SET
+        plan_name=?,
         whmcs_client_id=?,
         whmcs_service_id=?,
         whmcs_billing_status=?,
@@ -989,6 +1030,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       WHERE id=?
       `,
       [
+        planName,
         service.client_id,
         service.service_id,
         service.status,
@@ -996,6 +1038,37 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         dev.id,
       ]
     );
+
+    if (whmcsUpstream) {
+      const [upstreamRows] = await pool.execute(
+        `SELECT upstream_base_url FROM device_upstream WHERE device_id=? LIMIT 1`,
+        [dev.id]
+      );
+
+      const upstreamBaseUrl = normalizeBaseUrl(
+        upstreamRows[0]?.upstream_base_url || env.XUI_BASE_URL
+      );
+
+      if (upstreamBaseUrl) {
+        await pool.execute(
+          `
+          INSERT INTO device_upstream (device_id, upstream_base_url, enc_username, enc_password, updated_at)
+          VALUES (?, ?, ?, ?, NOW())
+          ON DUPLICATE KEY UPDATE
+            upstream_base_url=VALUES(upstream_base_url),
+            enc_username=VALUES(enc_username),
+            enc_password=VALUES(enc_password),
+            updated_at=NOW()
+          `,
+          [
+            dev.id,
+            upstreamBaseUrl,
+            encryptString(whmcsUpstream.username),
+            encryptString(whmcsUpstream.password),
+          ]
+        );
+      }
+    }
 
     const [rows] = await pool.execute(
       `
@@ -1043,6 +1116,19 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       }
     }
 
+    let trial_reminder = { created: false, reason: "helper_unavailable" };
+    if (rows[0] && typeof createWhmcsTrialReminderIfNeeded === "function") {
+      try {
+        trial_reminder = await createWhmcsTrialReminderIfNeeded(rows[0], req.admin?.id || null);
+      } catch (trialErr) {
+        console.warn("[admin/devices/whmcs-sync] trial reminder skipped:", trialErr?.message || trialErr);
+        trial_reminder = {
+          created: false,
+          reason: trialErr?.code === "ER_NO_SUCH_TABLE" ? "app_notifications_missing" : "trial_reminder_failed",
+        };
+      }
+    }
+
     return res.json({
       ok: true,
       device: rows[0] || null,
@@ -1051,9 +1137,12 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         client_id: service.client_id,
         status: service.status,
         next_due_date: service.next_due_date,
+        plan_name: planName,
       },
+      whmcs_credentials_synced: Boolean(whmcsUpstream),
       reminder,
       payment_confirmation,
+      trial_reminder,
     });
   } catch (err) {
     if (err?.message === "WHMCS API not configured") {

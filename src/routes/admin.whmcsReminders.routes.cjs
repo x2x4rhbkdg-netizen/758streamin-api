@@ -69,6 +69,12 @@ function normalizeWhmcsStatus(value) {
   return raw.length > 64 ? raw.slice(0, 64) : raw;
 }
 
+function normalizePlanName(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  return raw.length > 255 ? raw.slice(0, 255) : raw;
+}
+
 function toMysqlDatetime(value) {
   if (!value) return null;
 
@@ -161,6 +167,24 @@ async function fetchWhmcsServiceById(serviceId) {
     next_due_date: toMysqlDateOnly(matched?.nextduedate),
     raw: matched,
   };
+}
+
+function extractWhmcsPlanName(rawService) {
+  if (!rawService || typeof rawService !== "object") return null;
+
+  const candidates = [
+    rawService.productname,
+    rawService.product_name,
+    rawService.name,
+    rawService.groupname,
+  ];
+
+  for (const candidate of candidates) {
+    const planName = normalizePlanName(candidate);
+    if (planName) return planName;
+  }
+
+  return null;
 }
 
 function reminderTypeForDueDate(dueDateUtc, now = new Date()) {
@@ -345,6 +369,109 @@ async function createPaymentConfirmationIfNeeded(previousDevice, currentDevice, 
   };
 }
 
+function trialReminderTypeForExpiry(expiryDateUtc, now = new Date()) {
+  if (!(expiryDateUtc instanceof Date) || Number.isNaN(expiryDateUtc.getTime())) return null;
+
+  const todayUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const diffDays = Math.floor((expiryDateUtc.getTime() - todayUtcMs) / ONE_DAY_MS);
+
+  if (diffDays === 10) return "trial_10d";
+  if (diffDays === 5) return "trial_5d";
+  if (diffDays === 2) return "trial_2d";
+  if (diffDays === 1) return "trial_1d";
+  if (diffDays < 0) return "trial_expired";
+  return null;
+}
+
+function buildTrialReminderContent(device, reminderType, expiryDateUtc) {
+  const expiryYmd = toYmdUtc(expiryDateUtc) || "unknown";
+  const deviceCode = String(device?.device_code || "").trim() || "this device";
+  const planName = String(device?.plan_name || "").trim();
+  const customerName = String(device?.customer_name || "").trim();
+  const customerPart = customerName ? `${customerName}, ` : "";
+  const planPart = planName ? ` (${planName})` : "";
+
+  if (reminderType === "trial_expired") {
+    return {
+      title: "Your trial has expired",
+      message: `${customerPart}your trial${planPart} for device ${deviceCode} expired on ${expiryYmd}.`,
+      ttlHours: 24,
+    };
+  }
+
+  const dayMap = {
+    trial_10d: "10 days",
+    trial_5d: "5 days",
+    trial_2d: "2 days",
+    trial_1d: "1 day",
+  };
+
+  return {
+    title: `Trial expires in ${dayMap[reminderType]}`,
+    message: `${customerPart}your trial${planPart} for device ${deviceCode} expires on ${expiryYmd}.`,
+    ttlHours: reminderType === "trial_1d" ? 36 : 48,
+  };
+}
+
+async function createTrialReminderIfNeeded(device, adminId) {
+  const expiryDateUtc = parseDueDateUtc(device?.trial_expires_at);
+  if (!expiryDateUtc) return { created: false, reason: "no_trial_expiry" };
+
+  const reminderType = trialReminderTypeForExpiry(expiryDateUtc);
+  if (!reminderType) return { created: false, reason: "outside_window" };
+
+  const status = String(device?.status || "").trim().toLowerCase();
+  if (status && status !== "active") {
+    return { created: false, reason: "device_not_active", reminder_type: reminderType };
+  }
+
+  const targetDeviceId = Number(device?.id || 0);
+  if (!Number.isFinite(targetDeviceId) || targetDeviceId <= 0) {
+    return { created: false, reason: "invalid_device_id", reminder_type: reminderType };
+  }
+
+  const content = buildTrialReminderContent(device, reminderType, expiryDateUtc);
+
+  const [existingRows] = await pool.execute(
+    `
+    SELECT id
+    FROM app_notifications
+    WHERE COALESCE(target_scope, 'mass')='device'
+      AND target_device_id=?
+      AND title=?
+      AND message=?
+      AND DATE(created_at)=UTC_DATE()
+    LIMIT 1
+    `,
+    [targetDeviceId, content.title, content.message]
+  );
+
+  if (existingRows[0]) {
+    return {
+      created: false,
+      reason: "already_created_today",
+      reminder_type: reminderType,
+      notification_id: Number(existingRows[0].id),
+    };
+  }
+
+  const [ins] = await pool.execute(
+    `
+    INSERT INTO app_notifications
+      (title, message, status, target_scope, target_platform, target_device_id, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
+    VALUES
+      (?, ?, 'active', 'device', 'all', ?, NOW(), DATE_ADD(NOW(), INTERVAL ? HOUR), ?, NOW(), NOW())
+    `,
+    [content.title, content.message, targetDeviceId, content.ttlHours, adminId || null]
+  );
+
+  return {
+    created: true,
+    reminder_type: reminderType,
+    notification_id: Number(ins?.insertId || 0) || null,
+  };
+}
+
 async function runReminderScan({ deviceCode = "", serviceId = 0, limit = 500, adminId = null } = {}) {
   const whereParts = ["d.whmcs_next_due_date IS NOT NULL"];
   const params = [];
@@ -403,6 +530,56 @@ async function runReminderScan({ deviceCode = "", serviceId = 0, limit = 500, ad
   };
 }
 
+async function runTrialReminderScan({ deviceCode = "", limit = 500, adminId = null } = {}) {
+  const whereParts = ["d.trial_expires_at IS NOT NULL"];
+  const params = [];
+
+  if (deviceCode) {
+    whereParts.push("d.device_code=?");
+    params.push(deviceCode);
+  }
+
+  const [rows] = await pool.execute(
+    `
+    SELECT
+      d.id,
+      d.device_code,
+      d.customer_name,
+      d.plan_name,
+      d.status,
+      d.trial_expires_at
+    FROM devices d
+    WHERE ${whereParts.join(" AND ")}
+    ORDER BY d.trial_expires_at ASC
+    LIMIT ${limit}
+    `,
+    params
+  );
+
+  let created = 0;
+  let skipped = 0;
+  const results = [];
+
+  for (const device of rows) {
+    const out = await createTrialReminderIfNeeded(device, adminId);
+    if (out?.created) created += 1;
+    else skipped += 1;
+
+    results.push({
+      device_code: device.device_code,
+      trial_expires_at: device.trial_expires_at,
+      ...out,
+    });
+  }
+
+  return {
+    scanned: rows.length,
+    created,
+    skipped,
+    results,
+  };
+}
+
 router.post("/whmcs/reminders/auto", async (req, res) => {
   try {
     if (!requireAutomationSecret(req, res)) return;
@@ -419,11 +596,17 @@ router.post("/whmcs/reminders/auto", async (req, res) => {
       limit,
       adminId: null,
     });
+    const trial = await runTrialReminderScan({
+      deviceCode,
+      limit,
+      adminId: null,
+    });
 
     return res.json({
       ok: true,
       mode: serviceId > 0 || deviceCode ? "targeted" : "scan",
       ...output,
+      trial,
     });
   } catch (err) {
     if (err?.code === "ER_NO_SUCH_TABLE") {
@@ -493,10 +676,13 @@ router.post("/whmcs/payments/auto", async (req, res) => {
       return res.status(404).json({ error: "WHMCS service not found" });
     }
 
+    const planName = extractWhmcsPlanName(service.raw) || dev.plan_name || null;
+
     await pool.execute(
       `
       UPDATE devices
       SET
+        plan_name=?,
         whmcs_client_id=?,
         whmcs_service_id=?,
         whmcs_billing_status=?,
@@ -506,6 +692,7 @@ router.post("/whmcs/payments/auto", async (req, res) => {
       WHERE id=?
       `,
       [
+        planName,
         service.client_id,
         service.service_id,
         service.status,
@@ -536,6 +723,7 @@ router.post("/whmcs/payments/auto", async (req, res) => {
 
     const currentDevice = rows[0] || null;
     let payment_confirmation = { created: false, reason: "helper_unavailable" };
+    let trial_reminder = { created: false, reason: "helper_unavailable" };
 
     if (currentDevice && typeof createPaymentConfirmationIfNeeded === "function") {
       try {
@@ -545,6 +733,18 @@ router.post("/whmcs/payments/auto", async (req, res) => {
         payment_confirmation = {
           created: false,
           reason: confirmErr?.code === "ER_NO_SUCH_TABLE" ? "app_notifications_missing" : "payment_confirmation_failed",
+        };
+      }
+    }
+
+    if (currentDevice && typeof createTrialReminderIfNeeded === "function") {
+      try {
+        trial_reminder = await createTrialReminderIfNeeded(currentDevice, null);
+      } catch (trialErr) {
+        console.warn("[admin/whmcs/payments/auto] trial reminder skipped:", trialErr?.message || trialErr);
+        trial_reminder = {
+          created: false,
+          reason: trialErr?.code === "ER_NO_SUCH_TABLE" ? "app_notifications_missing" : "trial_reminder_failed",
         };
       }
     }
@@ -559,8 +759,10 @@ router.post("/whmcs/payments/auto", async (req, res) => {
         client_id: service.client_id,
         status: service.status,
         next_due_date: service.next_due_date,
+        plan_name: planName,
       },
       payment_confirmation,
+      trial_reminder,
     });
   } catch (err) {
     if (err?.message === "WHMCS API not configured") {
@@ -605,10 +807,16 @@ router.post("/whmcs/reminders/run", adminAuth, async (req, res) => {
       limit,
       adminId: req.admin?.id || null,
     });
+    const trial = await runTrialReminderScan({
+      deviceCode,
+      limit,
+      adminId: req.admin?.id || null,
+    });
 
     return res.json({
       ok: true,
       ...output,
+      trial,
     });
   } catch (err) {
     if (err?.code === "ER_NO_SUCH_TABLE") {
@@ -624,3 +832,5 @@ router.post("/whmcs/reminders/run", adminAuth, async (req, res) => {
 module.exports = router;
 module.exports.createReminderIfNeeded = createReminderIfNeeded;
 module.exports.createPaymentConfirmationIfNeeded = createPaymentConfirmationIfNeeded;
+module.exports.createTrialReminderIfNeeded = createTrialReminderIfNeeded;
+module.exports.extractWhmcsPlanName = extractWhmcsPlanName;
