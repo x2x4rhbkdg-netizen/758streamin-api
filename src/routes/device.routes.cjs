@@ -343,6 +343,8 @@ router.get("/device/profile", authJwt, async (req, res) => {
       trial_expires_at: device.trial_expires_at || null,
       whmcs_account_number: device.whmcs_account_number || null,
       account_number: device.whmcs_account_number || null,
+      companyname: device.whmcs_account_number || null,
+      company_name: device.whmcs_account_number || null,
       whmcs_next_due_date: device.whmcs_next_due_date || null,
       next_due_date: device.whmcs_next_due_date || null,
       expires_at: device.expires_at || null,
