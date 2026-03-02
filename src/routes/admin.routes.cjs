@@ -201,7 +201,7 @@ async function fetchWhmcsServiceById(serviceId) {
   };
 }
 
-async function fetchWhmcsClientPhoneById(clientId) {
+async function fetchWhmcsClientProfileById(clientId) {
   const apiUrl = String(env.WHMCS_API_URL || "").trim();
   const identifier = String(env.WHMCS_API_IDENTIFIER || "").trim();
   const secret = String(env.WHMCS_API_SECRET || "").trim();
@@ -239,6 +239,17 @@ async function fetchWhmcsClientPhoneById(clientId) {
     return null;
   }
 
+  const firstName = String(data?.firstname || "").trim();
+  const lastName = String(data?.lastname || "").trim();
+  const name =
+    [firstName, lastName].filter(Boolean).join(" ").trim() ||
+    String(data?.fullname || data?.clientname || "").trim() ||
+    null;
+  const accountNumber = String(
+    data?.companyname ||
+    data?.company_name ||
+    ""
+  ).trim() || null;
   const phone = String(
     data?.phonenumber ||
     data?.phone ||
@@ -246,7 +257,13 @@ async function fetchWhmcsClientPhoneById(clientId) {
     ""
   ).trim();
 
-  return phone || null;
+  if (!name && !phone && !accountNumber) return null;
+
+  return {
+    name,
+    phone: phone || null,
+    accountNumber,
+  };
 }
 
 async function getAnalyticsUpstream(admin) {
@@ -653,6 +670,7 @@ router.get("/devices", adminAuth, async (req, res) => {
         d.trial_expires_at,
         d.whmcs_client_id,
         d.whmcs_service_id,
+        d.whmcs_account_number,
         d.whmcs_billing_status,
         d.whmcs_next_due_date,
         d.whmcs_last_sync_at,
@@ -980,6 +998,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
         d.trial_expires_at,
         d.whmcs_client_id,
         d.whmcs_service_id,
+        d.whmcs_account_number,
         d.whmcs_billing_status,
         d.whmcs_next_due_date,
         d.whmcs_last_sync_at,
@@ -1041,6 +1060,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         status,
         whmcs_client_id,
         whmcs_service_id,
+        whmcs_account_number,
         whmcs_billing_status,
         whmcs_next_due_date
       FROM devices
@@ -1064,16 +1084,21 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
 
     const planName = extractWhmcsPlanName(service.raw) || dev.plan_name || null;
     const whmcsUpstream = extractWhmcsUpstreamCredentials(service.raw);
-    const whmcsPhone = (await fetchWhmcsClientPhoneById(service.client_id)) || dev.customer_phone || null;
+    const whmcsClient = (await fetchWhmcsClientProfileById(service.client_id)) || null;
+    const whmcsCustomerName = whmcsClient?.name || dev.customer_name || null;
+    const whmcsPhone = whmcsClient?.phone || dev.customer_phone || null;
+    const whmcsAccountNumber = whmcsClient?.accountNumber || dev.whmcs_account_number || null;
 
     await pool.execute(
       `
       UPDATE devices
       SET
+        customer_name=?,
         customer_phone=?,
         plan_name=?,
         whmcs_client_id=?,
         whmcs_service_id=?,
+        whmcs_account_number=?,
         whmcs_billing_status=?,
         whmcs_next_due_date=?,
         whmcs_last_sync_at=NOW(),
@@ -1081,10 +1106,12 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       WHERE id=?
       `,
       [
+        whmcsCustomerName,
         whmcsPhone,
         planName,
         service.client_id,
         service.service_id,
+        whmcsAccountNumber,
         service.status,
         service.next_due_date,
         dev.id,
@@ -1133,6 +1160,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         d.status,
         d.whmcs_client_id,
         d.whmcs_service_id,
+        d.whmcs_account_number,
         d.whmcs_billing_status,
         d.whmcs_next_due_date,
         d.whmcs_last_sync_at
@@ -1191,6 +1219,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         status: service.status,
         next_due_date: service.next_due_date,
         plan_name: planName,
+        account_number: whmcsAccountNumber,
       },
       whmcs_credentials_synced: Boolean(whmcsUpstream),
       reminder,
