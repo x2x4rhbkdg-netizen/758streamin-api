@@ -201,6 +201,54 @@ async function fetchWhmcsServiceById(serviceId) {
   };
 }
 
+async function fetchWhmcsClientPhoneById(clientId) {
+  const apiUrl = String(env.WHMCS_API_URL || "").trim();
+  const identifier = String(env.WHMCS_API_IDENTIFIER || "").trim();
+  const secret = String(env.WHMCS_API_SECRET || "").trim();
+
+  if (!apiUrl || !identifier || !secret || !Number(clientId)) {
+    return null;
+  }
+
+  const body = new URLSearchParams({
+    action: "GetClientsDetails",
+    clientid: String(Number(clientId)),
+    identifier,
+    secret,
+    responsetype: "json",
+  });
+
+  const resp = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "streamin-api/1.0",
+    },
+    body: body.toString(),
+  });
+
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  if (!resp.ok || String(data?.result || "").toLowerCase() !== "success") {
+    return null;
+  }
+
+  const phone = String(
+    data?.phonenumber ||
+    data?.phone ||
+    data?.phonenumberformatted ||
+    ""
+  ).trim();
+
+  return phone || null;
+}
+
 async function getAnalyticsUpstream(admin) {
   const params = [];
   let where = "WHERE du.enc_username IS NOT NULL AND du.enc_password IS NOT NULL";
@@ -988,6 +1036,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         id,
         device_code,
         customer_name,
+        customer_phone,
         plan_name,
         status,
         whmcs_client_id,
@@ -1015,11 +1064,13 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
 
     const planName = extractWhmcsPlanName(service.raw) || dev.plan_name || null;
     const whmcsUpstream = extractWhmcsUpstreamCredentials(service.raw);
+    const whmcsPhone = (await fetchWhmcsClientPhoneById(service.client_id)) || dev.customer_phone || null;
 
     await pool.execute(
       `
       UPDATE devices
       SET
+        customer_phone=?,
         plan_name=?,
         whmcs_client_id=?,
         whmcs_service_id=?,
@@ -1030,6 +1081,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       WHERE id=?
       `,
       [
+        whmcsPhone,
         planName,
         service.client_id,
         service.service_id,
@@ -1076,6 +1128,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         d.id,
         d.device_code,
         d.customer_name,
+        d.customer_phone,
         d.plan_name,
         d.status,
         d.whmcs_client_id,
