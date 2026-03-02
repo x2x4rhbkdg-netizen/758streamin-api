@@ -41,12 +41,21 @@ function normalizePin(pin) {
  *  ========================================= */
 router.post("/device/register", async (req, res) => {
   try {
-    const device_uuid = normStr(req.body?.device_uuid ?? req.body?.device_id, 64);
+    const device_uuid = normStr(
+      req.body?.device_uuid ?? req.body?.device_id ?? req.body?.device_fingerprint,
+      64
+    );
+    const legacy_device_uuid = normStr(
+      req.body?.legacy_device_uuid ?? req.body?.previous_device_uuid,
+      64
+    );
     const platform = normStr(req.body?.platform, 32) || null;
     const model = normStr(req.body?.model, 80) || null;
     const app_version = normStr(req.body?.app_version, 32) || null;
 
-    if (!device_uuid) return res.status(400).json({ error: "device_uuid or device_id required" });
+    if (!device_uuid) {
+      return res.status(400).json({ error: "device_uuid, device_id, or device_fingerprint required" });
+    }
     if (!isUuidLike(device_uuid)) return res.status(400).json({ error: "invalid device_uuid" });
 
     // Existing?
@@ -73,6 +82,33 @@ router.post("/device/register", async (req, res) => {
         device_code: exRows[0].device_code,
         status: exRows[0].status,
       });
+    }
+
+    if (legacy_device_uuid && legacy_device_uuid !== device_uuid) {
+      const [legacyRows] = await pool.execute(
+        `SELECT id, device_code, status
+         FROM devices
+         WHERE device_uuid=?
+         LIMIT 1`,
+        [legacy_device_uuid]
+      );
+
+      if (legacyRows[0]) {
+        await pool.execute(
+          `UPDATE devices
+           SET device_uuid=?, last_seen_at=NOW(), updated_at=NOW(),
+               platform=COALESCE(?, platform),
+               model=COALESCE(?, model),
+               app_version=COALESCE(?, app_version)
+           WHERE id=?`,
+          [device_uuid, platform, model, app_version, legacyRows[0].id]
+        );
+
+        return res.json({
+          device_code: legacyRows[0].device_code,
+          status: legacyRows[0].status,
+        });
+      }
     }
 
     // Create new pending device (device_code uniqueness)
@@ -125,7 +161,10 @@ router.post("/device/register", async (req, res) => {
  *  ========================================= */
 router.post("/device/auth", async (req, res) => {
   try {
-    const device_uuid = normStr(req.body?.device_uuid ?? req.body?.device_id, 64);
+    const device_uuid = normStr(
+      req.body?.device_uuid ?? req.body?.device_id ?? req.body?.device_fingerprint,
+      64
+    );
     const device_code = normStr(req.body?.device_code, 32);
 
     if (!device_uuid || !device_code) {
