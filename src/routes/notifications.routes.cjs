@@ -52,21 +52,91 @@ function normalizeNotificationTimestamps(row) {
   };
 }
 
+function normalizeMergeValue(value, formatter) {
+  if (value === null || typeof value === "undefined") return "";
+  const raw = typeof formatter === "function" ? formatter(value) : value;
+  if (raw === null || typeof raw === "undefined") return "";
+  const str = String(raw).trim();
+  return str;
+}
+
+function toLocalDateText(value) {
+  if (!value) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const isoCandidate = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00Z` : raw;
+  const d = new Date(isoCandidate);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function buildMergeMap(device) {
+  return {
+    "{{device_code}}": normalizeMergeValue(device?.device_code),
+    "{{customer_name}}": normalizeMergeValue(device?.customer_name),
+    "{{customer_phone}}": normalizeMergeValue(device?.customer_phone),
+    "{{plan_name}}": normalizeMergeValue(device?.plan_name),
+    "{{trial_expires_at}}": normalizeMergeValue(device?.trial_expires_at, toLocalDateText),
+    "{{whmcs_next_due_date}}": normalizeMergeValue(device?.whmcs_next_due_date, toLocalDateText),
+    "{{whmcs_account_number}}": normalizeMergeValue(device?.whmcs_account_number),
+  };
+}
+
+function applyMergeTags(value, mergeMap) {
+  if (value === null || typeof value === "undefined") return value;
+  let output = String(value);
+  for (const [tag, replacement] of Object.entries(mergeMap || {})) {
+    output = output.split(tag).join(replacement);
+  }
+  return output;
+}
+
+function personalizeNotification(row, mergeMap) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    ...row,
+    title: applyMergeTags(row.title, mergeMap),
+    message: applyMergeTags(row.message, mergeMap),
+    ticker_text: applyMergeTags(row.ticker_text, mergeMap),
+  };
+}
+
 router.get("/notifications", authJwt, async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(200, toInt(req.query.limit, 50)));
     const deviceId = Number(req.device.device_id);
 
+    const [deviceRows] = await pool.execute(
+      `
+      SELECT
+        platform,
+        device_code,
+        customer_name,
+        customer_phone,
+        plan_name,
+        trial_expires_at,
+        whmcs_next_due_date,
+        whmcs_account_number
+      FROM devices
+      WHERE id=?
+      LIMIT 1
+      `,
+      [deviceId]
+    );
+    const deviceRow = deviceRows[0] || null;
+
     let platform = normPlatform(req.query.platform);
     if (!platform) {
-      const [rows] = await pool.execute(
-        `SELECT platform FROM devices WHERE id=? LIMIT 1`,
-        [deviceId]
-      );
-      platform = normPlatform(rows[0]?.platform || "");
+      platform = normPlatform(deviceRow?.platform || "");
     }
 
     const alias = derivePlatformAlias(platform);
+    const mergeMap = buildMergeMap(deviceRow);
 
     const params = [deviceId];
     let massPlatformClause = "";
@@ -117,7 +187,9 @@ router.get("/notifications", authJwt, async (req, res) => {
     );
 
     return res.json({
-      notifications: rows.map(normalizeNotificationTimestamps),
+      notifications: rows.map((row) =>
+        normalizeNotificationTimestamps(personalizeNotification(row, mergeMap))
+      ),
       server_time: new Date().toISOString(),
     });
   } catch (err) {
