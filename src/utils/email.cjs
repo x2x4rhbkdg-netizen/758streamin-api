@@ -28,13 +28,22 @@ async function sendResetEmail({ to, name, resetUrl }) {
   });
 
   const title = "Reset your 758streamin admin password";
+  const logoUrl = "https://admin.758streamin.com/assets/img/758_StreamIN_LOGO.png";
   const greeting = name ? `Hi ${name},` : "Hi,";
   const text = `${greeting}\n\nUse the link below to reset your password:\n${resetUrl}\n\nIf you did not request this, you can ignore this email.`;
   const html = `
-    <p>${greeting}</p>
-    <p>Use the link below to reset your password:</p>
-    <p><a href="${resetUrl}">${resetUrl}</a></p>
-    <p>If you did not request this, you can ignore this email.</p>
+    <div style="font-family: Arial, sans-serif;">
+      <img
+        src="${logoUrl}"
+        alt="758streamin"
+        width="160"
+        style="display:block; margin:0 0 16px;"
+      />
+      <p>${greeting}</p>
+      <p>Use the link below to reset your password:</p>
+      <p><a href="${resetUrl}">${resetUrl}</a></p>
+      <p>If you did not request this, you can ignore this email.</p>
+    </div>
   `;
 
   await transporter.sendMail({
