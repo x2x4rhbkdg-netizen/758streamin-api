@@ -35,6 +35,43 @@ function normalizePin(pin) {
   return /^\d{4}$/.test(s) ? s : null;
 }
 
+function isTrialExpired(trialExpiresAt) {
+  if (!trialExpiresAt) return false;
+  const expiresAtMs = new Date(trialExpiresAt).getTime();
+  if (Number.isNaN(expiresAtMs)) return false;
+  return expiresAtMs <= Date.now();
+}
+
+async function normalizeTrialStatus(device) {
+  if (!device) {
+    return {
+      status: null,
+      trial_expires_at: null,
+      trial_expired: false,
+    };
+  }
+
+  const trial_expires_at = device.trial_expires_at || null;
+  const trial_expired = isTrialExpired(trial_expires_at);
+  let status = device.status || null;
+
+  if (trial_expired && status !== "suspended" && device.id) {
+    await pool.execute(
+      `UPDATE devices
+       SET status='suspended', updated_at=NOW()
+       WHERE id=?`,
+      [device.id]
+    );
+    status = "suspended";
+  }
+
+  return {
+    status,
+    trial_expires_at,
+    trial_expired,
+  };
+}
+
 /** =========================================
  *  POST /v1/device/register
  *  body: { device_uuid, platform, model, app_version }
@@ -60,7 +97,7 @@ router.post("/device/register", async (req, res) => {
 
     // Existing?
     const [exRows] = await pool.execute(
-      `SELECT id, device_code, status
+      `SELECT id, device_code, status, trial_expires_at
        FROM devices
        WHERE device_uuid=?
        LIMIT 1`,
@@ -78,15 +115,19 @@ router.post("/device/register", async (req, res) => {
         [platform, model, app_version, exRows[0].id]
       );
 
+      const trialState = await normalizeTrialStatus(exRows[0]);
+
       return res.json({
         device_code: exRows[0].device_code,
-        status: exRows[0].status,
+        status: trialState.status,
+        trial_expires_at: trialState.trial_expires_at,
+        trial_expired: trialState.trial_expired,
       });
     }
 
     if (legacy_device_uuid && legacy_device_uuid !== device_uuid) {
       const [legacyRows] = await pool.execute(
-        `SELECT id, device_code, status
+        `SELECT id, device_code, status, trial_expires_at
          FROM devices
          WHERE device_uuid=?
          LIMIT 1`,
@@ -104,9 +145,13 @@ router.post("/device/register", async (req, res) => {
           [device_uuid, platform, model, app_version, legacyRows[0].id]
         );
 
+        const trialState = await normalizeTrialStatus(legacyRows[0]);
+
         return res.json({
           device_code: legacyRows[0].device_code,
-          status: legacyRows[0].status,
+          status: trialState.status,
+          trial_expires_at: trialState.trial_expires_at,
+          trial_expired: trialState.trial_expired,
         });
       }
     }
@@ -149,7 +194,12 @@ router.post("/device/register", async (req, res) => {
       [deviceId]
     );
 
-    return res.json({ device_code: code, status: "pending" });
+    return res.json({
+      device_code: code,
+      status: "pending",
+      trial_expires_at: null,
+      trial_expired: false,
+    });
   } catch (err) {
     return sendInternalError(req, res, "device/register", err);
   }
@@ -177,6 +227,7 @@ router.post("/device/auth", async (req, res) => {
          d.id,
          d.device_uuid,
          d.status,
+         d.trial_expires_at,
          a.expires_at,
          a.max_streams
        FROM devices d
@@ -188,12 +239,26 @@ router.post("/device/auth", async (req, res) => {
 
     const dev = rows[0];
     if (!dev) return res.status(401).json({ error: "device not registered" });
-    if (dev.status !== "active") return res.status(403).json({ error: "device not active" });
+
+    const trialState = await normalizeTrialStatus(dev);
+    if (trialState.status !== "active") {
+      return res.status(403).json({
+        error: trialState.trial_expired ? "trial expired" : "device not active",
+        status: trialState.status,
+        trial_expires_at: trialState.trial_expires_at,
+        trial_expired: trialState.trial_expired,
+      });
+    }
 
     if (dev.expires_at) {
       const exp = new Date(dev.expires_at).getTime();
       if (!Number.isNaN(exp) && exp < Date.now()) {
-        return res.status(403).json({ error: "device expired" });
+        return res.status(403).json({
+          error: "device expired",
+          status: trialState.status,
+          trial_expires_at: trialState.trial_expires_at,
+          trial_expired: trialState.trial_expired,
+        });
       }
     }
 
@@ -356,6 +421,8 @@ router.get("/device/profile", authJwt, async (req, res) => {
     const [rows] = await pool.execute(
       `
       SELECT
+        d.id,
+        d.status,
         d.device_code,
         d.customer_name,
         d.plan_name,
@@ -374,12 +441,15 @@ router.get("/device/profile", authJwt, async (req, res) => {
 
     const device = rows[0];
     if (!device) return res.status(404).json({ error: "device not found" });
+    const trialState = await normalizeTrialStatus(device);
 
     return res.json({
+      status: trialState.status,
       device_code: device.device_code || req.device.device_code || null,
       customer_name: device.customer_name || null,
       plan_name: device.plan_name || null,
-      trial_expires_at: device.trial_expires_at || null,
+      trial_expires_at: trialState.trial_expires_at,
+      trial_expired: trialState.trial_expired,
       whmcs_account_number: device.whmcs_account_number || null,
       whmcsAccountNumber: device.whmcs_account_number || null,
       account_number: device.whmcs_account_number || null,
