@@ -699,7 +699,9 @@ router.get("/devices", adminAuth, async (req, res) => {
     }
 
     if (req.admin?.role !== "super_admin") {
-      whereParts.push("d.reseller_admin_id=?");
+      whereParts.push(
+        "(d.reseller_admin_id=? OR (d.reseller_admin_id IS NULL AND LOWER(COALESCE(d.status,''))='pending'))"
+      );
       params.push(req.admin.id);
     }
 
@@ -907,6 +909,26 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
         typeof whmcs_next_due_date !== "undefined" ||
         typeof whmcs_last_sync_at !== "undefined");
 
+    const [devRows] = await pool.execute(
+      `SELECT id, reseller_admin_id, status FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+    const canAutoAssignToReseller =
+      req.admin?.role !== "super_admin" &&
+      !dev.reseller_admin_id &&
+      String(dev.status || "").toLowerCase() === "pending";
+
+    if (
+      req.admin?.role !== "super_admin" &&
+      dev.reseller_admin_id !== req.admin.id &&
+      !canAutoAssignToReseller
+    ) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
     if (
       !hasCustomer &&
       !hasPhone &&
@@ -915,23 +937,22 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       !hasReseller &&
       !hasPlan &&
       !hasTrial &&
-      !hasWhmcs
+      !hasWhmcs &&
+      !canAutoAssignToReseller
     ) {
       return res.status(400).json({ error: "no fields to update" });
     }
 
-    const [devRows] = await pool.execute(
-      `SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1`,
-      [code]
-    );
-
-    const dev = devRows[0];
-    if (!dev) return res.status(404).json({ error: "device not found" });
-    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
-      return res.status(403).json({ error: "forbidden" });
-    }
-
-    if (hasCustomer || hasPhone || hasStatus || hasReseller || hasPlan || hasTrial || hasWhmcs) {
+    if (
+      hasCustomer ||
+      hasPhone ||
+      hasStatus ||
+      hasReseller ||
+      hasPlan ||
+      hasTrial ||
+      hasWhmcs ||
+      canAutoAssignToReseller
+    ) {
       const updates = [];
       const params = [];
 
@@ -966,6 +987,9 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
         }
         updates.push("reseller_admin_id=?");
         params.push(resellerId);
+      } else if (canAutoAssignToReseller) {
+        updates.push("reseller_admin_id=?");
+        params.push(req.admin.id);
       }
 
       if (hasWhmcs) {
