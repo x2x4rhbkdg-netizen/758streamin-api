@@ -72,6 +72,11 @@ async function normalizeTrialStatus(device) {
   };
 }
 
+function logRegisterDebug(event, details) {
+  if (!env.API_DEBUG_ERRORS) return;
+  console.warn("[device/register]", event, details);
+}
+
 /** =========================================
  *  POST /v1/device/register
  *  body: { device_uuid, platform, model, app_version }
@@ -95,6 +100,14 @@ router.post("/device/register", async (req, res) => {
     }
     if (!isUuidLike(device_uuid)) return res.status(400).json({ error: "invalid device_uuid" });
 
+    logRegisterDebug("request", {
+      device_uuid,
+      legacy_device_uuid: legacy_device_uuid || null,
+      platform,
+      model,
+      app_version,
+    });
+
     // Existing?
     const [exRows] = await pool.execute(
       `SELECT id, device_code, status, trial_expires_at
@@ -116,6 +129,11 @@ router.post("/device/register", async (req, res) => {
       );
 
       const trialState = await normalizeTrialStatus(exRows[0]);
+      logRegisterDebug("existing-device", {
+        branch: "device_uuid",
+        device_uuid,
+        device_id: exRows[0].id,
+      });
 
       return res.json({
         device_code: exRows[0].device_code,
@@ -146,6 +164,12 @@ router.post("/device/register", async (req, res) => {
         );
 
         const trialState = await normalizeTrialStatus(legacyRows[0]);
+        logRegisterDebug("legacy-device", {
+          branch: "legacy_device_uuid",
+          device_uuid,
+          legacy_device_uuid,
+          device_id: legacyRows[0].id,
+        });
 
         return res.json({
           device_code: legacyRows[0].device_code,
@@ -193,6 +217,13 @@ router.post("/device/register", async (req, res) => {
        ON DUPLICATE KEY UPDATE updated_at=NOW()`,
       [deviceId]
     );
+
+    logRegisterDebug("new-device", {
+      branch: "insert",
+      device_uuid,
+      legacy_device_uuid: legacy_device_uuid || null,
+      device_id: deviceId,
+    });
 
     return res.json({
       device_code: code,
