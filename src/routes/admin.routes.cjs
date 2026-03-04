@@ -77,6 +77,54 @@ function hashToken(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
+function getResetEmailErrorPayload(err) {
+  const code = String(err?.code || "").trim().toUpperCase();
+  const responseCode = Number(err?.responseCode || 0);
+  const response = String(err?.response || "").toLowerCase();
+
+  if (code === "EMAIL_NOT_CONFIGURED") {
+    return {
+      status: 500,
+      error: "email not configured",
+      hint: "Set SMTP_HOST and SMTP_FROM on the API server.",
+    };
+  }
+
+  if (code === "EAUTH" || responseCode === 534 || responseCode === 535) {
+    return {
+      status: 500,
+      error: "SMTP authentication failed",
+      hint: "Check SMTP_USER and SMTP_PASS.",
+    };
+  }
+
+  if (
+    ["ECONNECTION", "ESOCKET", "ETIMEDOUT", "EDNS", "ENOTFOUND", "ECONNREFUSED"].includes(code)
+  ) {
+    return {
+      status: 500,
+      error: "SMTP connection failed",
+      hint: "Check SMTP_HOST, SMTP_PORT, SMTP_SECURE, DNS, and firewall access.",
+    };
+  }
+
+  if (
+    code === "EENVELOPE" ||
+    responseCode === 550 ||
+    responseCode === 553 ||
+    response.includes("sender") ||
+    response.includes("from address")
+  ) {
+    return {
+      status: 500,
+      error: "SMTP sender rejected",
+      hint: "Check SMTP_FROM and make sure that sender address is allowed by the mail server.",
+    };
+  }
+
+  return null;
+}
+
 function normalizePin(pin) {
   const s = String(pin || "").trim();
   return /^\d{4}$/.test(s) ? s : null;
@@ -398,8 +446,12 @@ router.post("/auth/reset/request", async (req, res) => {
 
     return res.json(response);
   } catch (err) {
-    if (err?.code === "EMAIL_NOT_CONFIGURED") {
-      return res.status(500).json({ error: "email not configured" });
+    const emailError = getResetEmailErrorPayload(err);
+    if (emailError) {
+      return res.status(emailError.status).json({
+        error: emailError.error,
+        hint: emailError.hint,
+      });
     }
     return sendInternalError(req, res, "admin/auth/reset/request", err);
   }
