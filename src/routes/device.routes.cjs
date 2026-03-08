@@ -72,6 +72,90 @@ async function normalizeTrialStatus(device) {
   };
 }
 
+function normalizeWhmcsPrice(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const numeric = Number(raw.replace(/,/g, "").replace(/[^0-9.-]/g, ""));
+  if (!Number.isFinite(numeric)) return raw;
+  return numeric.toFixed(2);
+}
+
+function extractWhmcsPrice(product) {
+  if (!product || typeof product !== "object") return null;
+  const candidates = [
+    product.recurringamount,
+    product.recurring_amount,
+    product.amount,
+    product.price,
+    product.total,
+    product.firstpaymentamount,
+    product.first_payment_amount,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeWhmcsPrice(candidate);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+async function fetchWhmcsPriceByServiceId(serviceId) {
+  const serviceIdNum = Number(serviceId || 0);
+  if (!Number.isFinite(serviceIdNum) || serviceIdNum <= 0) return null;
+
+  const apiUrl = String(env.WHMCS_API_URL || "").trim();
+  const identifier = String(env.WHMCS_API_IDENTIFIER || "").trim();
+  const secret = String(env.WHMCS_API_SECRET || "").trim();
+
+  if (!apiUrl || !identifier || !secret) return null;
+
+  try {
+    const body = new URLSearchParams({
+      action: "GetClientsProducts",
+      serviceid: String(serviceIdNum),
+      identifier,
+      secret,
+      responsetype: "json",
+    });
+
+    const resp = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "streamin-api/1.0",
+      },
+      body: body.toString(),
+    });
+
+    const text = await resp.text();
+    if (!resp.ok) return null;
+
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return null;
+    }
+
+    if (String(data?.result || "").toLowerCase() !== "success") return null;
+
+    let products = data?.products?.product || [];
+    if (!Array.isArray(products)) {
+      products = products && typeof products === "object" ? [products] : [];
+    }
+
+    const matched =
+      products.find((p) => Number(p?.id || p?.serviceid || 0) === serviceIdNum) ||
+      products[0] ||
+      null;
+    if (!matched) return null;
+
+    return extractWhmcsPrice(matched);
+  } catch {
+    return null;
+  }
+}
+
 function logRegisterDebug(event, details) {
   if (!env.API_DEBUG_ERRORS) return;
   console.warn("[device/register]", event, details);
@@ -110,7 +194,7 @@ router.post("/device/register", async (req, res) => {
 
     // Existing?
     const [exRows] = await pool.execute(
-      `SELECT id, device_code, status, trial_expires_at
+      `SELECT id, device_code, status, trial_expires_at, plan_name, whmcs_account_number, whmcs_service_id
        FROM devices
        WHERE device_uuid=?
        LIMIT 1`,
@@ -129,6 +213,10 @@ router.post("/device/register", async (req, res) => {
       );
 
       const trialState = await normalizeTrialStatus(exRows[0]);
+      const whmcsPrice =
+        trialState.status === "suspended"
+          ? await fetchWhmcsPriceByServiceId(exRows[0].whmcs_service_id)
+          : null;
       logRegisterDebug("existing-device", {
         branch: "device_uuid",
         device_uuid,
@@ -140,12 +228,26 @@ router.post("/device/register", async (req, res) => {
         status: trialState.status,
         trial_expires_at: trialState.trial_expires_at,
         trial_expired: trialState.trial_expired,
+        plan_name: exRows[0].plan_name || null,
+        plan: exRows[0].plan_name || null,
+        whmcs_account_number: exRows[0].whmcs_account_number || null,
+        whmcsAccountNumber: exRows[0].whmcs_account_number || null,
+        account_number: exRows[0].whmcs_account_number || null,
+        accountNumber: exRows[0].whmcs_account_number || null,
+        whmcs_price: whmcsPrice,
+        whmcsPrice: whmcsPrice,
+        price: whmcsPrice,
+        whmcs: {
+          account_number: exRows[0].whmcs_account_number || null,
+          accountNumber: exRows[0].whmcs_account_number || null,
+          price: whmcsPrice,
+        },
       });
     }
 
     if (legacy_device_uuid && legacy_device_uuid !== device_uuid) {
       const [legacyRows] = await pool.execute(
-        `SELECT id, device_code, status, trial_expires_at
+        `SELECT id, device_code, status, trial_expires_at, plan_name, whmcs_account_number, whmcs_service_id
          FROM devices
          WHERE device_uuid=?
          LIMIT 1`,
@@ -164,6 +266,10 @@ router.post("/device/register", async (req, res) => {
         );
 
         const trialState = await normalizeTrialStatus(legacyRows[0]);
+        const whmcsPrice =
+          trialState.status === "suspended"
+            ? await fetchWhmcsPriceByServiceId(legacyRows[0].whmcs_service_id)
+            : null;
         logRegisterDebug("legacy-device", {
           branch: "legacy_device_uuid",
           device_uuid,
@@ -176,6 +282,20 @@ router.post("/device/register", async (req, res) => {
           status: trialState.status,
           trial_expires_at: trialState.trial_expires_at,
           trial_expired: trialState.trial_expired,
+          plan_name: legacyRows[0].plan_name || null,
+          plan: legacyRows[0].plan_name || null,
+          whmcs_account_number: legacyRows[0].whmcs_account_number || null,
+          whmcsAccountNumber: legacyRows[0].whmcs_account_number || null,
+          account_number: legacyRows[0].whmcs_account_number || null,
+          accountNumber: legacyRows[0].whmcs_account_number || null,
+          whmcs_price: whmcsPrice,
+          whmcsPrice: whmcsPrice,
+          price: whmcsPrice,
+          whmcs: {
+            account_number: legacyRows[0].whmcs_account_number || null,
+            accountNumber: legacyRows[0].whmcs_account_number || null,
+            price: whmcsPrice,
+          },
         });
       }
     }
@@ -230,6 +350,15 @@ router.post("/device/register", async (req, res) => {
       status: "pending",
       trial_expires_at: null,
       trial_expired: false,
+      plan_name: null,
+      plan: null,
+      whmcs_account_number: null,
+      whmcsAccountNumber: null,
+      account_number: null,
+      accountNumber: null,
+      whmcs_price: null,
+      whmcsPrice: null,
+      price: null,
     });
   } catch (err) {
     return sendInternalError(req, res, "device/register", err);
@@ -259,6 +388,9 @@ router.post("/device/auth", async (req, res) => {
          d.device_uuid,
          d.status,
          d.trial_expires_at,
+         d.plan_name,
+         d.whmcs_account_number,
+         d.whmcs_service_id,
          a.expires_at,
          a.max_streams
        FROM devices d
@@ -273,11 +405,29 @@ router.post("/device/auth", async (req, res) => {
 
     const trialState = await normalizeTrialStatus(dev);
     if (trialState.status !== "active") {
+      const whmcsPrice =
+        trialState.status === "suspended"
+          ? await fetchWhmcsPriceByServiceId(dev.whmcs_service_id)
+          : null;
       return res.status(403).json({
         error: trialState.trial_expired ? "trial expired" : "device not active",
         status: trialState.status,
         trial_expires_at: trialState.trial_expires_at,
         trial_expired: trialState.trial_expired,
+        plan_name: dev.plan_name || null,
+        plan: dev.plan_name || null,
+        whmcs_account_number: dev.whmcs_account_number || null,
+        whmcsAccountNumber: dev.whmcs_account_number || null,
+        account_number: dev.whmcs_account_number || null,
+        accountNumber: dev.whmcs_account_number || null,
+        whmcs_price: whmcsPrice,
+        whmcsPrice: whmcsPrice,
+        price: whmcsPrice,
+        whmcs: {
+          account_number: dev.whmcs_account_number || null,
+          accountNumber: dev.whmcs_account_number || null,
+          price: whmcsPrice,
+        },
       });
     }
 
@@ -459,6 +609,7 @@ router.get("/device/profile", authJwt, async (req, res) => {
         d.plan_name,
         d.trial_expires_at,
         d.whmcs_account_number,
+        d.whmcs_service_id,
         d.whmcs_next_due_date,
         a.expires_at,
         a.max_streams
@@ -473,12 +624,17 @@ router.get("/device/profile", authJwt, async (req, res) => {
     const device = rows[0];
     if (!device) return res.status(404).json({ error: "device not found" });
     const trialState = await normalizeTrialStatus(device);
+    const whmcsPrice =
+      trialState.status === "suspended"
+        ? await fetchWhmcsPriceByServiceId(device.whmcs_service_id)
+        : null;
 
     return res.json({
       status: trialState.status,
       device_code: device.device_code || req.device.device_code || null,
       customer_name: device.customer_name || null,
       plan_name: device.plan_name || null,
+      plan: device.plan_name || null,
       trial_expires_at: trialState.trial_expires_at,
       trial_expired: trialState.trial_expired,
       whmcs_account_number: device.whmcs_account_number || null,
@@ -487,6 +643,9 @@ router.get("/device/profile", authJwt, async (req, res) => {
       accountNumber: device.whmcs_account_number || null,
       companyname: device.whmcs_account_number || null,
       company_name: device.whmcs_account_number || null,
+      whmcs_price: whmcsPrice,
+      whmcsPrice: whmcsPrice,
+      price: whmcsPrice,
       whmcs_next_due_date: device.whmcs_next_due_date || null,
       whmcsNextDueDate: device.whmcs_next_due_date || null,
       next_due_date: device.whmcs_next_due_date || null,
@@ -496,6 +655,7 @@ router.get("/device/profile", authJwt, async (req, res) => {
         accountNumber: device.whmcs_account_number || null,
         companyname: device.whmcs_account_number || null,
         company_name: device.whmcs_account_number || null,
+        price: whmcsPrice,
         next_due_date: device.whmcs_next_due_date || null,
         nextDueDate: device.whmcs_next_due_date || null,
       },
