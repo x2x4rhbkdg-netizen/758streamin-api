@@ -9,7 +9,7 @@ const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
-const VALID_SLOT_KEYS = new Set(["home_left", "home_right"]);
+const VALID_SLOT_KEYS = new Set(["home_left", "home_right", "movies", "series"]);
 const VALID_KINDS = new Set(["poster", "media"]);
 
 const MIME_EXT = {

@@ -5,7 +5,8 @@ const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
 
-const VALID_SLOT_KEYS = new Set(["home_left", "home_right"]);
+const SLOT_ORDER = ["home_left", "home_right", "movies", "series"];
+const VALID_SLOT_KEYS = new Set(SLOT_ORDER);
 const VALID_MEDIA_TYPES = new Set(["poster", "video"]);
 
 function requireSuperAdmin(req, res) {
@@ -92,7 +93,7 @@ router.get("/home-ads", adminAuth, async (req, res) => {
         ha.updated_at
       FROM app_home_ads ha
       LEFT JOIN admins a ON a.id = ha.created_by_admin_id
-      ORDER BY FIELD(ha.slot_key, 'home_left', 'home_right'), ha.id ASC
+      ORDER BY FIELD(ha.slot_key, 'home_left', 'home_right', 'movies', 'series'), ha.id ASC
       `
     );
     return res.json({ ads: rows });

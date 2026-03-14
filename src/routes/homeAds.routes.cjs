@@ -24,7 +24,7 @@ router.get("/home-ads", authJwt, async (req, res) => {
       WHERE is_active=1
         AND (starts_at IS NULL OR starts_at <= NOW())
         AND (ends_at IS NULL OR ends_at >= NOW())
-      ORDER BY FIELD(slot_key, 'home_left', 'home_right'), id ASC
+      ORDER BY FIELD(slot_key, 'home_left', 'home_right', 'movies', 'series'), id ASC
       `
     );
     return res.json({ ads: rows });
