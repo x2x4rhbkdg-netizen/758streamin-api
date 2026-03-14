@@ -44,6 +44,13 @@ function validHttpUrl(v) {
   }
 }
 
+function validLaunchTarget(v) {
+  const s = String(v || "").trim();
+  if (!s) return true;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return true;
+  return /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/i.test(s);
+}
+
 function normSlotKey(v) {
   const s = String(v || "").trim().toLowerCase();
   return VALID_SLOT_KEYS.has(s) ? s : null;
@@ -82,6 +89,7 @@ router.get("/home-ads", adminAuth, async (req, res) => {
         ha.slot_key,
         ha.title,
         ha.poster_url,
+        ha.launch_url,
         ha.media_type,
         ha.media_url,
         ha.is_active,
@@ -117,6 +125,7 @@ router.put("/home-ads/:slotKey", adminAuth, async (req, res) => {
 
     const title = normStr(req.body?.title, 190) || null;
     const posterUrl = normStr(req.body?.poster_url, 2000) || null;
+    const launchUrl = normStr(req.body?.launch_url ?? req.body?.launcher_url, 2000) || null;
     const mediaType = normMediaType(req.body?.media_type || "poster");
     const mediaUrl = normStr(req.body?.media_url, 2000) || null;
     const isActive = normBool(req.body?.is_active, true);
@@ -126,6 +135,7 @@ router.put("/home-ads/:slotKey", adminAuth, async (req, res) => {
     if (!mediaType) return res.status(400).json({ error: "invalid media_type" });
     if (typeof isActive !== "boolean") return res.status(400).json({ error: "invalid is_active" });
     if (!validHttpUrl(posterUrl)) return res.status(400).json({ error: "invalid poster_url" });
+    if (!validLaunchTarget(launchUrl)) return res.status(400).json({ error: "invalid launch_url" });
     if (!validHttpUrl(mediaUrl)) return res.status(400).json({ error: "invalid media_url" });
     if (typeof startsAt === "undefined") return res.status(400).json({ error: "invalid starts_at" });
     if (typeof endsAt === "undefined") return res.status(400).json({ error: "invalid ends_at" });
@@ -136,12 +146,13 @@ router.put("/home-ads/:slotKey", adminAuth, async (req, res) => {
     await pool.execute(
       `
       INSERT INTO app_home_ads
-        (slot_key, title, poster_url, media_type, media_url, is_active, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
+        (slot_key, title, poster_url, launch_url, media_type, media_url, is_active, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       ON DUPLICATE KEY UPDATE
         title=VALUES(title),
         poster_url=VALUES(poster_url),
+        launch_url=VALUES(launch_url),
         media_type=VALUES(media_type),
         media_url=VALUES(media_url),
         is_active=VALUES(is_active),
@@ -154,6 +165,7 @@ router.put("/home-ads/:slotKey", adminAuth, async (req, res) => {
         slotKey,
         title,
         posterUrl,
+        launchUrl,
         mediaType,
         mediaUrl,
         isActive ? 1 : 0,

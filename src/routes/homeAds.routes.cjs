@@ -14,6 +14,7 @@ router.get("/home-ads", authJwt, async (req, res) => {
         slot_key,
         title,
         poster_url,
+        launch_url,
         media_type,
         media_url,
         is_active,

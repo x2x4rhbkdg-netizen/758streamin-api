@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS app_home_ads (
   slot_key            ENUM('home_left','home_right','movies','series') NOT NULL,
   title               VARCHAR(190) NULL,
   poster_url          TEXT NULL,
+  launch_url          TEXT NULL,
   media_type          ENUM('poster','video') NOT NULL DEFAULT 'poster',
   media_url           TEXT NULL,
   is_active           TINYINT(1) NOT NULL DEFAULT 1,
@@ -182,6 +183,9 @@ CREATE TABLE IF NOT EXISTS app_home_ads (
     FOREIGN KEY (created_by_admin_id) REFERENCES admins(id)
     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE app_home_ads
+  ADD COLUMN IF NOT EXISTS launch_url TEXT NULL AFTER poster_url;
 
 ALTER TABLE app_home_ads
   MODIFY COLUMN slot_key ENUM('home_left','home_right','movies','series') NOT NULL;
