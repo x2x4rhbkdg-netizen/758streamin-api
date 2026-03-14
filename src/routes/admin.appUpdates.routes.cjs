@@ -25,12 +25,6 @@ function toInt(v) {
   return Math.trunc(n);
 }
 
-function toBool(v) {
-  if (typeof v === "boolean") return v;
-  const s = String(v ?? "").trim().toLowerCase();
-  return ["1", "true", "yes", "on"].includes(s);
-}
-
 function normChannel(v) {
   const s = String(v || "direct").trim().toLowerCase();
   if (!["direct", "play", "amazon"].includes(s)) return null;
@@ -206,7 +200,6 @@ router.post("/app-updates", adminAuth, async (req, res) => {
     const apkUrl = normStr(req.body?.apk_url, 1000);
     const sha256 = normStr(req.body?.sha256, 64) || null;
     const status = normStatus(req.body?.status || "active");
-    const forceUpdate = toBool(req.body?.force_update ?? req.body?.force);
     const notes = normStr(req.body?.notes, 500) || null;
 
     if (!channel) return res.status(400).json({ error: "invalid channel" });
@@ -237,7 +230,7 @@ router.post("/app-updates", adminAuth, async (req, res) => {
         versionName,
         apkUrl,
         sha256,
-        forceUpdate ? 1 : 0,
+        1,
         status,
         notes,
         req.admin?.id || null,
@@ -278,6 +271,8 @@ router.patch("/app-updates/:id", adminAuth, async (req, res) => {
 
     const updates = [];
     const params = [];
+    const requestedForceUpdateChange =
+      typeof req.body?.force_update !== "undefined" || typeof req.body?.force !== "undefined";
 
     if (typeof req.body?.channel !== "undefined") {
       const channel = normChannel(req.body?.channel);
@@ -334,21 +329,17 @@ router.patch("/app-updates/:id", adminAuth, async (req, res) => {
       params.push(status);
     }
 
-    if (typeof req.body?.force_update !== "undefined" || typeof req.body?.force !== "undefined") {
-      const forceUpdate = toBool(req.body?.force_update ?? req.body?.force);
-      updates.push("force_update=?");
-      params.push(forceUpdate ? 1 : 0);
-    }
-
     if (typeof req.body?.notes !== "undefined") {
       const notes = normStr(req.body?.notes, 500) || null;
       updates.push("notes=?");
       params.push(notes);
     }
 
-    if (!updates.length) {
+    if (!updates.length && !requestedForceUpdateChange) {
       return res.status(400).json({ error: "no fields to update" });
     }
+
+    updates.push("force_update=1");
 
     params.push(id);
 

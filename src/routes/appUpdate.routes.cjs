@@ -77,7 +77,7 @@ async function handleCheck(req, res) {
       latest_version_name: row.version_name || null,
       apk_url: row.apk_url,
       sha256: row.sha256 || null,
-      force: Boolean(row.force_update),
+      force: available,
       message: row.notes || null,
       channel: row.channel,
       platform: row.platform,
