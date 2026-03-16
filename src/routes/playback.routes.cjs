@@ -287,6 +287,12 @@ function buildEmbeddedHlsLink(baseUrl, token) {
   return `${prefix}?token=${encodeURIComponent(token)}`;
 }
 
+function buildEmbeddedHlsAssetLink(baseUrl, token, url) {
+  const base = normalizeBaseUrl(baseUrl);
+  const prefix = base ? `${base}/v1/playback/embedded-hls-asset` : "/v1/playback/embedded-hls-asset";
+  return `${prefix}?token=${encodeURIComponent(token)}&url=${encodeURIComponent(url)}`;
+}
+
 function absolutizeManifestUri(value, baseUrl) {
   const raw = String(value || "").trim();
   if (!raw) return raw;
@@ -298,24 +304,53 @@ function absolutizeManifestUri(value, baseUrl) {
   }
 }
 
-function rewriteManifestLine(line, baseUrl) {
+function rewriteManifestLine(line, baseUrl, mapUri) {
   const trimmed = String(line || "").trim();
   if (!trimmed) return line;
 
+  const applyUri = (uri) => {
+    const absolute = absolutizeManifestUri(uri, baseUrl);
+    return typeof mapUri === "function" ? mapUri(absolute) : absolute;
+  };
+
   if (trimmed.startsWith("#")) {
-    return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${absolutizeManifestUri(uri, baseUrl)}"`);
+    return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${applyUri(uri)}"`);
   }
 
-  return absolutizeManifestUri(trimmed, baseUrl);
+  return applyUri(trimmed);
 }
 
-function rewriteM3uManifest(text, baseUrl) {
+function rewriteM3uManifest(text, baseUrl, mapUri) {
   const raw = String(text || "");
   if (!raw.trim()) return raw;
   return raw
     .split(/\r?\n/)
-    .map((line) => rewriteManifestLine(line, baseUrl))
+    .map((line) => rewriteManifestLine(line, baseUrl, mapUri))
     .join("\n");
+}
+
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+function isM3uManifest(urlValue, contentType) {
+  const type = String(contentType || "").toLowerCase();
+  if (type.includes("application/vnd.apple.mpegurl")) return true;
+  if (type.includes("application/x-mpegurl")) return true;
+  if (type.includes("audio/mpegurl")) return true;
+  const url = String(urlValue || "").toLowerCase();
+  return url.includes(".m3u8") || /[?&](format|output|type)=(m3u8|hls)\b/.test(url);
+}
+
+function inferContentType(urlValue, fallback = "application/octet-stream") {
+  const url = String(urlValue || "").toLowerCase();
+  if (url.includes(".m3u8")) return "application/vnd.apple.mpegurl; charset=utf-8";
+  if (url.includes(".ts")) return "video/mp2t";
+  if (url.includes(".m4s")) return "video/iso.segment";
+  if (url.includes(".mp4")) return "video/mp4";
+  if (url.includes(".aac")) return "audio/aac";
+  if (url.includes(".key")) return "application/octet-stream";
+  return fallback;
 }
 
 async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
@@ -364,6 +399,41 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
   }
 
   throw lastErr || new Error("upstream failed");
+}
+
+async function fetchBinaryWithResolvedUrl(url, init = {}, options = {}) {
+  const targetUrl = String(url || "").trim();
+  if (!targetUrl) throw new Error("No upstream URL candidate");
+
+  const timeoutMs = Number(options.timeoutMs || 0);
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  try {
+    const response = await fetch(targetUrl, {
+      ...init,
+      redirect: "follow",
+      signal: controller?.signal || init.signal,
+    });
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      const err = new Error("upstream failed");
+      err.status = response.status;
+      err.url = targetUrl;
+      err.body = bodyText.slice(0, 200);
+      throw err;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return {
+      buffer: Buffer.from(arrayBuffer),
+      url: String(response.url || targetUrl),
+      contentType: String(response.headers.get("content-type") || ""),
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function resolvePlaybackContext(token) {
@@ -609,7 +679,11 @@ router.get("/playback/embedded-hls", async (req, res) => {
       return res.status(502).json({ error: "upstream returned empty manifest" });
     }
 
-    const rewritten = rewriteM3uManifest(manifestText, manifest.url);
+    const rewritten = rewriteM3uManifest(
+      manifestText,
+      manifest.url,
+      (absoluteUrl) => buildEmbeddedHlsAssetLink(env.PLAYBACK_BASE_URL || "", token, absoluteUrl)
+    );
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
     return res.send(rewritten);
@@ -624,6 +698,54 @@ router.get("/playback/embedded-hls", async (req, res) => {
       return res.status(err.status).json({ error: err.message || "playback failed" });
     }
     return sendInternalError(req, res, "playback/embedded-hls", err);
+  }
+});
+
+router.get("/playback/embedded-hls-asset", async (req, res) => {
+  try {
+    const token = String(req.query.token || "").trim();
+    const targetUrl = String(req.query.url || "").trim();
+    if (!token) return res.status(400).json({ error: "token required" });
+    if (!targetUrl) return res.status(400).json({ error: "url required" });
+    if (!isHttpUrl(targetUrl)) {
+      return res.status(400).json({ error: "invalid asset url" });
+    }
+
+    const { payload, device } = await resolvePlaybackContext(token);
+    if (payload.type !== "live") {
+      return res.status(400).json({ error: "embedded hls asset is only supported for live playback" });
+    }
+    if (!needsEmbeddedHlsManifest(device.platform)) {
+      return res.status(404).json({ error: "embedded hls not enabled for this platform" });
+    }
+
+    const asset = await fetchBinaryWithResolvedUrl(targetUrl, {
+      method: "GET",
+      headers: { "User-Agent": "streamin-api/1.0" },
+    }, {
+      timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
+    });
+
+    res.setHeader("Cache-Control", "no-store");
+
+    if (isM3uManifest(asset.url, asset.contentType)) {
+      const manifestText = asset.buffer.toString("utf8");
+      const rewritten = rewriteM3uManifest(
+        manifestText,
+        asset.url,
+        (absoluteUrl) => buildEmbeddedHlsAssetLink(env.PLAYBACK_BASE_URL || "", token, absoluteUrl)
+      );
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
+      return res.send(rewritten);
+    }
+
+    res.setHeader("Content-Type", asset.contentType || inferContentType(asset.url));
+    return res.send(asset.buffer);
+  } catch (err) {
+    if (err?.status) {
+      return res.status(err.status).json({ error: err.message || "playback failed" });
+    }
+    return sendInternalError(req, res, "playback/embedded-hls-asset", err);
   }
 });
 
