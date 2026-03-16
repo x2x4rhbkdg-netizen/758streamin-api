@@ -6,7 +6,12 @@ const jwt = require("jsonwebtoken");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { env } = require("../config/env.cjs");
 const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
-const { buildUrl, buildXuiPlayerApiUrls, fetchJsonWithFallback } = require("../utils/xui.cjs");
+const {
+  buildUrl,
+  buildUrlCandidates,
+  buildXuiPlayerApiUrls,
+  fetchJsonWithFallback,
+} = require("../utils/xui.cjs");
 const { pool } = require("../db/pool.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
 
@@ -96,6 +101,15 @@ function normalizeLiveOutput(v) {
 function normalizeSourceMode(v) {
   const mode = String(v || "auto").trim().toLowerCase();
   return ["path", "auto", "stream_source"].includes(mode) ? mode : "auto";
+}
+
+function normalizePlatform(v) {
+  return String(v || "").trim().toLowerCase();
+}
+
+function needsEmbeddedHlsManifest(platform) {
+  const value = normalizePlatform(platform);
+  return value === "samsung_tizen_web";
 }
 
 function parseFirstHttpUrl(value) {
@@ -236,10 +250,212 @@ function buildStreamUrl({
   return buildUrl(upstream.upstream_base_url, path, {}, { allowHttpFallback });
 }
 
+function buildStreamUrls({
+  upstream,
+  type,
+  streamId,
+  episodeId,
+  format,
+  liveHlsOutput,
+  allowHttpFallback = true,
+}) {
+  const fmt = String(format || "hls").toLowerCase();
+  const ext = fmt === "dash"
+    ? "mpd"
+    : (type === "live" ? normalizeLiveOutput(liveHlsOutput) : "m3u8");
+  const user = encodeURIComponent(upstream.username);
+  const pass = encodeURIComponent(upstream.password);
+
+  let path = "";
+  if (type === "live") path = `/live/${user}/${pass}/${streamId}.${ext}`;
+  if (type === "vod") path = `/movie/${user}/${pass}/${streamId}.${ext}`;
+  if (type === "series") path = `/series/${user}/${pass}/${episodeId}.${ext}`;
+
+  if (!path) throw new Error("invalid stream type");
+  return buildUrlCandidates(upstream.upstream_base_url, path, {}, { allowHttpFallback });
+}
+
 function buildPlaybackLink(baseUrl, token, format) {
   const base = normalizeBaseUrl(baseUrl);
   const prefix = base ? `${base}/v1/playback/stream` : "/v1/playback/stream";
   return `${prefix}?token=${encodeURIComponent(token)}&format=${encodeURIComponent(format)}`;
+}
+
+function buildEmbeddedHlsLink(baseUrl, token) {
+  const base = normalizeBaseUrl(baseUrl);
+  const prefix = base ? `${base}/v1/playback/embedded-hls` : "/v1/playback/embedded-hls";
+  return `${prefix}?token=${encodeURIComponent(token)}`;
+}
+
+function absolutizeManifestUri(value, baseUrl) {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+  if (/^(data:|https?:\/\/)/i.test(raw)) return raw;
+  try {
+    return new URL(raw, baseUrl).toString();
+  } catch {
+    return raw;
+  }
+}
+
+function rewriteManifestLine(line, baseUrl) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) return line;
+
+  if (trimmed.startsWith("#")) {
+    return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${absolutizeManifestUri(uri, baseUrl)}"`);
+  }
+
+  return absolutizeManifestUri(trimmed, baseUrl);
+}
+
+function rewriteM3uManifest(text, baseUrl) {
+  const raw = String(text || "");
+  if (!raw.trim()) return raw;
+  return raw
+    .split(/\r?\n/)
+    .map((line) => rewriteManifestLine(line, baseUrl))
+    .join("\n");
+}
+
+async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
+  const list = Array.isArray(urls) ? urls.filter(Boolean) : [urls].filter(Boolean);
+  if (!list.length) throw new Error("No upstream URL candidates");
+
+  const timeoutMs = Number(options.timeoutMs || 0);
+  let lastErr = null;
+
+  for (let i = 0; i < list.length; i += 1) {
+    const targetUrl = list[i];
+    const controller = timeoutMs > 0 ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+    try {
+      const response = await fetch(targetUrl, {
+        ...init,
+        redirect: "follow",
+        signal: controller?.signal || init.signal,
+      });
+      const text = await response.text();
+
+      if (!response.ok) {
+        const err = new Error("upstream failed");
+        err.status = response.status;
+        err.url = targetUrl;
+        err.body = text.slice(0, 200);
+        lastErr = err;
+        if (i < list.length - 1 && response.status >= 500) continue;
+        throw err;
+      }
+
+      return {
+        text,
+        url: String(response.url || targetUrl),
+        contentType: String(response.headers.get("content-type") || ""),
+      };
+    } catch (err) {
+      lastErr = err;
+      const status = Number(err?.status || 0);
+      if (i < list.length - 1 && (!status || status >= 500)) continue;
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  throw lastErr || new Error("upstream failed");
+}
+
+async function resolvePlaybackContext(token) {
+  const payload = jwt.verify(token, env.JWT_SECRET, {
+    audience: PLAYBACK_AUD,
+    issuer: PLAYBACK_ISS,
+  });
+
+  const [rows] = await pool.execute(
+    `SELECT d.status, d.platform, a.expires_at
+     FROM devices d
+     LEFT JOIN device_access a ON a.device_id = d.id
+     WHERE d.id=?
+     LIMIT 1`,
+    [payload.device_id]
+  );
+  const device = rows[0];
+  if (!device) {
+    const err = new Error("device not found");
+    err.status = 401;
+    throw err;
+  }
+  if (device.status !== "active") {
+    const err = new Error("device not active");
+    err.status = 403;
+    throw err;
+  }
+  if (device.expires_at) {
+    const exp = new Date(device.expires_at).getTime();
+    if (!Number.isNaN(exp) && exp < Date.now()) {
+      const err = new Error("device expired");
+      err.status = 403;
+      throw err;
+    }
+  }
+
+  const upstream = await getDeviceUpstream(payload.device_id);
+  if (!upstream) {
+    const err = new Error("no upstream configured for device");
+    err.status = 404;
+    throw err;
+  }
+
+  return { payload, device, upstream };
+}
+
+async function resolveLivePlaybackCandidates(upstream, payload, format) {
+  const sourceMode = normalizeSourceMode(env.LIVE_SOURCE_MODE);
+
+  if (payload.type === "live" && sourceMode !== "path") {
+    let sawDirect = false;
+    let usedDirect = false;
+
+    try {
+      const direct = await resolveLiveDirectSource(upstream, payload.stream_id);
+      if (direct) {
+        sawDirect = true;
+        if (isWebPlayableLiveSource(direct, format)) {
+          usedDirect = true;
+          return { urls: [direct], sourceMode, sawDirect, usedDirect };
+        }
+
+        console.warn("[playback/stream] skipping non-web-playable direct source:", direct);
+      }
+    } catch (err) {
+      console.warn("[playback/stream] live source lookup failed:", err?.message || err);
+    }
+
+    if (sourceMode === "stream_source") {
+      const reason = sawDirect && !usedDirect
+        ? "live stream source unsupported for web playback"
+        : "live stream source unavailable";
+      const err = new Error(reason);
+      err.status = 502;
+      throw err;
+    }
+  }
+
+  return {
+    urls: buildStreamUrls({
+      upstream,
+      type: payload.type,
+      streamId: payload.stream_id,
+      episodeId: payload.episode_id,
+      format,
+      liveHlsOutput: env.LIVE_HLS_OUTPUT,
+      allowHttpFallback: env.XUI_HTTP_FALLBACK,
+    }),
+    sourceMode,
+    sawDirect: false,
+    usedDirect: false,
+  };
 }
 
 /** =========================================
@@ -335,72 +551,19 @@ router.get("/playback/stream", async (req, res) => {
     const token = String(req.query.token || "").trim();
     if (!token) return res.status(400).json({ error: "token required" });
 
-    const payload = jwt.verify(token, env.JWT_SECRET, {
-      audience: PLAYBACK_AUD,
-      issuer: PLAYBACK_ISS,
-    });
-
-    const [rows] = await pool.execute(
-      `SELECT d.status, a.expires_at
-       FROM devices d
-       LEFT JOIN device_access a ON a.device_id = d.id
-       WHERE d.id=?
-       LIMIT 1`,
-      [payload.device_id]
-    );
-    const dev = rows[0];
-    if (!dev) return res.status(401).json({ error: "device not found" });
-    if (dev.status !== "active") return res.status(403).json({ error: "device not active" });
-    if (dev.expires_at) {
-      const exp = new Date(dev.expires_at).getTime();
-      if (!Number.isNaN(exp) && exp < Date.now()) {
-        return res.status(403).json({ error: "device expired" });
-      }
-    }
-
-    const upstream = await getDeviceUpstream(payload.device_id);
-    if (!upstream) return res.status(404).json({ error: "no upstream configured for device" });
+    const { payload, device, upstream } = await resolvePlaybackContext(token);
 
     const format = String(req.query.format || "hls").trim().toLowerCase();
-    const sourceMode = normalizeSourceMode(env.LIVE_SOURCE_MODE);
-
-    if (payload.type === "live" && sourceMode !== "path") {
-      let sawDirect = false;
-      let usedDirect = false;
-
-      try {
-        const direct = await resolveLiveDirectSource(upstream, payload.stream_id);
-        if (direct) {
-          sawDirect = true;
-          if (isWebPlayableLiveSource(direct, format)) {
-            usedDirect = true;
-            res.setHeader("Cache-Control", "no-store");
-            return res.redirect(302, direct);
-          }
-
-          console.warn("[playback/stream] skipping non-web-playable direct source:", direct);
-        }
-      } catch (err) {
-        console.warn("[playback/stream] live source lookup failed:", err?.message || err);
-      }
-
-      if (sourceMode === "stream_source") {
-        const reason = sawDirect && !usedDirect
-          ? "live stream source unsupported for web playback"
-          : "live stream source unavailable";
-        return res.status(502).json({ error: reason });
-      }
+    if (payload.type === "live" && format === "hls" && needsEmbeddedHlsManifest(device.platform)) {
+      res.setHeader("Cache-Control", "no-store");
+      return res.redirect(302, buildEmbeddedHlsLink(env.PLAYBACK_BASE_URL || "", token));
     }
 
-    const url = buildStreamUrl({
-      upstream,
-      type: payload.type,
-      streamId: payload.stream_id,
-      episodeId: payload.episode_id,
-      format,
-      liveHlsOutput: env.LIVE_HLS_OUTPUT,
-      allowHttpFallback: env.XUI_HTTP_FALLBACK,
-    });
+    const source = await resolveLivePlaybackCandidates(upstream, payload, format);
+    const url = source.urls[0];
+    if (!url) {
+      return res.status(502).json({ error: "playback source unavailable" });
+    }
 
     res.setHeader("Cache-Control", "no-store");
     return res.redirect(302, url);
@@ -411,8 +574,56 @@ router.get("/playback/stream", async (req, res) => {
     if (err?.message === "invalid stream type") {
       return res.status(400).json({ error: "invalid stream type" });
     }
+    if (err?.status) {
+      return res.status(err.status).json({ error: err.message || "playback failed" });
+    }
     console.error("[playback/stream] error:", err);
     return res.status(401).json({ error: "invalid token" });
+  }
+});
+
+router.get("/playback/embedded-hls", async (req, res) => {
+  try {
+    const token = String(req.query.token || "").trim();
+    if (!token) return res.status(400).json({ error: "token required" });
+
+    const { payload, device, upstream } = await resolvePlaybackContext(token);
+    if (payload.type !== "live") {
+      return res.status(400).json({ error: "embedded hls is only supported for live playback" });
+    }
+    if (!needsEmbeddedHlsManifest(device.platform)) {
+      return res.status(404).json({ error: "embedded hls not enabled for this platform" });
+    }
+
+    const format = "hls";
+    const source = await resolveLivePlaybackCandidates(upstream, payload, format);
+    const manifest = await fetchTextWithResolvedUrl(source.urls, {
+      method: "GET",
+      headers: { "User-Agent": "streamin-api/1.0" },
+    }, {
+      timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
+    });
+
+    const manifestText = String(manifest.text || "");
+    if (!manifestText.trim()) {
+      return res.status(502).json({ error: "upstream returned empty manifest" });
+    }
+
+    const rewritten = rewriteM3uManifest(manifestText, manifest.url);
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(rewritten);
+  } catch (err) {
+    if (err?.message === "missing upstream base URL") {
+      return res.status(500).json({ error: "missing upstream base URL" });
+    }
+    if (err?.message === "invalid stream type") {
+      return res.status(400).json({ error: "invalid stream type" });
+    }
+    if (err?.status) {
+      return res.status(err.status).json({ error: err.message || "playback failed" });
+    }
+    return sendInternalError(req, res, "playback/embedded-hls", err);
   }
 });
 

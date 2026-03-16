@@ -161,6 +161,114 @@ function logRegisterDebug(event, details) {
   console.warn("[device/register]", event, details);
 }
 
+function buildPostUpdateNotification(currentAppVersion) {
+  const version = normStr(currentAppVersion, 32);
+  return {
+    title: "App has been updated",
+    message: version
+      ? `StreamIN has been updated to version ${version}.`
+      : "App has been updated.",
+  };
+}
+
+function compareVersionStrings(left, right) {
+  const leftParts = String(left || "")
+    .split(/[^0-9]+/)
+    .filter(Boolean)
+    .map((value) => Number(value));
+  const rightParts = String(right || "")
+    .split(/[^0-9]+/)
+    .filter(Boolean)
+    .map((value) => Number(value));
+
+  const maxLength = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const a = Number.isFinite(leftParts[index]) ? leftParts[index] : 0;
+    const b = Number.isFinite(rightParts[index]) ? rightParts[index] : 0;
+    if (a !== b) return a > b ? 1 : -1;
+  }
+
+  return 0;
+}
+
+async function createPostUpdateNotificationIfNeeded({
+  deviceId,
+  previousAppVersion,
+  currentAppVersion,
+  status,
+}) {
+  const targetDeviceId = Number(deviceId || 0);
+  if (!Number.isFinite(targetDeviceId) || targetDeviceId <= 0) {
+    return { created: false, reason: "invalid_device_id" };
+  }
+
+  const currentStatus = String(status || "").trim().toLowerCase();
+  if (currentStatus && currentStatus !== "active") {
+    return { created: false, reason: "device_not_active" };
+  }
+
+  const previousVersion = normStr(previousAppVersion, 32);
+  const nextVersion = normStr(currentAppVersion, 32);
+  if (!previousVersion) {
+    return { created: false, reason: "no_previous_version" };
+  }
+  if (!nextVersion) {
+    return { created: false, reason: "no_current_version" };
+  }
+  if (compareVersionStrings(nextVersion, previousVersion) <= 0) {
+    return { created: false, reason: "not_newer_version" };
+  }
+
+  const content = buildPostUpdateNotification(nextVersion);
+
+  try {
+    const [existingRows] = await pool.execute(
+      `
+      SELECT id
+      FROM app_notifications
+      WHERE COALESCE(target_scope, 'mass')='device'
+        AND target_device_id=?
+        AND title=?
+        AND message=?
+      LIMIT 1
+      `,
+      [targetDeviceId, content.title, content.message]
+    );
+
+    if (existingRows[0]) {
+      return {
+        created: false,
+        reason: "already_created",
+        notification_id: Number(existingRows[0].id),
+      };
+    }
+
+    const [ins] = await pool.execute(
+      `
+      INSERT INTO app_notifications
+        (title, message, status, target_scope, target_platform, target_device_id, starts_at, ends_at, created_by_admin_id, created_at, updated_at)
+      VALUES
+        (?, ?, 'active', 'device', 'all', ?, NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY), NULL, NOW(), NOW())
+      `,
+      [content.title, content.message, targetDeviceId]
+    );
+
+    return {
+      created: true,
+      notification_id: Number(ins?.insertId || 0) || null,
+    };
+  } catch (err) {
+    console.warn("[device/register] post-update notification failed", {
+      code: err?.code,
+      message: err?.message,
+      deviceId: targetDeviceId,
+      previousVersion,
+      nextVersion,
+    });
+    return { created: false, reason: "notification_failed" };
+  }
+}
+
 /** =========================================
  *  POST /v1/device/register
  *  body: { device_uuid, platform, model, app_version }
@@ -194,7 +302,7 @@ router.post("/device/register", async (req, res) => {
 
     // Existing?
     const [exRows] = await pool.execute(
-      `SELECT id, device_code, status, trial_expires_at, plan_name, whmcs_account_number, whmcs_service_id
+      `SELECT id, device_code, status, trial_expires_at, plan_name, whmcs_account_number, whmcs_service_id, app_version
        FROM devices
        WHERE device_uuid=?
        LIMIT 1`,
@@ -217,6 +325,12 @@ router.post("/device/register", async (req, res) => {
         trialState.status === "suspended"
           ? await fetchWhmcsPriceByServiceId(exRows[0].whmcs_service_id)
           : null;
+      await createPostUpdateNotificationIfNeeded({
+        deviceId: exRows[0].id,
+        previousAppVersion: exRows[0].app_version,
+        currentAppVersion: app_version,
+        status: trialState.status,
+      });
       logRegisterDebug("existing-device", {
         branch: "device_uuid",
         device_uuid,
@@ -247,7 +361,7 @@ router.post("/device/register", async (req, res) => {
 
     if (legacy_device_uuid && legacy_device_uuid !== device_uuid) {
       const [legacyRows] = await pool.execute(
-        `SELECT id, device_code, status, trial_expires_at, plan_name, whmcs_account_number, whmcs_service_id
+        `SELECT id, device_code, status, trial_expires_at, plan_name, whmcs_account_number, whmcs_service_id, app_version
          FROM devices
          WHERE device_uuid=?
          LIMIT 1`,
@@ -270,6 +384,12 @@ router.post("/device/register", async (req, res) => {
           trialState.status === "suspended"
             ? await fetchWhmcsPriceByServiceId(legacyRows[0].whmcs_service_id)
             : null;
+        await createPostUpdateNotificationIfNeeded({
+          deviceId: legacyRows[0].id,
+          previousAppVersion: legacyRows[0].app_version,
+          currentAppVersion: app_version,
+          status: trialState.status,
+        });
         logRegisterDebug("legacy-device", {
           branch: "legacy_device_uuid",
           device_uuid,
