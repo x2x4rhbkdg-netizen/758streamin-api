@@ -26,6 +26,25 @@ const TOKEN_REUSE_SAFETY_SEC = Math.max(
   5,
   Math.min(600, Number(env.PLAYBACK_TOKEN_REUSE_SAFETY_SEC || 30) || 30)
 );
+const embeddedHlsVariantCache = new Map();
+const EMBEDDED_HLS_VARIANT_CACHE_MAX = 500;
+const EMBEDDED_HLS_VARIANT_CACHE_TTL_MS = Math.max(
+  5000,
+  Math.min(10 * 60 * 1000, Number(process.env.SAMSUNG_EMBEDDED_HLS_VARIANT_CACHE_TTL_MS || 60 * 1000) || 60 * 1000)
+);
+const EMBEDDED_HLS_MAX_DEPTH = 3;
+const SAMSUNG_HLS_MAX_BITRATE = Math.max(
+  250000,
+  Math.min(10 * 1000 * 1000, Number(process.env.SAMSUNG_HLS_MAX_BITRATE || 2000000) || 2000000)
+);
+const SAMSUNG_HLS_MAX_WIDTH = Math.max(
+  320,
+  Math.min(3840, Number(process.env.SAMSUNG_HLS_MAX_WIDTH || 1280) || 1280)
+);
+const SAMSUNG_HLS_MAX_HEIGHT = Math.max(
+  180,
+  Math.min(2160, Number(process.env.SAMSUNG_HLS_MAX_HEIGHT || 720) || 720)
+);
 
 function parseTtl(v, fallback) {
   const n = Number(v);
@@ -84,6 +103,62 @@ function setCachedPlaybackToken(key, token, expiresAtMs) {
     touchedAt: Date.now(),
   });
   prunePlaybackTokenCache();
+}
+
+function pruneEmbeddedHlsVariantCache(nowMs = Date.now()) {
+  if (!embeddedHlsVariantCache.size) return;
+
+  for (const [key, value] of embeddedHlsVariantCache.entries()) {
+    if (!value || Number(value.expiresAtMs || 0) <= nowMs) {
+      embeddedHlsVariantCache.delete(key);
+    }
+  }
+
+  if (embeddedHlsVariantCache.size <= EMBEDDED_HLS_VARIANT_CACHE_MAX) return;
+
+  const entries = Array.from(embeddedHlsVariantCache.entries()).sort(
+    (a, b) => Number(a[1]?.touchedAt || 0) - Number(b[1]?.touchedAt || 0)
+  );
+  const removeCount = embeddedHlsVariantCache.size - EMBEDDED_HLS_VARIANT_CACHE_MAX;
+  for (let i = 0; i < removeCount; i += 1) {
+    const key = entries[i]?.[0];
+    if (key) embeddedHlsVariantCache.delete(key);
+  }
+}
+
+function getCachedEmbeddedHlsVariant(url) {
+  const key = String(url || "").trim();
+  if (!key) return "";
+
+  const entry = embeddedHlsVariantCache.get(key);
+  if (!entry) return "";
+
+  if (Number(entry.expiresAtMs || 0) <= Date.now()) {
+    embeddedHlsVariantCache.delete(key);
+    return "";
+  }
+
+  entry.touchedAt = Date.now();
+  return String(entry.url || "");
+}
+
+function setCachedEmbeddedHlsVariant(url, selectedUrl) {
+  const key = String(url || "").trim();
+  const value = String(selectedUrl || "").trim();
+  if (!key || !value) return;
+
+  embeddedHlsVariantCache.set(key, {
+    url: value,
+    expiresAtMs: Date.now() + EMBEDDED_HLS_VARIANT_CACHE_TTL_MS,
+    touchedAt: Date.now(),
+  });
+  pruneEmbeddedHlsVariantCache();
+}
+
+function deleteCachedEmbeddedHlsVariant(url) {
+  const key = String(url || "").trim();
+  if (!key) return;
+  embeddedHlsVariantCache.delete(key);
 }
 
 function normalizeBaseUrl(v) {
@@ -287,12 +362,6 @@ function buildEmbeddedHlsLink(baseUrl, token) {
   return `${prefix}?token=${encodeURIComponent(token)}`;
 }
 
-function buildEmbeddedHlsAssetLink(baseUrl, token, url) {
-  const base = normalizeBaseUrl(baseUrl);
-  const prefix = base ? `${base}/v1/playback/embedded-hls-asset` : "/v1/playback/embedded-hls-asset";
-  return `${prefix}?token=${encodeURIComponent(token)}&url=${encodeURIComponent(url)}`;
-}
-
 function absolutizeManifestUri(value, baseUrl) {
   const raw = String(value || "").trim();
   if (!raw) return raw;
@@ -351,6 +420,121 @@ function inferContentType(urlValue, fallback = "application/octet-stream") {
   if (url.includes(".aac")) return "audio/aac";
   if (url.includes(".key")) return "application/octet-stream";
   return fallback;
+}
+
+function isMasterM3uManifest(text) {
+  return /#EXT-X-STREAM-INF:/i.test(String(text || ""));
+}
+
+function parseHlsAttributeList(line) {
+  const raw = String(line || "");
+  const out = {};
+  const body = raw.includes(":") ? raw.slice(raw.indexOf(":") + 1) : raw;
+  const pattern = /([A-Z0-9-]+)=("(?:[^"\\]|\\.)*"|[^,]*)/gi;
+  let match = pattern.exec(body);
+  while (match) {
+    const key = String(match[1] || "").trim().toUpperCase();
+    let value = String(match[2] || "").trim();
+    if (value.startsWith("\"") && value.endsWith("\"")) {
+      value = value.slice(1, -1);
+    }
+    if (key) out[key] = value;
+    match = pattern.exec(body);
+  }
+  return out;
+}
+
+function parseResolution(value) {
+  const match = String(value || "").trim().match(/^(\d+)\s*x\s*(\d+)$/i);
+  if (!match) return { width: 0, height: 0 };
+  return {
+    width: Number(match[1] || 0) || 0,
+    height: Number(match[2] || 0) || 0,
+  };
+}
+
+function getVariantBandwidth(variant) {
+  return Number(variant?.averageBandwidth || variant?.bandwidth || 0) || 0;
+}
+
+function parseMasterManifestVariants(text, baseUrl) {
+  const lines = String(text || "").split(/\r?\n/);
+  const variants = [];
+  let pendingAttributes = null;
+
+  for (const line of lines) {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) continue;
+
+    if (/^#EXT-X-STREAM-INF:/i.test(trimmed)) {
+      pendingAttributes = parseHlsAttributeList(trimmed);
+      continue;
+    }
+
+    if (trimmed.startsWith("#")) continue;
+    if (!pendingAttributes) continue;
+
+    const absoluteUrl = absolutizeManifestUri(trimmed, baseUrl);
+    const resolution = parseResolution(pendingAttributes.RESOLUTION);
+    variants.push({
+      url: absoluteUrl,
+      bandwidth: Number(pendingAttributes.BANDWIDTH || 0) || 0,
+      averageBandwidth: Number(pendingAttributes["AVERAGE-BANDWIDTH"] || 0) || 0,
+      width: resolution.width,
+      height: resolution.height,
+      codecs: String(pendingAttributes.CODECS || ""),
+      name: String(pendingAttributes.NAME || ""),
+    });
+    pendingAttributes = null;
+  }
+
+  return variants.filter((variant) => isHttpUrl(variant.url));
+}
+
+function pickSamsungStableVariant(variants) {
+  const list = Array.isArray(variants) ? variants.filter(Boolean) : [];
+  if (!list.length) return null;
+
+  const videoVariants = list.filter((variant) => Number(variant.width || 0) > 0 || Number(variant.height || 0) > 0);
+  const pool = videoVariants.length ? videoVariants : list;
+  const withinCaps = pool.filter((variant) => {
+    const bandwidth = getVariantBandwidth(variant);
+    const width = Number(variant.width || 0);
+    const height = Number(variant.height || 0);
+    return (
+      (!bandwidth || bandwidth <= SAMSUNG_HLS_MAX_BITRATE) &&
+      (!width || width <= SAMSUNG_HLS_MAX_WIDTH) &&
+      (!height || height <= SAMSUNG_HLS_MAX_HEIGHT)
+    );
+  });
+
+  const candidates = withinCaps.length ? withinCaps : pool;
+  const sorted = [...candidates].sort((left, right) => {
+    const leftBandwidth = getVariantBandwidth(left);
+    const rightBandwidth = getVariantBandwidth(right);
+    const leftArea = Number(left.width || 0) * Number(left.height || 0);
+    const rightArea = Number(right.width || 0) * Number(right.height || 0);
+
+    if (withinCaps.length) {
+      if (rightBandwidth !== leftBandwidth) return rightBandwidth - leftBandwidth;
+      if (rightArea !== leftArea) return rightArea - leftArea;
+      return String(right.url || "").localeCompare(String(left.url || ""));
+    }
+
+    const normalizedLeftBandwidth = leftBandwidth > 0 ? leftBandwidth : Number.MAX_SAFE_INTEGER;
+    const normalizedRightBandwidth = rightBandwidth > 0 ? rightBandwidth : Number.MAX_SAFE_INTEGER;
+    if (normalizedLeftBandwidth !== normalizedRightBandwidth) {
+      return normalizedLeftBandwidth - normalizedRightBandwidth;
+    }
+    const normalizedLeftArea = leftArea > 0 ? leftArea : Number.MAX_SAFE_INTEGER;
+    const normalizedRightArea = rightArea > 0 ? rightArea : Number.MAX_SAFE_INTEGER;
+    if (normalizedLeftArea !== normalizedRightArea) {
+      return normalizedLeftArea - normalizedRightArea;
+    }
+    return String(left.url || "").localeCompare(String(right.url || ""));
+  });
+
+  return sorted[0] || null;
 }
 
 async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
@@ -434,6 +618,58 @@ async function fetchBinaryWithResolvedUrl(url, init = {}, options = {}) {
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function resolveEmbeddedSamsungManifest(urls) {
+  const requestInit = {
+    method: "GET",
+    headers: { "User-Agent": "streamin-api/1.0" },
+  };
+  const requestOptions = {
+    timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
+  };
+
+  let manifest = await fetchTextWithResolvedUrl(urls, requestInit, requestOptions);
+
+  for (let depth = 0; depth < EMBEDDED_HLS_MAX_DEPTH; depth += 1) {
+    const manifestText = String(manifest.text || "");
+    if (!manifestText.trim()) {
+      const err = new Error("upstream returned empty manifest");
+      err.status = 502;
+      throw err;
+    }
+
+    if (!isMasterM3uManifest(manifestText)) {
+      return manifest;
+    }
+
+    const parentUrl = String(manifest.url || "");
+    let selectedUrl = getCachedEmbeddedHlsVariant(parentUrl);
+
+    if (!selectedUrl) {
+      const variants = parseMasterManifestVariants(manifestText, parentUrl);
+      const selectedVariant = pickSamsungStableVariant(variants);
+      selectedUrl = String(selectedVariant?.url || "");
+      if (!selectedUrl) {
+        return manifest;
+      }
+      setCachedEmbeddedHlsVariant(parentUrl, selectedUrl);
+    }
+
+    try {
+      manifest = await fetchTextWithResolvedUrl([selectedUrl], requestInit, requestOptions);
+    } catch (err) {
+      deleteCachedEmbeddedHlsVariant(parentUrl);
+      console.warn("[playback/embedded-hls] stable variant fetch failed:", err?.message || err);
+      return {
+        text: manifestText,
+        url: parentUrl,
+        contentType: String(manifest.contentType || ""),
+      };
+    }
+  }
+
+  return manifest;
 }
 
 async function resolvePlaybackContext(token) {
@@ -667,23 +903,14 @@ router.get("/playback/embedded-hls", async (req, res) => {
 
     const format = "hls";
     const source = await resolveLivePlaybackCandidates(upstream, payload, format);
-    const manifest = await fetchTextWithResolvedUrl(source.urls, {
-      method: "GET",
-      headers: { "User-Agent": "streamin-api/1.0" },
-    }, {
-      timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
-    });
+    const manifest = await resolveEmbeddedSamsungManifest(source.urls);
 
     const manifestText = String(manifest.text || "");
     if (!manifestText.trim()) {
       return res.status(502).json({ error: "upstream returned empty manifest" });
     }
 
-    const rewritten = rewriteM3uManifest(
-      manifestText,
-      manifest.url,
-      (absoluteUrl) => buildEmbeddedHlsAssetLink(env.PLAYBACK_BASE_URL || "", token, absoluteUrl)
-    );
+    const rewritten = rewriteM3uManifest(manifestText, manifest.url);
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
     return res.send(rewritten);
@@ -730,11 +957,7 @@ router.get("/playback/embedded-hls-asset", async (req, res) => {
 
     if (isM3uManifest(asset.url, asset.contentType)) {
       const manifestText = asset.buffer.toString("utf8");
-      const rewritten = rewriteM3uManifest(
-        manifestText,
-        asset.url,
-        (absoluteUrl) => buildEmbeddedHlsAssetLink(env.PLAYBACK_BASE_URL || "", token, absoluteUrl)
-      );
+      const rewritten = rewriteM3uManifest(manifestText, asset.url);
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
       return res.send(rewritten);
     }
