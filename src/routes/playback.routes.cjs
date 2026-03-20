@@ -184,7 +184,7 @@ function normalizePlatform(v) {
 
 function needsEmbeddedHlsManifest(platform) {
   const value = normalizePlatform(platform);
-  return value === "samsung_tizen_web";
+  return value === "samsung" || value === "samsung_tizen_web";
 }
 
 function parseFirstHttpUrl(value) {
