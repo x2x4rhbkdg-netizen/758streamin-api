@@ -2,7 +2,7 @@
  *  ROUTES: Playback tokens (JWT required) (CommonJS)
  *  ========================================= */
 const { Router } = require("express");
-const { randomUUID } = require("crypto");
+const { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } = require("crypto");
 const jwt = require("jsonwebtoken");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { env } = require("../config/env.cjs");
@@ -39,6 +39,9 @@ const PLAYBACK_ASSET_CACHE_MAX = Math.max(
   1000,
   Math.min(50000, Number(process.env.PLAYBACK_ASSET_CACHE_MAX || 15000) || 15000)
 );
+const playbackAssetCryptoKey = createHash("sha256")
+  .update(`${String(env.JWT_SECRET || "")}::streamin-playback-asset`)
+  .digest();
 const EMBEDDED_HLS_MAX_DEPTH = 3;
 const SAMSUNG_HLS_MAX_BITRATE = Math.max(
   250000,
@@ -190,6 +193,60 @@ function getOrCreatePlaybackAssetId({ playbackToken, targetUrl, expiresAtMs }) {
   playbackAssetCacheByRequestKey.set(requestKey, assetId);
   prunePlaybackAssetCache();
   return assetId;
+}
+
+function encodeBase64Url(value) {
+  return Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function decodeBase64Url(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return Buffer.alloc(0);
+  const normalized = raw
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(Math.ceil(raw.length / 4) * 4, "=");
+  return Buffer.from(normalized, "base64");
+}
+
+function hashPlaybackToken(playbackToken) {
+  return encodeBase64Url(
+    createHash("sha256")
+      .update(String(playbackToken || "").trim())
+      .digest()
+      .subarray(0, 16)
+  );
+}
+
+function encodePlaybackAssetToken(payload) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", playbackAssetCryptoKey, iv);
+  const plaintext = Buffer.from(JSON.stringify(payload), "utf8");
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return [iv, authTag, ciphertext].map(encodeBase64Url).join(".");
+}
+
+function decodePlaybackAssetToken(value) {
+  const parts = String(value || "").trim().split(".");
+  if (parts.length !== 3) {
+    const err = new Error("invalid playback asset token");
+    err.status = 400;
+    throw err;
+  }
+
+  const iv = decodeBase64Url(parts[0]);
+  const authTag = decodeBase64Url(parts[1]);
+  const ciphertext = decodeBase64Url(parts[2]);
+
+  const decipher = createDecipheriv("aes-256-gcm", playbackAssetCryptoKey, iv);
+  decipher.setAuthTag(authTag);
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+  return JSON.parse(plaintext);
 }
 
 function pruneEmbeddedHlsVariantCache(nowMs = Date.now()) {
@@ -900,12 +957,12 @@ async function resolvePlaybackCandidateUrls(upstream, payload, format, options =
 
 function rewritePlaybackManifest(text, baseUrl, playbackToken, expiresAtMs) {
   return rewriteM3uManifest(text, baseUrl, (absoluteUrl) => {
-    const assetId = getOrCreatePlaybackAssetId({
-      playbackToken,
-      targetUrl: absoluteUrl,
-      expiresAtMs,
+    const assetToken = encodePlaybackAssetToken({
+      h: hashPlaybackToken(playbackToken),
+      u: absoluteUrl,
+      e: Number(expiresAtMs || 0),
     });
-    return buildPlaybackHlsAssetLink(env.PLAYBACK_BASE_URL || "", playbackToken, assetId);
+    return buildPlaybackHlsAssetLink(env.PLAYBACK_BASE_URL || "", playbackToken, assetToken);
   });
 }
 
@@ -1067,13 +1124,29 @@ router.get("/playback/hls-asset", async (req, res) => {
 
     const { payload } = await resolvePlaybackContext(token);
     const expiresAtMs = getPlaybackTokenExpiresAtMs(payload);
-    const assetEntry = getCachedPlaybackAsset(assetId);
+    const cachedAssetEntry = getCachedPlaybackAsset(assetId);
+    const playbackTokenHash = hashPlaybackToken(token);
+    let targetUrl = "";
 
-    if (!assetEntry || assetEntry.playbackToken !== token) {
-      return res.status(404).json({ error: "playback asset not found" });
+    if (cachedAssetEntry && cachedAssetEntry.playbackToken === token) {
+      targetUrl = String(cachedAssetEntry.targetUrl || "").trim();
+    } else {
+      const assetPayload = decodePlaybackAssetToken(assetId);
+      if (String(assetPayload?.h || "") !== playbackTokenHash) {
+        return res.status(404).json({ error: "playback asset not found" });
+      }
+      const assetExpiresAtMs = Number(assetPayload?.e || 0);
+      if (assetExpiresAtMs > 0 && assetExpiresAtMs < Date.now()) {
+        return res.status(404).json({ error: "playback asset expired" });
+      }
+      targetUrl = String(assetPayload?.u || "").trim();
     }
 
-    const asset = await fetchBinaryWithResolvedUrl(assetEntry.targetUrl, {
+    if (!isHttpUrl(targetUrl)) {
+      return res.status(400).json({ error: "invalid playback asset url" });
+    }
+
+    const asset = await fetchBinaryWithResolvedUrl(targetUrl, {
       method: "GET",
       headers: {
         "User-Agent": "streamin-api/1.0",
