@@ -2,6 +2,7 @@
  *  ROUTES: Playback tokens (JWT required) (CommonJS)
  *  ========================================= */
 const { Router } = require("express");
+const { randomUUID } = require("crypto");
 const jwt = require("jsonwebtoken");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { env } = require("../config/env.cjs");
@@ -31,6 +32,12 @@ const EMBEDDED_HLS_VARIANT_CACHE_MAX = 500;
 const EMBEDDED_HLS_VARIANT_CACHE_TTL_MS = Math.max(
   5000,
   Math.min(10 * 60 * 1000, Number(process.env.SAMSUNG_EMBEDDED_HLS_VARIANT_CACHE_TTL_MS || 60 * 1000) || 60 * 1000)
+);
+const playbackAssetCacheById = new Map();
+const playbackAssetCacheByRequestKey = new Map();
+const PLAYBACK_ASSET_CACHE_MAX = Math.max(
+  1000,
+  Math.min(50000, Number(process.env.PLAYBACK_ASSET_CACHE_MAX || 15000) || 15000)
 );
 const EMBEDDED_HLS_MAX_DEPTH = 3;
 const SAMSUNG_HLS_MAX_BITRATE = Math.max(
@@ -103,6 +110,86 @@ function setCachedPlaybackToken(key, token, expiresAtMs) {
     touchedAt: Date.now(),
   });
   prunePlaybackTokenCache();
+}
+
+function playbackAssetRequestKey(playbackToken, targetUrl) {
+  return `${String(playbackToken || "").trim()}|${String(targetUrl || "").trim()}`;
+}
+
+function prunePlaybackAssetCache(nowMs = Date.now()) {
+  if (!playbackAssetCacheById.size) return;
+
+  for (const [assetId, entry] of playbackAssetCacheById.entries()) {
+    if (!entry || Number(entry.expiresAtMs || 0) <= nowMs) {
+      playbackAssetCacheById.delete(assetId);
+      if (entry?.requestKey) {
+        playbackAssetCacheByRequestKey.delete(entry.requestKey);
+      }
+    }
+  }
+
+  if (playbackAssetCacheById.size <= PLAYBACK_ASSET_CACHE_MAX) return;
+
+  const entries = Array.from(playbackAssetCacheById.entries()).sort(
+    (a, b) => Number(a[1]?.touchedAt || 0) - Number(b[1]?.touchedAt || 0)
+  );
+  const removeCount = playbackAssetCacheById.size - PLAYBACK_ASSET_CACHE_MAX;
+  for (let i = 0; i < removeCount; i += 1) {
+    const assetId = entries[i]?.[0];
+    const entry = entries[i]?.[1];
+    if (assetId) playbackAssetCacheById.delete(assetId);
+    if (entry?.requestKey) {
+      playbackAssetCacheByRequestKey.delete(entry.requestKey);
+    }
+  }
+}
+
+function getCachedPlaybackAsset(assetId) {
+  const key = String(assetId || "").trim();
+  if (!key) return null;
+
+  const entry = playbackAssetCacheById.get(key);
+  if (!entry) return null;
+  if (Number(entry.expiresAtMs || 0) <= Date.now()) {
+    playbackAssetCacheById.delete(key);
+    if (entry.requestKey) {
+      playbackAssetCacheByRequestKey.delete(entry.requestKey);
+    }
+    return null;
+  }
+
+  entry.touchedAt = Date.now();
+  return entry;
+}
+
+function getOrCreatePlaybackAssetId({ playbackToken, targetUrl, expiresAtMs }) {
+  const requestKey = playbackAssetRequestKey(playbackToken, targetUrl);
+  if (!requestKey || requestKey === "|") return "";
+
+  const cachedAssetId = playbackAssetCacheByRequestKey.get(requestKey);
+  if (cachedAssetId) {
+    const cachedEntry = getCachedPlaybackAsset(cachedAssetId);
+    if (cachedEntry) return String(cachedEntry.assetId || "");
+    playbackAssetCacheByRequestKey.delete(requestKey);
+  }
+
+  const normalizedExpiresAtMs = Number(expiresAtMs || 0) > Date.now()
+    ? Number(expiresAtMs)
+    : Date.now() + 5 * 60 * 1000;
+  const assetId = randomUUID();
+  const entry = {
+    assetId,
+    playbackToken: String(playbackToken || "").trim(),
+    requestKey,
+    targetUrl: String(targetUrl || "").trim(),
+    expiresAtMs: normalizedExpiresAtMs,
+    touchedAt: Date.now(),
+  };
+
+  playbackAssetCacheById.set(assetId, entry);
+  playbackAssetCacheByRequestKey.set(requestKey, assetId);
+  prunePlaybackAssetCache();
+  return assetId;
 }
 
 function pruneEmbeddedHlsVariantCache(nowMs = Date.now()) {
@@ -354,6 +441,18 @@ function buildPlaybackLink(baseUrl, token, format) {
   const base = normalizeBaseUrl(baseUrl);
   const prefix = base ? `${base}/v1/playback/stream` : "/v1/playback/stream";
   return `${prefix}?token=${encodeURIComponent(token)}&format=${encodeURIComponent(format)}`;
+}
+
+function buildPlaybackHlsLink(baseUrl, token) {
+  const base = normalizeBaseUrl(baseUrl);
+  const prefix = base ? `${base}/v1/playback/hls` : "/v1/playback/hls";
+  return `${prefix}?token=${encodeURIComponent(token)}`;
+}
+
+function buildPlaybackHlsAssetLink(baseUrl, token, assetId) {
+  const base = normalizeBaseUrl(baseUrl);
+  const prefix = base ? `${base}/v1/playback/hls-asset` : "/v1/playback/hls-asset";
+  return `${prefix}?token=${encodeURIComponent(token)}&asset=${encodeURIComponent(assetId)}`;
 }
 
 function buildEmbeddedHlsLink(baseUrl, token) {
@@ -613,7 +712,11 @@ async function fetchBinaryWithResolvedUrl(url, init = {}, options = {}) {
     return {
       buffer: Buffer.from(arrayBuffer),
       url: String(response.url || targetUrl),
+      status: Number(response.status || 200) || 200,
       contentType: String(response.headers.get("content-type") || ""),
+      contentLength: String(response.headers.get("content-length") || ""),
+      contentRange: String(response.headers.get("content-range") || ""),
+      acceptRanges: String(response.headers.get("accept-ranges") || ""),
     };
   } finally {
     if (timer) clearTimeout(timer);
@@ -716,7 +819,16 @@ async function resolvePlaybackContext(token) {
   return { payload, device, upstream };
 }
 
-async function resolveLivePlaybackCandidates(upstream, payload, format) {
+function getPlaybackTokenExpiresAtMs(payload) {
+  const expSec = Number(payload?.exp || 0);
+  if (Number.isFinite(expSec) && expSec > 0) {
+    return expSec * 1000;
+  }
+  return Date.now() + Math.max(60, Number(env.PLAYBACK_TOKEN_TTL || 3600)) * 1000;
+}
+
+async function resolveLivePlaybackCandidates(upstream, payload, format, options = {}) {
+  const requireHlsManifest = Boolean(options?.requireHlsManifest);
   const sourceMode = normalizeSourceMode(env.LIVE_SOURCE_MODE);
 
   if (payload.type === "live" && sourceMode !== "path") {
@@ -727,7 +839,8 @@ async function resolveLivePlaybackCandidates(upstream, payload, format) {
       const direct = await resolveLiveDirectSource(upstream, payload.stream_id);
       if (direct) {
         sawDirect = true;
-        if (isWebPlayableLiveSource(direct, format)) {
+        const directUsable = requireHlsManifest ? isLikelyHlsUrl(direct) : isWebPlayableLiveSource(direct, format);
+        if (directUsable) {
           usedDirect = true;
           return { urls: [direct], sourceMode, sawDirect, usedDirect };
         }
@@ -755,13 +868,45 @@ async function resolveLivePlaybackCandidates(upstream, payload, format) {
       streamId: payload.stream_id,
       episodeId: payload.episode_id,
       format,
-      liveHlsOutput: env.LIVE_HLS_OUTPUT,
+      liveHlsOutput: requireHlsManifest ? "m3u8" : env.LIVE_HLS_OUTPUT,
       allowHttpFallback: env.XUI_HTTP_FALLBACK,
     }),
     sourceMode,
     sawDirect: false,
     usedDirect: false,
   };
+}
+
+async function resolvePlaybackCandidateUrls(upstream, payload, format, options = {}) {
+  if (payload.type === "live") {
+    return resolveLivePlaybackCandidates(upstream, payload, format, options);
+  }
+
+  return {
+    urls: buildStreamUrls({
+      upstream,
+      type: payload.type,
+      streamId: payload.stream_id,
+      episodeId: payload.episode_id,
+      format,
+      liveHlsOutput: "m3u8",
+      allowHttpFallback: env.XUI_HTTP_FALLBACK,
+    }),
+    sourceMode: "path",
+    sawDirect: false,
+    usedDirect: false,
+  };
+}
+
+function rewritePlaybackManifest(text, baseUrl, playbackToken, expiresAtMs) {
+  return rewriteM3uManifest(text, baseUrl, (absoluteUrl) => {
+    const assetId = getOrCreatePlaybackAssetId({
+      playbackToken,
+      targetUrl: absoluteUrl,
+      expiresAtMs,
+    });
+    return buildPlaybackHlsAssetLink(env.PLAYBACK_BASE_URL || "", playbackToken, assetId);
+  });
 }
 
 /** =========================================
@@ -805,11 +950,17 @@ router.post("/playback/token", authJwt, async (req, res) => {
 
     if (cached) {
       const expiresAt = new Date(cached.expiresAtMs).toISOString();
+      const playbackUrl = buildPlaybackLink(baseUrl, cached.token, "hls");
+      const hlsUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, cached.token) : playbackUrl;
       return res.json({
         token: cached.token,
         expires_at: expiresAt,
         urls: {
-          hls: buildPlaybackLink(baseUrl, cached.token, "hls"),
+          hls: hlsUrl,
+          m3u8: hlsUrl,
+          playback: playbackUrl,
+          stream: playbackUrl,
+          proxy: hlsUrl,
           dash: buildPlaybackLink(baseUrl, cached.token, "dash"),
         },
       });
@@ -834,17 +985,123 @@ router.post("/playback/token", authJwt, async (req, res) => {
     setCachedPlaybackToken(cacheKey, token, expiresAtMs);
 
     const expiresAt = new Date(expiresAtMs).toISOString();
+    const playbackUrl = buildPlaybackLink(baseUrl, token, "hls");
+    const hlsUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, token) : playbackUrl;
 
     return res.json({
       token,
       expires_at: expiresAt,
       urls: {
-        hls: buildPlaybackLink(baseUrl, token, "hls"),
+        hls: hlsUrl,
+        m3u8: hlsUrl,
+        playback: playbackUrl,
+        stream: playbackUrl,
+        proxy: hlsUrl,
         dash: buildPlaybackLink(baseUrl, token, "dash"),
       },
     });
   } catch (err) {
     return sendInternalError(req, res, "playback/token", err);
+  }
+});
+
+/** =========================================
+ *  GET /v1/playback/hls?token=...
+ *  - verifies token and returns a rewritten HLS manifest proxied through this API
+ *  ========================================= */
+router.get("/playback/hls", async (req, res) => {
+  try {
+    const token = String(req.query.token || "").trim();
+    if (!token) return res.status(400).json({ error: "token required" });
+
+    const { payload, device, upstream } = await resolvePlaybackContext(token);
+    const expiresAtMs = getPlaybackTokenExpiresAtMs(payload);
+    const source = await resolvePlaybackCandidateUrls(upstream, payload, "hls", {
+      requireHlsManifest: true,
+    });
+
+    const requestInit = {
+      method: "GET",
+      headers: { "User-Agent": "streamin-api/1.0" },
+    };
+    const requestOptions = {
+      timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
+    };
+
+    const manifest = payload.type === "live" && needsEmbeddedHlsManifest(device.platform)
+      ? await resolveEmbeddedSamsungManifest(source.urls)
+      : await fetchTextWithResolvedUrl(source.urls, requestInit, requestOptions);
+
+    const manifestText = String(manifest.text || "");
+    if (!manifestText.trim()) {
+      return res.status(502).json({ error: "upstream returned empty manifest" });
+    }
+    if (!isM3uManifest(manifest.url, manifest.contentType)) {
+      return res.status(502).json({ error: "upstream did not return an hls manifest" });
+    }
+
+    const rewritten = rewritePlaybackManifest(manifestText, manifest.url, token, expiresAtMs);
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(rewritten);
+  } catch (err) {
+    if (err?.message === "missing upstream base URL") {
+      return res.status(500).json({ error: "missing upstream base URL" });
+    }
+    if (err?.message === "invalid stream type") {
+      return res.status(400).json({ error: "invalid stream type" });
+    }
+    if (err?.status) {
+      return res.status(err.status).json({ error: err.message || "playback failed" });
+    }
+    return sendInternalError(req, res, "playback/hls", err);
+  }
+});
+
+router.get("/playback/hls-asset", async (req, res) => {
+  try {
+    const token = String(req.query.token || "").trim();
+    const assetId = String(req.query.asset || "").trim();
+    if (!token) return res.status(400).json({ error: "token required" });
+    if (!assetId) return res.status(400).json({ error: "asset required" });
+
+    const { payload } = await resolvePlaybackContext(token);
+    const expiresAtMs = getPlaybackTokenExpiresAtMs(payload);
+    const assetEntry = getCachedPlaybackAsset(assetId);
+
+    if (!assetEntry || assetEntry.playbackToken !== token) {
+      return res.status(404).json({ error: "playback asset not found" });
+    }
+
+    const asset = await fetchBinaryWithResolvedUrl(assetEntry.targetUrl, {
+      method: "GET",
+      headers: {
+        "User-Agent": "streamin-api/1.0",
+        ...(req.headers.range ? { Range: String(req.headers.range) } : {}),
+      },
+    }, {
+      timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
+    });
+
+    res.setHeader("Cache-Control", "no-store");
+
+    if (isM3uManifest(asset.url, asset.contentType)) {
+      const manifestText = asset.buffer.toString("utf8");
+      const rewritten = rewritePlaybackManifest(manifestText, asset.url, token, expiresAtMs);
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
+      return res.send(rewritten);
+    }
+
+    if (asset.acceptRanges) res.setHeader("Accept-Ranges", asset.acceptRanges);
+    if (asset.contentRange) res.setHeader("Content-Range", asset.contentRange);
+    if (asset.contentLength) res.setHeader("Content-Length", asset.contentLength);
+    res.setHeader("Content-Type", asset.contentType || inferContentType(asset.url));
+    return res.status(asset.status || 200).send(asset.buffer);
+  } catch (err) {
+    if (err?.status) {
+      return res.status(err.status).json({ error: err.message || "playback failed" });
+    }
+    return sendInternalError(req, res, "playback/hls-asset", err);
   }
 });
 
