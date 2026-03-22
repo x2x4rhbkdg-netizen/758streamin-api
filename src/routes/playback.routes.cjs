@@ -348,6 +348,23 @@ function normalizeBaseUrl(v) {
   return s.replace(/\/+$/, "");
 }
 
+function getPlaybackBaseUrl(req) {
+  const configured = normalizeBaseUrl(env.PLAYBACK_BASE_URL || "");
+  if (configured) return configured;
+
+  const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim();
+  const forwardedHost = String(req?.headers?.["x-forwarded-host"] || "")
+    .split(",")[0]
+    .trim();
+  const host = forwardedHost || String(req?.headers?.host || "").trim();
+  const proto = forwardedProto || String(req?.protocol || "").trim() || "https";
+
+  if (!host) return "";
+  return normalizeBaseUrl(`${proto}://${host}`);
+}
+
 function normalizeLiveOutput(v) {
   const out = String(v || "m3u8").trim().toLowerCase();
   return out === "ts" ? "ts" : "m3u8";
@@ -991,14 +1008,14 @@ async function resolvePlaybackCandidateUrls(upstream, payload, format, options =
   };
 }
 
-function rewritePlaybackManifest(text, baseUrl, playbackToken, expiresAtMs) {
+function rewritePlaybackManifest(text, baseUrl, playbackToken, expiresAtMs, playbackBaseUrl) {
   return rewriteM3uManifest(text, baseUrl, (absoluteUrl) => {
     const assetToken = encodePlaybackAssetToken({
       h: hashPlaybackToken(playbackToken),
       u: absoluteUrl,
       e: Number(expiresAtMs || 0),
     });
-    return buildPlaybackHlsAssetLink(env.PLAYBACK_BASE_URL || "", playbackToken, assetToken);
+    return buildPlaybackHlsAssetLink(playbackBaseUrl || "", playbackToken, assetToken);
   });
 }
 
@@ -1039,7 +1056,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
       Math.min(TOKEN_REUSE_SAFETY_SEC, Math.max(5, Math.floor(ttlSec / 6)))
     );
 
-    const baseUrl = env.PLAYBACK_BASE_URL || "";
+    const baseUrl = getPlaybackBaseUrl(req);
 
     if (cached) {
       const expiresAt = new Date(cached.expiresAtMs).toISOString();
@@ -1156,7 +1173,8 @@ router.get("/playback/hls", async (req, res) => {
       return res.status(502).json({ error: "upstream did not return an hls manifest" });
     }
 
-    const rewritten = rewritePlaybackManifest(manifestText, manifest.url, token, expiresAtMs);
+    const playbackBaseUrl = getPlaybackBaseUrl(req);
+    const rewritten = rewritePlaybackManifest(manifestText, manifest.url, token, expiresAtMs, playbackBaseUrl);
     logPlaybackDebug("hls_manifest_ok", {
       token: tokenHash,
       url: summarizeUrlForLog(manifest.url),
@@ -1241,7 +1259,8 @@ router.get("/playback/hls-asset", async (req, res) => {
 
     if (isM3uManifest(asset.url, asset.contentType)) {
       const manifestText = asset.buffer.toString("utf8");
-      const rewritten = rewritePlaybackManifest(manifestText, asset.url, token, expiresAtMs);
+      const playbackBaseUrl = getPlaybackBaseUrl(req);
+      const rewritten = rewritePlaybackManifest(manifestText, asset.url, token, expiresAtMs, playbackBaseUrl);
       logPlaybackDebug("hls_asset_manifest_ok", {
         token: playbackTokenHash,
         kind: classifyPlaybackAssetKind(asset.url),
