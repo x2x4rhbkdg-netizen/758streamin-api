@@ -249,6 +249,42 @@ function decodePlaybackAssetToken(value) {
   return JSON.parse(plaintext);
 }
 
+function summarizeUrlForLog(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    const tail = (url.pathname || "/").split("/").filter(Boolean).slice(-2).join("/") || "/";
+    return `${url.protocol}//${url.host}/.../${tail}`;
+  } catch {
+    return raw.slice(0, 120);
+  }
+}
+
+function classifyPlaybackAssetKind(value) {
+  const raw = String(value || "").toLowerCase();
+  if (!raw) return "unknown";
+  if (raw.includes(".m3u8")) return "manifest";
+  if (raw.includes(".key")) return "key";
+  if (raw.includes(".ts")) return "segment_ts";
+  if (raw.includes(".m4s")) return "segment_m4s";
+  if (raw.includes(".aac")) return "audio";
+  return "asset";
+}
+
+function logPlaybackDebug(event, details = {}) {
+  try {
+    const payload = {
+      event,
+      at: new Date().toISOString(),
+      ...details,
+    };
+    console.log(`[playback-debug] ${JSON.stringify(payload)}`);
+  } catch (err) {
+    console.log(`[playback-debug] ${event}`);
+  }
+}
+
 function pruneEmbeddedHlsVariantCache(nowMs = Date.now()) {
   if (!embeddedHlsVariantCache.size) return;
 
@@ -1009,6 +1045,13 @@ router.post("/playback/token", authJwt, async (req, res) => {
       const expiresAt = new Date(cached.expiresAtMs).toISOString();
       const playbackUrl = buildPlaybackLink(baseUrl, cached.token, "hls");
       const hlsUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, cached.token) : playbackUrl;
+      logPlaybackDebug("playback_token_cached", {
+        token: hashPlaybackToken(cached.token),
+        deviceId: req.device.device_id,
+        type,
+        streamId: streamId || episodeId || "",
+        hls: summarizeUrlForLog(hlsUrl),
+      });
       return res.json({
         token: cached.token,
         expires_at: expiresAt,
@@ -1044,6 +1087,14 @@ router.post("/playback/token", authJwt, async (req, res) => {
     const expiresAt = new Date(expiresAtMs).toISOString();
     const playbackUrl = buildPlaybackLink(baseUrl, token, "hls");
     const hlsUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, token) : playbackUrl;
+    logPlaybackDebug("playback_token_issued", {
+      token: hashPlaybackToken(token),
+      deviceId: req.device.device_id,
+      type,
+      streamId: streamId || episodeId || "",
+      hls: summarizeUrlForLog(hlsUrl),
+      ttlSec,
+    });
 
     return res.json({
       token,
@@ -1072,9 +1123,17 @@ router.get("/playback/hls", async (req, res) => {
     if (!token) return res.status(400).json({ error: "token required" });
 
     const { payload, device, upstream } = await resolvePlaybackContext(token);
+    const tokenHash = hashPlaybackToken(token);
     const expiresAtMs = getPlaybackTokenExpiresAtMs(payload);
     const source = await resolvePlaybackCandidateUrls(upstream, payload, "hls", {
       requireHlsManifest: true,
+    });
+    logPlaybackDebug("hls_request", {
+      token: tokenHash,
+      type: payload.type,
+      streamId: payload.stream_id || payload.episode_id || "",
+      platform: device.platform || "",
+      candidates: Array.isArray(source.urls) ? source.urls.map(summarizeUrlForLog).slice(0, 3) : [],
     });
 
     const requestInit = {
@@ -1098,10 +1157,22 @@ router.get("/playback/hls", async (req, res) => {
     }
 
     const rewritten = rewritePlaybackManifest(manifestText, manifest.url, token, expiresAtMs);
+    logPlaybackDebug("hls_manifest_ok", {
+      token: tokenHash,
+      url: summarizeUrlForLog(manifest.url),
+      contentType: String(manifest.contentType || ""),
+      size: manifestText.length,
+    });
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
     return res.send(rewritten);
   } catch (err) {
+    logPlaybackDebug("hls_manifest_error", {
+      token: hashPlaybackToken(String(req.query.token || "")),
+      message: err?.message || String(err || ""),
+      status: Number(err?.status || 0) || 500,
+      url: summarizeUrlForLog(err?.url || ""),
+    });
     if (err?.message === "missing upstream base URL") {
       return res.status(500).json({ error: "missing upstream base URL" });
     }
@@ -1146,6 +1217,16 @@ router.get("/playback/hls-asset", async (req, res) => {
       return res.status(400).json({ error: "invalid playback asset url" });
     }
 
+    logPlaybackDebug("hls_asset_request", {
+      token: playbackTokenHash,
+      type: payload.type,
+      streamId: payload.stream_id || payload.episode_id || "",
+      kind: classifyPlaybackAssetKind(targetUrl),
+      range: String(req.headers.range || ""),
+      url: summarizeUrlForLog(targetUrl),
+      cacheHit: Boolean(cachedAssetEntry && cachedAssetEntry.playbackToken === token),
+    });
+
     const asset = await fetchBinaryWithResolvedUrl(targetUrl, {
       method: "GET",
       headers: {
@@ -1161,16 +1242,37 @@ router.get("/playback/hls-asset", async (req, res) => {
     if (isM3uManifest(asset.url, asset.contentType)) {
       const manifestText = asset.buffer.toString("utf8");
       const rewritten = rewritePlaybackManifest(manifestText, asset.url, token, expiresAtMs);
+      logPlaybackDebug("hls_asset_manifest_ok", {
+        token: playbackTokenHash,
+        kind: classifyPlaybackAssetKind(asset.url),
+        url: summarizeUrlForLog(asset.url),
+        contentType: asset.contentType || "",
+        size: manifestText.length,
+      });
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
       return res.send(rewritten);
     }
 
+    logPlaybackDebug("hls_asset_ok", {
+      token: playbackTokenHash,
+      kind: classifyPlaybackAssetKind(asset.url),
+      url: summarizeUrlForLog(asset.url),
+      status: Number(asset.status || 200) || 200,
+      contentType: asset.contentType || "",
+      contentLength: asset.contentLength || "",
+    });
     if (asset.acceptRanges) res.setHeader("Accept-Ranges", asset.acceptRanges);
     if (asset.contentRange) res.setHeader("Content-Range", asset.contentRange);
     if (asset.contentLength) res.setHeader("Content-Length", asset.contentLength);
     res.setHeader("Content-Type", asset.contentType || inferContentType(asset.url));
     return res.status(asset.status || 200).send(asset.buffer);
   } catch (err) {
+    logPlaybackDebug("hls_asset_error", {
+      token: hashPlaybackToken(String(req.query.token || "")),
+      message: err?.message || String(err || ""),
+      status: Number(err?.status || 0) || 500,
+      url: summarizeUrlForLog(err?.url || ""),
+    });
     if (err?.status) {
       return res.status(err.status).json({ error: err.message || "playback failed" });
     }
