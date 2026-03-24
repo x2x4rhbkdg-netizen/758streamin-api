@@ -185,8 +185,12 @@ function setCachedLiveStreams(upstream, items) {
   pruneLiveStreamsCache();
 }
 
-function playbackAssetRequestKey(playbackToken, targetUrl) {
-  return `${String(playbackToken || "").trim()}|${String(targetUrl || "").trim()}`;
+function playbackAssetRequestKey(playbackToken, targetUrl, cacheScope = "") {
+  return [
+    String(playbackToken || "").trim(),
+    String(targetUrl || "").trim(),
+    String(cacheScope || "").trim(),
+  ].join("|");
 }
 
 function prunePlaybackAssetCache(nowMs = Date.now()) {
@@ -235,8 +239,8 @@ function getCachedPlaybackAsset(assetId) {
   return entry;
 }
 
-function getOrCreatePlaybackAssetId({ playbackToken, targetUrl, expiresAtMs }) {
-  const requestKey = playbackAssetRequestKey(playbackToken, targetUrl);
+function getOrCreatePlaybackAssetId({ playbackToken, targetUrl, expiresAtMs, cacheScope = "" }) {
+  const requestKey = playbackAssetRequestKey(playbackToken, targetUrl, cacheScope);
   if (!requestKey || requestKey === "|") return "";
 
   const cachedAssetId = playbackAssetCacheByRequestKey.get(requestKey);
@@ -645,10 +649,20 @@ function buildPlaybackHlsLink(baseUrl, token) {
   return `${prefix}?token=${encodeURIComponent(token)}`;
 }
 
-function buildPlaybackHlsAssetLink(baseUrl, token, assetId) {
+function buildPlaybackHlsAssetLink(baseUrl, token, assetId, extraQuery = null) {
   const base = normalizeBaseUrl(baseUrl);
   const prefix = base ? `${base}/v1/playback/hls-asset` : "/v1/playback/hls-asset";
-  return `${prefix}?token=${encodeURIComponent(token)}&asset=${encodeURIComponent(assetId)}`;
+  const params = new URLSearchParams();
+  params.set("token", String(token || ""));
+  params.set("asset", String(assetId || ""));
+  if (extraQuery && typeof extraQuery === "object") {
+    for (const [key, value] of Object.entries(extraQuery)) {
+      const normalized = String(value ?? "").trim();
+      if (!key || !normalized) continue;
+      params.set(String(key), normalized);
+    }
+  }
+  return `${prefix}?${params.toString()}`;
 }
 
 function buildEmbeddedHlsLink(baseUrl, token) {
@@ -1130,14 +1144,95 @@ async function resolvePlaybackCandidateUrls(upstream, payload, format, options =
 }
 
 function rewritePlaybackManifest(text, baseUrl, playbackToken, expiresAtMs, playbackBaseUrl) {
-  return rewriteM3uManifest(text, baseUrl, (absoluteUrl) => {
-    const assetToken = encodePlaybackAssetToken({
-      h: hashPlaybackToken(playbackToken),
-      u: absoluteUrl,
-      e: Number(expiresAtMs || 0),
+  const manifestText = String(text || "");
+  if (!manifestText.trim()) return manifestText;
+
+  const isMasterManifest = isMasterM3uManifest(manifestText);
+  let mediaSequence = 0;
+  let segmentIndex = 0;
+  let discontinuitySequence = 0;
+
+  const buildPlaybackAssetLink = (absoluteUrl, extras = {}) => {
+    const normalizedUrl = absolutizeManifestUri(absoluteUrl, baseUrl);
+    const cacheScope = [
+      String(extras.kind || "").trim(),
+      String(extras.msn || "").trim(),
+      String(extras.disc || "").trim(),
+    ].join("|");
+    const assetId = getOrCreatePlaybackAssetId({
+      playbackToken,
+      targetUrl: normalizedUrl,
+      expiresAtMs,
+      cacheScope,
     });
-    return buildPlaybackHlsAssetLink(playbackBaseUrl || "", playbackToken, assetToken);
-  });
+    return buildPlaybackHlsAssetLink(playbackBaseUrl || "", playbackToken, assetId, extras);
+  };
+
+  return manifestText
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = String(line || "").trim();
+      if (!trimmed) return line;
+
+      if (/^#EXT-X-MEDIA-SEQUENCE:/i.test(trimmed)) {
+        mediaSequence = Math.max(0, Number(trimmed.split(":").slice(1).join(":").trim()) || 0);
+        segmentIndex = 0;
+        return line;
+      }
+
+      if (/^#EXT-X-DISCONTINUITY-SEQUENCE:/i.test(trimmed)) {
+        discontinuitySequence = Math.max(0, Number(trimmed.split(":").slice(1).join(":").trim()) || 0);
+        return line;
+      }
+
+      if (/^#EXT-X-DISCONTINUITY\b/i.test(trimmed)) {
+        discontinuitySequence += 1;
+        return line;
+      }
+
+      if (trimmed.startsWith("#")) {
+        return line.replace(/URI="([^"]+)"/g, (_match, uri) => {
+          const absoluteUrl = absolutizeManifestUri(uri, baseUrl);
+          let kind = classifyPlaybackAssetKind(absoluteUrl);
+          let msn = "";
+          let disc = "";
+
+          if (isMasterManifest) {
+            kind = "manifest";
+          } else if (/^#EXT-X-KEY:/i.test(trimmed)) {
+            kind = "key";
+          } else if (/^#EXT-X-MAP:/i.test(trimmed)) {
+            kind = kind === "asset" || kind === "unknown" ? "segment_map" : kind;
+            msn = String(mediaSequence + segmentIndex);
+            disc = String(discontinuitySequence);
+          } else if (/^#EXT-X-PART:/i.test(trimmed) || /^#EXT-X-PRELOAD-HINT:/i.test(trimmed)) {
+            kind = kind === "asset" || kind === "unknown" ? "segment_part" : kind;
+            msn = String(mediaSequence + segmentIndex);
+            disc = String(discontinuitySequence);
+          } else if (kind === "asset" || kind === "unknown") {
+            kind = "asset";
+          }
+
+          return `URI="${buildPlaybackAssetLink(absoluteUrl, { kind, msn, disc })}"`;
+        });
+      }
+
+      const absoluteUrl = absolutizeManifestUri(trimmed, baseUrl);
+      let kind = isMasterManifest ? "manifest" : classifyPlaybackAssetKind(absoluteUrl);
+      if (!isMasterManifest && (kind === "asset" || kind === "unknown" || kind === "manifest")) {
+        kind = "segment";
+      }
+      const rewritten = buildPlaybackAssetLink(absoluteUrl, {
+        kind,
+        msn: isMasterManifest ? "" : String(mediaSequence + segmentIndex),
+        disc: isMasterManifest ? "" : String(discontinuitySequence),
+      });
+      if (!isMasterManifest) {
+        segmentIndex += 1;
+      }
+      return rewritten;
+    })
+    .join("\n");
 }
 
 /** =========================================
