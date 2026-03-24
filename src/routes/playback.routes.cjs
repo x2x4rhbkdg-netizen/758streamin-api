@@ -639,18 +639,16 @@ function buildEmbeddedHlsLink(baseUrl, token) {
   return `${prefix}?token=${encodeURIComponent(token)}`;
 }
 
-function buildPlaybackResponseUrls(baseUrl, token, type, platform) {
+function buildPlaybackResponseUrls(baseUrl, token, type) {
   const playbackUrl = buildPlaybackLink(baseUrl, token, "hls");
-  const proxyUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, token) : playbackUrl;
-  const useProxyAsPrimary = type === "live" && needsEmbeddedHlsManifest(platform);
-  const hlsUrl = useProxyAsPrimary ? proxyUrl : playbackUrl;
+  const hlsUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, token) : playbackUrl;
 
   return {
     hls: hlsUrl,
     m3u8: hlsUrl,
     playback: playbackUrl,
     stream: playbackUrl,
-    proxy: proxyUrl,
+    proxy: hlsUrl,
     dash: buildPlaybackLink(baseUrl, token, "dash"),
   };
 }
@@ -1144,7 +1142,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
 
     if (cached) {
       const expiresAt = new Date(cached.expiresAtMs).toISOString();
-      const urls = buildPlaybackResponseUrls(baseUrl, cached.token, type, req.device.platform);
+      const urls = buildPlaybackResponseUrls(baseUrl, cached.token, type);
       logPlaybackDebug("playback_token_cached", {
         token: hashPlaybackToken(cached.token),
         deviceId: req.device.device_id,
@@ -1180,7 +1178,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
     setCachedPlaybackToken(cacheKey, token, expiresAtMs);
 
     const expiresAt = new Date(expiresAtMs).toISOString();
-    const urls = buildPlaybackResponseUrls(baseUrl, token, type, req.device.platform);
+    const urls = buildPlaybackResponseUrls(baseUrl, token, type);
     logPlaybackDebug("playback_token_issued", {
       token: hashPlaybackToken(token),
       deviceId: req.device.device_id,
