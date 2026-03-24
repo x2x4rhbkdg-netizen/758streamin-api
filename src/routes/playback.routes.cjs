@@ -449,9 +449,23 @@ function normalizePlatform(v) {
   return String(v || "").trim().toLowerCase();
 }
 
-function needsEmbeddedHlsManifest(platform) {
+function needsStableEmbeddedHlsVariant(platform) {
   const value = normalizePlatform(platform);
   return value === "samsung" || value === "samsung_tizen_web";
+}
+
+function needsEmbeddedHlsManifest(platform) {
+  const value = normalizePlatform(platform);
+  return [
+    "android",
+    "android_mobile",
+    "android_tv",
+    "fire_tv",
+    "firetv",
+    "amazon_fire_tv",
+    "samsung",
+    "samsung_tizen_web",
+  ].includes(value);
 }
 
 function parseFirstHttpUrl(value) {
@@ -646,9 +660,11 @@ function buildEmbeddedHlsLink(baseUrl, token) {
   return `${prefix}?token=${encodeURIComponent(token)}`;
 }
 
-function buildPlaybackResponseUrls(baseUrl, token, type) {
+function buildPlaybackResponseUrls(baseUrl, token, type, platform) {
   const playbackUrl = buildPlaybackLink(baseUrl, token, "hls");
-  const hlsUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, token) : playbackUrl;
+  const hlsUrl = type === "live"
+    ? (needsEmbeddedHlsManifest(platform) ? buildEmbeddedHlsLink(baseUrl, token) : buildPlaybackHlsLink(baseUrl, token))
+    : playbackUrl;
 
   return {
     hls: hlsUrl,
@@ -922,7 +938,7 @@ async function fetchBinaryWithResolvedUrl(url, init = {}, options = {}) {
   }
 }
 
-async function resolveEmbeddedSamsungManifest(urls) {
+async function resolveEmbeddedHlsManifest(urls, options = {}) {
   const requestInit = {
     method: "GET",
     headers: { "User-Agent": "streamin-api/1.0" },
@@ -930,8 +946,12 @@ async function resolveEmbeddedSamsungManifest(urls) {
   const requestOptions = {
     timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
   };
+  const preferStableVariant = Boolean(options?.preferStableVariant);
 
   let manifest = await fetchTextWithResolvedUrl(urls, requestInit, requestOptions);
+  if (!preferStableVariant) {
+    return manifest;
+  }
 
   for (let depth = 0; depth < EMBEDDED_HLS_MAX_DEPTH; depth += 1) {
     const manifestText = String(manifest.text || "");
@@ -1159,7 +1179,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
 
     if (cached) {
       const expiresAt = new Date(cached.expiresAtMs).toISOString();
-      const urls = buildPlaybackResponseUrls(baseUrl, cached.token, type);
+      const urls = buildPlaybackResponseUrls(baseUrl, cached.token, type, req.device.platform || "");
       logPlaybackDebug("playback_token_cached", {
         token: hashPlaybackToken(cached.token),
         deviceId: req.device.device_id,
@@ -1199,7 +1219,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
     }
 
     const expiresAt = new Date(expiresAtMs).toISOString();
-    const urls = buildPlaybackResponseUrls(baseUrl, token, type);
+    const urls = buildPlaybackResponseUrls(baseUrl, token, type, req.device.platform || "");
     logPlaybackDebug("playback_token_issued", {
       token: hashPlaybackToken(token),
       deviceId: req.device.device_id,
@@ -1254,7 +1274,9 @@ router.get("/playback/hls", async (req, res) => {
     };
 
     const manifest = payload.type === "live" && needsEmbeddedHlsManifest(device.platform)
-      ? await resolveEmbeddedSamsungManifest(source.urls)
+      ? await resolveEmbeddedHlsManifest(source.urls, {
+          preferStableVariant: needsStableEmbeddedHlsVariant(device.platform),
+        })
       : await fetchTextWithResolvedUrl(source.urls, requestInit, requestOptions);
 
     const manifestText = String(manifest.text || "");
@@ -1446,7 +1468,9 @@ router.get("/playback/embedded-hls", async (req, res) => {
 
     const format = "hls";
     const source = await resolveLivePlaybackCandidates(upstream, payload, format);
-    const manifest = await resolveEmbeddedSamsungManifest(source.urls);
+    const manifest = await resolveEmbeddedHlsManifest(source.urls, {
+      preferStableVariant: needsStableEmbeddedHlsVariant(device.platform),
+    });
 
     const manifestText = String(manifest.text || "");
     if (!manifestText.trim()) {
