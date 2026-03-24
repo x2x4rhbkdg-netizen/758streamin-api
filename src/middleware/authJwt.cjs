@@ -23,7 +23,7 @@ async function authJwt(req, res, next) {
     }
 
     const [rows] = await pool.execute(
-      `SELECT d.status, a.expires_at, a.max_streams
+      `SELECT d.status, d.platform, a.expires_at, a.max_streams
        FROM devices d
        LEFT JOIN device_access a ON a.device_id = d.id
        WHERE d.id=?
@@ -44,6 +44,7 @@ async function authJwt(req, res, next) {
 
     req.device = {
       ...payload,
+      platform: dev.platform || payload.platform || "",
       max_streams: Number(dev.max_streams || payload.max_streams || 1),
     };
     return next();

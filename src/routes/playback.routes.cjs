@@ -33,6 +33,12 @@ const EMBEDDED_HLS_VARIANT_CACHE_TTL_MS = Math.max(
   5000,
   Math.min(10 * 60 * 1000, Number(process.env.SAMSUNG_EMBEDDED_HLS_VARIANT_CACHE_TTL_MS || 60 * 1000) || 60 * 1000)
 );
+const liveStreamsCache = new Map();
+const LIVE_STREAMS_CACHE_MAX = 100;
+const LIVE_STREAMS_CACHE_TTL_MS = Math.max(
+  5000,
+  Math.min(60 * 1000, Number(process.env.LIVE_STREAMS_CACHE_TTL_MS || 15 * 1000) || 15 * 1000)
+);
 const playbackAssetCacheById = new Map();
 const playbackAssetCacheByRequestKey = new Map();
 const PLAYBACK_ASSET_CACHE_MAX = Math.max(
@@ -113,6 +119,64 @@ function setCachedPlaybackToken(key, token, expiresAtMs) {
     touchedAt: Date.now(),
   });
   prunePlaybackTokenCache();
+}
+
+function upstreamLiveStreamsCacheKey(upstream) {
+  return [
+    String(upstream?.upstream_base_url || "").trim(),
+    String(upstream?.username || "").trim(),
+    String(upstream?.password || "").trim(),
+  ].join("|");
+}
+
+function pruneLiveStreamsCache(nowMs = Date.now()) {
+  if (!liveStreamsCache.size) return;
+
+  for (const [key, value] of liveStreamsCache.entries()) {
+    if (!value || Number(value.expiresAtMs || 0) <= nowMs) {
+      liveStreamsCache.delete(key);
+    }
+  }
+
+  if (liveStreamsCache.size <= LIVE_STREAMS_CACHE_MAX) return;
+
+  const entries = Array.from(liveStreamsCache.entries()).sort(
+    (a, b) => Number(a[1]?.touchedAt || 0) - Number(b[1]?.touchedAt || 0)
+  );
+  const removeCount = liveStreamsCache.size - LIVE_STREAMS_CACHE_MAX;
+  for (let i = 0; i < removeCount; i += 1) {
+    const key = entries[i]?.[0];
+    if (key) liveStreamsCache.delete(key);
+  }
+}
+
+function getCachedLiveStreams(upstream) {
+  const key = upstreamLiveStreamsCacheKey(upstream);
+  if (!key) return null;
+
+  const entry = liveStreamsCache.get(key);
+  if (!entry) return null;
+
+  const nowMs = Date.now();
+  if (Number(entry.expiresAtMs || 0) <= nowMs) {
+    liveStreamsCache.delete(key);
+    return null;
+  }
+
+  entry.touchedAt = nowMs;
+  return Array.isArray(entry.items) ? entry.items : null;
+}
+
+function setCachedLiveStreams(upstream, items) {
+  const key = upstreamLiveStreamsCacheKey(upstream);
+  if (!key) return;
+
+  liveStreamsCache.set(key, {
+    items: Array.isArray(items) ? items : [],
+    expiresAtMs: Date.now() + LIVE_STREAMS_CACHE_TTL_MS,
+    touchedAt: Date.now(),
+  });
+  pruneLiveStreamsCache();
 }
 
 function playbackAssetRequestKey(playbackToken, targetUrl) {
@@ -475,8 +539,12 @@ async function fetchXuiJson(upstream, action, params = {}) {
 
 async function resolveLiveDirectSource(upstream, streamId) {
   if (!streamId) return null;
-  const streams = await fetchXuiJson(upstream, "get_live_streams");
-  const list = Array.isArray(streams) ? streams : [];
+  let list = getCachedLiveStreams(upstream);
+  if (!list) {
+    const streams = await fetchXuiJson(upstream, "get_live_streams");
+    list = Array.isArray(streams) ? streams : [];
+    setCachedLiveStreams(upstream, list);
+  }
   const wanted = String(streamId);
   const match = list.find((item) => String(item?.stream_id || "") === wanted);
   if (!match) return null;
@@ -569,6 +637,22 @@ function buildEmbeddedHlsLink(baseUrl, token) {
   const base = normalizeBaseUrl(baseUrl);
   const prefix = base ? `${base}/v1/playback/embedded-hls` : "/v1/playback/embedded-hls";
   return `${prefix}?token=${encodeURIComponent(token)}`;
+}
+
+function buildPlaybackResponseUrls(baseUrl, token, type, platform) {
+  const playbackUrl = buildPlaybackLink(baseUrl, token, "hls");
+  const proxyUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, token) : playbackUrl;
+  const useProxyAsPrimary = type === "live" && needsEmbeddedHlsManifest(platform);
+  const hlsUrl = useProxyAsPrimary ? proxyUrl : playbackUrl;
+
+  return {
+    hls: hlsUrl,
+    m3u8: hlsUrl,
+    playback: playbackUrl,
+    stream: playbackUrl,
+    proxy: proxyUrl,
+    dash: buildPlaybackLink(baseUrl, token, "dash"),
+  };
 }
 
 function absolutizeManifestUri(value, baseUrl) {
@@ -1060,26 +1144,20 @@ router.post("/playback/token", authJwt, async (req, res) => {
 
     if (cached) {
       const expiresAt = new Date(cached.expiresAtMs).toISOString();
-      const playbackUrl = buildPlaybackLink(baseUrl, cached.token, "hls");
-      const hlsUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, cached.token) : playbackUrl;
+      const urls = buildPlaybackResponseUrls(baseUrl, cached.token, type, req.device.platform);
       logPlaybackDebug("playback_token_cached", {
         token: hashPlaybackToken(cached.token),
         deviceId: req.device.device_id,
         type,
         streamId: streamId || episodeId || "",
-        hls: summarizeUrlForLog(hlsUrl),
+        hls: summarizeUrlForLog(urls.hls),
+        proxy: summarizeUrlForLog(urls.proxy),
+        platform: req.device.platform || "",
       });
       return res.json({
         token: cached.token,
         expires_at: expiresAt,
-        urls: {
-          hls: hlsUrl,
-          m3u8: hlsUrl,
-          playback: playbackUrl,
-          stream: playbackUrl,
-          proxy: hlsUrl,
-          dash: buildPlaybackLink(baseUrl, cached.token, "dash"),
-        },
+        urls,
       });
     }
 
@@ -1102,28 +1180,22 @@ router.post("/playback/token", authJwt, async (req, res) => {
     setCachedPlaybackToken(cacheKey, token, expiresAtMs);
 
     const expiresAt = new Date(expiresAtMs).toISOString();
-    const playbackUrl = buildPlaybackLink(baseUrl, token, "hls");
-    const hlsUrl = type === "live" ? buildPlaybackHlsLink(baseUrl, token) : playbackUrl;
+    const urls = buildPlaybackResponseUrls(baseUrl, token, type, req.device.platform);
     logPlaybackDebug("playback_token_issued", {
       token: hashPlaybackToken(token),
       deviceId: req.device.device_id,
       type,
       streamId: streamId || episodeId || "",
-      hls: summarizeUrlForLog(hlsUrl),
+      hls: summarizeUrlForLog(urls.hls),
+      proxy: summarizeUrlForLog(urls.proxy),
+      platform: req.device.platform || "",
       ttlSec,
     });
 
     return res.json({
       token,
       expires_at: expiresAt,
-      urls: {
-        hls: hlsUrl,
-        m3u8: hlsUrl,
-        playback: playbackUrl,
-        stream: playbackUrl,
-        proxy: hlsUrl,
-        dash: buildPlaybackLink(baseUrl, token, "dash"),
-      },
+      urls,
     });
   } catch (err) {
     return sendInternalError(req, res, "playback/token", err);
