@@ -431,9 +431,6 @@ function normalizeBaseUrl(v) {
 }
 
 function getPlaybackBaseUrl(req) {
-  const configured = normalizeBaseUrl(env.PLAYBACK_BASE_URL || "");
-  if (configured) return configured;
-
   const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "")
     .split(",")[0]
     .trim();
@@ -443,8 +440,11 @@ function getPlaybackBaseUrl(req) {
   const host = forwardedHost || String(req?.headers?.host || "").trim();
   const proto = forwardedProto || String(req?.protocol || "").trim() || "https";
 
-  if (!host) return "";
-  return normalizeBaseUrl(`${proto}://${host}`);
+  if (host) {
+    return normalizeBaseUrl(`${proto}://${host}`);
+  }
+
+  return normalizeBaseUrl(env.PLAYBACK_BASE_URL || "");
 }
 
 function normalizeLiveOutput(v) {
@@ -1473,7 +1473,7 @@ router.get("/playback/stream", async (req, res) => {
     const format = String(req.query.format || "hls").trim().toLowerCase();
     if (payload.type === "live" && format === "hls" && needsEmbeddedHlsManifest(device.platform)) {
       res.setHeader("Cache-Control", "no-store");
-      return res.redirect(302, buildEmbeddedHlsLink(env.PLAYBACK_BASE_URL || "", token));
+      return res.redirect(302, buildEmbeddedHlsLink(getPlaybackBaseUrl(req), token));
     }
 
     const source = await resolveLivePlaybackCandidates(upstream, payload, format);
