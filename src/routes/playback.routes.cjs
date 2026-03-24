@@ -437,7 +437,7 @@ function getPlaybackBaseUrl(req) {
   const forwardedHost = String(req?.headers?.["x-forwarded-host"] || "")
     .split(",")[0]
     .trim();
-  const host = forwardedHost || String(req?.headers?.host || "").trim();
+  const host = String(req?.headers?.host || "").trim() || forwardedHost;
   const proto = forwardedProto || String(req?.protocol || "").trim() || "https";
 
   if (host) {
@@ -465,23 +465,13 @@ function needsStableEmbeddedHlsVariant(platform) {
   const value = normalizePlatform(platform);
   return (
     value === "samsung" ||
-    value === "samsung_tizen_web" ||
-    value === "android_tv" ||
-    value === "fire_tv" ||
-    value === "firetv" ||
-    value === "amazon_fire_tv"
+    value === "samsung_tizen_web"
   );
 }
 
 function needsEmbeddedHlsManifest(platform) {
   const value = normalizePlatform(platform);
   return [
-    "android",
-    "android_mobile",
-    "android_tv",
-    "fire_tv",
-    "firetv",
-    "amazon_fire_tv",
     "samsung",
     "samsung_tizen_web",
   ].includes(value);
