@@ -61,18 +61,6 @@ const SAMSUNG_HLS_MAX_HEIGHT = Math.max(
   180,
   Math.min(2160, Number(process.env.SAMSUNG_HLS_MAX_HEIGHT || 720) || 720)
 );
-const ANDROID_TV_HLS_MAX_BITRATE = Math.max(
-  250000,
-  Math.min(10 * 1000 * 1000, Number(process.env.ANDROID_TV_HLS_MAX_BITRATE || 1800000) || 1800000)
-);
-const ANDROID_TV_HLS_MAX_WIDTH = Math.max(
-  320,
-  Math.min(3840, Number(process.env.ANDROID_TV_HLS_MAX_WIDTH || 1280) || 1280)
-);
-const ANDROID_TV_HLS_MAX_HEIGHT = Math.max(
-  180,
-  Math.min(2160, Number(process.env.ANDROID_TV_HLS_MAX_HEIGHT || 720) || 720)
-);
 
 function parseTtl(v, fallback) {
   const n = Number(v);
@@ -815,20 +803,6 @@ function parseMasterManifestVariants(text, baseUrl) {
 }
 
 function getEmbeddedHlsVariantCaps(platform) {
-  const value = normalizePlatform(platform);
-  if (
-    value === "android_tv" ||
-    value === "fire_tv" ||
-    value === "firetv" ||
-    value === "amazon_fire_tv"
-  ) {
-    return {
-      maxBitrate: ANDROID_TV_HLS_MAX_BITRATE,
-      maxWidth: ANDROID_TV_HLS_MAX_WIDTH,
-      maxHeight: ANDROID_TV_HLS_MAX_HEIGHT,
-    };
-  }
-
   return {
     maxBitrate: SAMSUNG_HLS_MAX_BITRATE,
     maxWidth: SAMSUNG_HLS_MAX_WIDTH,
