@@ -61,6 +61,18 @@ const SAMSUNG_HLS_MAX_HEIGHT = Math.max(
   180,
   Math.min(2160, Number(process.env.SAMSUNG_HLS_MAX_HEIGHT || 720) || 720)
 );
+const ANDROID_TV_HLS_MAX_BITRATE = Math.max(
+  250000,
+  Math.min(10 * 1000 * 1000, Number(process.env.ANDROID_TV_HLS_MAX_BITRATE || 1800000) || 1800000)
+);
+const ANDROID_TV_HLS_MAX_WIDTH = Math.max(
+  320,
+  Math.min(3840, Number(process.env.ANDROID_TV_HLS_MAX_WIDTH || 1280) || 1280)
+);
+const ANDROID_TV_HLS_MAX_HEIGHT = Math.max(
+  180,
+  Math.min(2160, Number(process.env.ANDROID_TV_HLS_MAX_HEIGHT || 720) || 720)
+);
 
 function parseTtl(v, fallback) {
   const n = Number(v);
@@ -451,7 +463,14 @@ function normalizePlatform(v) {
 
 function needsStableEmbeddedHlsVariant(platform) {
   const value = normalizePlatform(platform);
-  return value === "samsung" || value === "samsung_tizen_web";
+  return (
+    value === "samsung" ||
+    value === "samsung_tizen_web" ||
+    value === "android_tv" ||
+    value === "fire_tv" ||
+    value === "firetv" ||
+    value === "amazon_fire_tv"
+  );
 }
 
 function needsEmbeddedHlsManifest(platform) {
@@ -805,9 +824,34 @@ function parseMasterManifestVariants(text, baseUrl) {
   return variants.filter((variant) => isHttpUrl(variant.url));
 }
 
-function pickSamsungStableVariant(variants) {
+function getEmbeddedHlsVariantCaps(platform) {
+  const value = normalizePlatform(platform);
+  if (
+    value === "android_tv" ||
+    value === "fire_tv" ||
+    value === "firetv" ||
+    value === "amazon_fire_tv"
+  ) {
+    return {
+      maxBitrate: ANDROID_TV_HLS_MAX_BITRATE,
+      maxWidth: ANDROID_TV_HLS_MAX_WIDTH,
+      maxHeight: ANDROID_TV_HLS_MAX_HEIGHT,
+    };
+  }
+
+  return {
+    maxBitrate: SAMSUNG_HLS_MAX_BITRATE,
+    maxWidth: SAMSUNG_HLS_MAX_WIDTH,
+    maxHeight: SAMSUNG_HLS_MAX_HEIGHT,
+  };
+}
+
+function pickStableEmbeddedVariant(variants, caps) {
   const list = Array.isArray(variants) ? variants.filter(Boolean) : [];
   if (!list.length) return null;
+  const maxBitrate = Number(caps?.maxBitrate || 0) || 0;
+  const maxWidth = Number(caps?.maxWidth || 0) || 0;
+  const maxHeight = Number(caps?.maxHeight || 0) || 0;
 
   const videoVariants = list.filter((variant) => Number(variant.width || 0) > 0 || Number(variant.height || 0) > 0);
   const pool = videoVariants.length ? videoVariants : list;
@@ -816,9 +860,9 @@ function pickSamsungStableVariant(variants) {
     const width = Number(variant.width || 0);
     const height = Number(variant.height || 0);
     return (
-      (!bandwidth || bandwidth <= SAMSUNG_HLS_MAX_BITRATE) &&
-      (!width || width <= SAMSUNG_HLS_MAX_WIDTH) &&
-      (!height || height <= SAMSUNG_HLS_MAX_HEIGHT)
+      (!bandwidth || !maxBitrate || bandwidth <= maxBitrate) &&
+      (!width || !maxWidth || width <= maxWidth) &&
+      (!height || !maxHeight || height <= maxHeight)
     );
   });
 
@@ -947,6 +991,7 @@ async function resolveEmbeddedHlsManifest(urls, options = {}) {
     timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
   };
   const preferStableVariant = Boolean(options?.preferStableVariant);
+  const caps = getEmbeddedHlsVariantCaps(options?.platform);
 
   let manifest = await fetchTextWithResolvedUrl(urls, requestInit, requestOptions);
   if (!preferStableVariant) {
@@ -970,7 +1015,7 @@ async function resolveEmbeddedHlsManifest(urls, options = {}) {
 
     if (!selectedUrl) {
       const variants = parseMasterManifestVariants(manifestText, parentUrl);
-      const selectedVariant = pickSamsungStableVariant(variants);
+      const selectedVariant = pickStableEmbeddedVariant(variants, caps);
       selectedUrl = String(selectedVariant?.url || "");
       if (!selectedUrl) {
         return manifest;
@@ -1275,6 +1320,7 @@ router.get("/playback/hls", async (req, res) => {
 
     const manifest = payload.type === "live" && needsEmbeddedHlsManifest(device.platform)
       ? await resolveEmbeddedHlsManifest(source.urls, {
+          platform: device.platform,
           preferStableVariant: needsStableEmbeddedHlsVariant(device.platform),
         })
       : await fetchTextWithResolvedUrl(source.urls, requestInit, requestOptions);
@@ -1469,6 +1515,7 @@ router.get("/playback/embedded-hls", async (req, res) => {
     const format = "hls";
     const source = await resolveLivePlaybackCandidates(upstream, payload, format);
     const manifest = await resolveEmbeddedHlsManifest(source.urls, {
+      platform: device.platform,
       preferStableVariant: needsStableEmbeddedHlsVariant(device.platform),
     });
 
