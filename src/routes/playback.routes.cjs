@@ -68,6 +68,12 @@ function parseTtl(v, fallback) {
   return Math.max(60, Math.min(24 * 3600, n));
 }
 
+function isTruthyFlag(value) {
+  if (value === true || value === 1) return true;
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
 function tokenCacheKey({ deviceId, type, streamId, episodeId }) {
   return [
     String(deviceId || ""),
@@ -537,9 +543,10 @@ async function fetchXuiJson(upstream, action, params = {}) {
   );
 }
 
-async function resolveLiveDirectSource(upstream, streamId) {
+async function resolveLiveDirectSource(upstream, streamId, options = {}) {
   if (!streamId) return null;
-  let list = getCachedLiveStreams(upstream);
+  const bypassCache = Boolean(options?.bypassCache);
+  let list = bypassCache ? null : getCachedLiveStreams(upstream);
   if (!list) {
     const streams = await fetchXuiJson(upstream, "get_live_streams");
     list = Array.isArray(streams) ? streams : [];
@@ -1022,13 +1029,16 @@ function getPlaybackTokenExpiresAtMs(payload) {
 async function resolveLivePlaybackCandidates(upstream, payload, format, options = {}) {
   const requireHlsManifest = Boolean(options?.requireHlsManifest);
   const sourceMode = normalizeSourceMode(env.LIVE_SOURCE_MODE);
+  const bypassLiveSourceCache = Boolean(payload?.live_session);
 
   if (payload.type === "live" && sourceMode !== "path") {
     let sawDirect = false;
     let usedDirect = false;
 
     try {
-      const direct = await resolveLiveDirectSource(upstream, payload.stream_id);
+      const direct = await resolveLiveDirectSource(upstream, payload.stream_id, {
+        bypassCache: bypassLiveSourceCache,
+      });
       if (direct) {
         sawDirect = true;
         const directUsable = requireHlsManifest ? isLikelyHlsUrl(direct) : isWebPlayableLiveSource(direct, format);
@@ -1125,6 +1135,11 @@ router.post("/playback/token", authJwt, async (req, res) => {
     }
 
     const ttlSec = parseTtl(req.body?.ttl_sec, Number(env.PLAYBACK_TOKEN_TTL || 3600));
+    const wantsFreshToken = type === "live" && (
+      isTruthyFlag(req.body?.fresh) ||
+      isTruthyFlag(req.body?.force_refresh) ||
+      isTruthyFlag(req.body?.bypass_cache)
+    );
 
     const cacheKey = tokenCacheKey({
       deviceId: req.device.device_id,
@@ -1133,10 +1148,12 @@ router.post("/playback/token", authJwt, async (req, res) => {
       episodeId: episodeId || null,
     });
 
-    const cached = getCachedPlaybackToken(
-      cacheKey,
-      Math.min(TOKEN_REUSE_SAFETY_SEC, Math.max(5, Math.floor(ttlSec / 6)))
-    );
+    const cached = wantsFreshToken
+      ? null
+      : getCachedPlaybackToken(
+          cacheKey,
+          Math.min(TOKEN_REUSE_SAFETY_SEC, Math.max(5, Math.floor(ttlSec / 6)))
+        );
 
     const baseUrl = getPlaybackBaseUrl(req);
 
@@ -1151,6 +1168,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
         hls: summarizeUrlForLog(urls.hls),
         proxy: summarizeUrlForLog(urls.proxy),
         platform: req.device.platform || "",
+        fresh: false,
       });
       return res.json({
         token: cached.token,
@@ -1165,6 +1183,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
         type,
         stream_id: streamId || null,
         episode_id: episodeId || null,
+        ...(type === "live" && wantsFreshToken ? { live_session: randomUUID() } : {}),
       },
       env.JWT_SECRET,
       {
@@ -1175,7 +1194,9 @@ router.post("/playback/token", authJwt, async (req, res) => {
     );
 
     const expiresAtMs = Date.now() + ttlSec * 1000;
-    setCachedPlaybackToken(cacheKey, token, expiresAtMs);
+    if (!wantsFreshToken) {
+      setCachedPlaybackToken(cacheKey, token, expiresAtMs);
+    }
 
     const expiresAt = new Date(expiresAtMs).toISOString();
     const urls = buildPlaybackResponseUrls(baseUrl, token, type);
@@ -1188,6 +1209,7 @@ router.post("/playback/token", authJwt, async (req, res) => {
       proxy: summarizeUrlForLog(urls.proxy),
       platform: req.device.platform || "",
       ttlSec,
+      fresh: wantsFreshToken,
     });
 
     return res.json({
