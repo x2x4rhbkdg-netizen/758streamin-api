@@ -457,7 +457,8 @@ function needsStableEmbeddedHlsVariant(platform) {
   const value = normalizePlatform(platform);
   return (
     value === "samsung" ||
-    value === "samsung_tizen_web"
+    value === "samsung_tizen_web" ||
+    value === "android_tv"
   );
 }
 
@@ -466,6 +467,7 @@ function needsEmbeddedHlsManifest(platform) {
   return [
     "samsung",
     "samsung_tizen_web",
+    "android_tv",
   ].includes(value);
 }
 
