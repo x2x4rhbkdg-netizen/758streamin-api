@@ -6,6 +6,8 @@ const jwt = require("jsonwebtoken");
 const { pool } = require("../db/pool.cjs");
 const { env } = require("../config/env.cjs");
 
+const LAST_SEEN_TOUCH_INTERVAL_SECONDS = 60;
+
 async function authJwt(req, res, next) {
   const h = req.headers.authorization || "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : null;
@@ -41,6 +43,20 @@ async function authJwt(req, res, next) {
         return res.status(403).json({ error: "device expired" });
       }
     }
+
+    pool.execute(
+      `UPDATE devices
+       SET last_seen_at=NOW()
+       WHERE id=?
+         AND (last_seen_at IS NULL OR last_seen_at < (NOW() - INTERVAL ? SECOND))`,
+      [deviceId, LAST_SEEN_TOUCH_INTERVAL_SECONDS]
+    ).catch((err) => {
+      console.warn("[authJwt] could not update last_seen_at", {
+        deviceId,
+        code: err?.code,
+        message: err?.message,
+      });
+    });
 
     req.device = {
       ...payload,

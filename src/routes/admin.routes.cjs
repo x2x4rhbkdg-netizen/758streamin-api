@@ -729,6 +729,10 @@ router.get("/devices", adminAuth, async (req, res) => {
         d.whmcs_next_due_date,
         d.whmcs_last_sync_at,
         d.last_seen_at,
+        CASE
+          WHEN d.last_seen_at IS NOT NULL AND d.last_seen_at >= (NOW() - INTERVAL 5 MINUTE) THEN TRUE
+          ELSE FALSE
+        END AS online,
         d.created_at,
         d.updated_at,
         a.expires_at,
