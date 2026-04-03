@@ -686,9 +686,10 @@ router.patch("/admins/:id", adminAuth, async (req, res) => {
 router.get("/devices", adminAuth, async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
+    const onlineWindowSeconds = Number(env.DEVICE_ONLINE_WINDOW_SECONDS || 8);
 
     const whereParts = [];
-    const params = [];
+    const params = [onlineWindowSeconds];
 
     if (search) {
       const s = `%${search}%`;
@@ -730,7 +731,7 @@ router.get("/devices", adminAuth, async (req, res) => {
         d.whmcs_last_sync_at,
         d.last_seen_at,
         CASE
-          WHEN d.last_seen_at IS NOT NULL AND d.last_seen_at >= (NOW() - INTERVAL 5 MINUTE) THEN TRUE
+          WHEN d.last_seen_at IS NOT NULL AND TIMESTAMPDIFF(SECOND, d.last_seen_at, NOW()) <= ? THEN TRUE
           ELSE FALSE
         END AS online,
         d.created_at,

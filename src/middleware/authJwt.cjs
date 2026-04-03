@@ -48,7 +48,7 @@ async function authJwt(req, res, next) {
       `UPDATE devices
        SET last_seen_at=NOW()
        WHERE id=?
-         AND (last_seen_at IS NULL OR last_seen_at < (NOW() - INTERVAL ? SECOND))`,
+         AND (last_seen_at IS NULL OR TIMESTAMPDIFF(SECOND, last_seen_at, NOW()) >= ?)`,
       [deviceId, LAST_SEEN_TOUCH_INTERVAL_SECONDS]
     ).catch((err) => {
       console.warn("[authJwt] could not update last_seen_at", {

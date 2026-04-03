@@ -614,6 +614,33 @@ router.post("/device/auth", async (req, res) => {
 });
 
 /** =========================================
+ *  POST /v1/device/heartbeat
+ *  - lightweight presence ping for active devices
+ *  ========================================= */
+router.post("/device/heartbeat", authJwt, async (req, res) => {
+  try {
+    const deviceId = Number(req.device?.device_id || 0);
+    if (!Number.isFinite(deviceId) || deviceId <= 0) {
+      return res.status(401).json({ error: "device not found" });
+    }
+
+    await pool.execute(
+      `UPDATE devices
+       SET last_seen_at=NOW()
+       WHERE id=?`,
+      [deviceId]
+    );
+
+    return res.json({
+      ok: true,
+      online_window_seconds: Number(env.DEVICE_ONLINE_WINDOW_SECONDS || 8),
+    });
+  } catch (err) {
+    return sendInternalError(req, res, "device/heartbeat", err);
+  }
+});
+
+/** =========================================
  *  POST /v1/device/adult/verify
  *  body: { pin }
  *  - verifies per-device adult PIN (encrypted in device_access)
