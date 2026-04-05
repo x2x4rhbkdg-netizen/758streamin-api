@@ -347,6 +347,162 @@ async function getAnalyticsUpstream(admin) {
   };
 }
 
+function clampAnalyticsInt(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeAnalyticsText(value) {
+  return String(value || "").trim();
+}
+
+function normalizeAnalyticsDeviceCode(value) {
+  return normalizeAnalyticsText(value).toUpperCase();
+}
+
+function parseAnalyticsCsvParam(value) {
+  return Array.from(
+    new Set(
+      String(value || "")
+        .split(",")
+        .map((part) => normalizeAnalyticsText(part))
+        .filter(Boolean)
+    )
+  );
+}
+
+function toAnalyticsDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function parseAnalyticsMeta(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return null;
+  }
+}
+
+function buildAnalyticsWindow({ days, from, to }) {
+  const now = new Date();
+  const defaultEnd = now;
+  const defaultStart = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+  const start = toAnalyticsDate(from) || defaultStart;
+  const end = toAnalyticsDate(to) || defaultEnd;
+
+  return {
+    start: start <= end ? start : end,
+    end: end >= start ? end : start,
+  };
+}
+
+function buildAnalyticsSummaryFromRows(rows, { limit, playLimit, start, end }) {
+  const SESSION_GAP_MS = 30 * 60 * 1000;
+  const aggregate = new Map();
+  const sessions = [];
+  const sortedRows = Array.isArray(rows)
+    ? [...rows].sort((left, right) => {
+        const leftTime = new Date(left.created_at || 0).getTime();
+        const rightTime = new Date(right.created_at || 0).getTime();
+        if (left.device_id !== right.device_id) return Number(left.device_id || 0) - Number(right.device_id || 0);
+        const leftKey = `${left.content_type || ""}:${left.content_id || ""}`;
+        const rightKey = `${right.content_type || ""}:${right.content_id || ""}`;
+        if (leftKey !== rightKey) return leftKey.localeCompare(rightKey);
+        return leftTime - rightTime;
+      })
+    : [];
+
+  const lastSessionByKey = new Map();
+
+  sortedRows.forEach((row, index) => {
+    const deviceId = normalizeAnalyticsText(row.device_id);
+    const contentId = normalizeAnalyticsText(row.content_id);
+    const contentType = normalizeAnalyticsText(row.content_type).toLowerCase() || "live";
+    const createdAt = toAnalyticsDate(row.created_at);
+    if (!deviceId || !contentId || !createdAt) return;
+
+    const sessionKey = `${deviceId}:${contentType}:${contentId}`;
+    const createdAtMs = createdAt.getTime();
+    const previousSession = lastSessionByKey.get(sessionKey);
+
+    if (previousSession && createdAtMs - previousSession.lastSeenAtMs <= SESSION_GAP_MS) {
+      previousSession.lastSeenAtMs = createdAtMs;
+      return;
+    }
+
+    const meta = parseAnalyticsMeta(row.meta_json) || {};
+    const contentName =
+      normalizeAnalyticsText(row.content_name) ||
+      normalizeAnalyticsText(
+        meta.content_name ||
+          meta.stream_name ||
+          meta.channel_name ||
+          meta.movie_name ||
+          meta.series_name ||
+          meta.title
+      ) ||
+      null;
+
+    const play = {
+      play_id: normalizeAnalyticsText(row.id) || `${sessionKey}:${index}`,
+      counted_at: createdAt.toISOString(),
+      content_id: contentId,
+      content_type: contentType,
+      content_name: contentName,
+      device_id: deviceId,
+      device_code: normalizeAnalyticsDeviceCode(row.device_code),
+      model: normalizeAnalyticsText(row.model) || null,
+      lastSeenAtMs: createdAtMs,
+    };
+
+    sessions.push(play);
+    lastSessionByKey.set(sessionKey, play);
+
+    const contentKey = `${contentType}:${contentId}`;
+    const current = aggregate.get(contentKey) || {
+      content_id: contentId,
+      content_type: contentType,
+      content_name: contentName,
+      plays: 0,
+      last_played_at: createdAt.toISOString(),
+    };
+
+    current.plays += 1;
+    if (!current.content_name && contentName) current.content_name = contentName;
+    if (new Date(current.last_played_at).getTime() < createdAtMs) {
+      current.last_played_at = createdAt.toISOString();
+    }
+    aggregate.set(contentKey, current);
+  });
+
+  const plays = sessions
+    .sort((left, right) => new Date(right.counted_at).getTime() - new Date(left.counted_at).getTime())
+    .map(({ lastSeenAtMs, ...play }) => play);
+
+  const items = Array.from(aggregate.values())
+    .sort((left, right) => {
+      if (right.plays !== left.plays) return right.plays - left.plays;
+      return String(left.content_name || left.content_id).localeCompare(
+        String(right.content_name || right.content_id)
+      );
+    })
+    .slice(0, limit);
+
+  return {
+    range_days: Math.max(1, Math.ceil((end.getTime() - start.getTime() + 1) / (24 * 60 * 60 * 1000))),
+    window_start: start.toISOString(),
+    window_end: end.toISOString(),
+    total_plays: plays.length,
+    items,
+    plays: plays.slice(0, playLimit),
+  };
+}
+
 /** =========================================
  *  AUTH: Login
  *  POST /v1/admin/auth/login
@@ -761,60 +917,91 @@ router.get("/devices", adminAuth, async (req, res) => {
  *  ========================================= */
 router.get("/analytics/streams", adminAuth, async (req, res) => {
   try {
-    const daysRaw = Number(req.query.days || 30);
-    const limitRaw = Number(req.query.limit || 8);
-    const days = Number.isFinite(daysRaw) ? Math.min(90, Math.max(1, daysRaw)) : 30;
-    const limit = Number.isFinite(limitRaw) ? Math.min(50, Math.max(3, limitRaw)) : 8;
+    const days = clampAnalyticsInt(req.query.days, 30, 1, 90);
+    const limit = clampAnalyticsInt(req.query.limit, 8, 3, 50);
+    const playLimit = clampAnalyticsInt(req.query.play_limit, 50, 1, 500);
+    const from = normalizeAnalyticsText(req.query.from);
+    const to = normalizeAnalyticsText(req.query.to);
+    const requestedDeviceCode = normalizeAnalyticsDeviceCode(
+      req.query.device_code || req.query.deviceCode
+    );
+    const requestedDeviceId = normalizeAnalyticsText(
+      req.query.device_id || req.query.deviceId
+    );
+    const requestedDeviceCodes = new Set(
+      parseAnalyticsCsvParam(req.query.device_codes || req.query.deviceCodes).map((code) =>
+        normalizeAnalyticsDeviceCode(code)
+      )
+    );
+    if (requestedDeviceCode) requestedDeviceCodes.add(requestedDeviceCode);
+
+    const { start, end } = buildAnalyticsWindow({ days, from, to });
 
     const whereParts = [
-      "ae.event_type='play'",
+      "ae.event_type='time_watched'",
+      "ae.duration_seconds >= 60",
       "ae.content_id IS NOT NULL",
-      "ae.created_at >= (NOW() - INTERVAL ? DAY)"
+      "ae.created_at >= ?",
+      "ae.created_at <= ?"
     ];
-    const params = [days];
+    const params = [toMysqlDatetime(start), toMysqlDatetime(end)];
 
     if (req.admin?.role !== "super_admin") {
       whereParts.push("d.reseller_admin_id=?");
       params.push(req.admin.id);
     }
 
+    if (requestedDeviceId) {
+      whereParts.push("ae.device_id=?");
+      params.push(requestedDeviceId);
+    }
+
+    if (requestedDeviceCodes.size) {
+      whereParts.push(
+        `UPPER(TRIM(COALESCE(d.device_code, ''))) IN (${Array.from(requestedDeviceCodes)
+          .map(() => "?")
+          .join(",")})`
+      );
+      params.push(...Array.from(requestedDeviceCodes));
+    }
+
     const where = `WHERE ${whereParts.join(" AND ")}`;
-
-    const [totalRows] = await pool.execute(
-      `
-      SELECT COUNT(*) AS total
-      FROM analytics_events ae
-      JOIN devices d ON d.id = ae.device_id
-      ${where}
-      `,
-      params
-    );
-
-    const totalPlays = Number(totalRows?.[0]?.total || 0);
 
     const [rows] = await pool.execute(
       `
       SELECT
+        ae.id,
+        ae.device_id,
+        d.device_code,
+        d.model,
         ae.content_id,
         ae.content_type,
-        COUNT(*) AS plays,
-        MAX(ae.created_at) AS last_played_at
+        ae.position_seconds,
+        ae.duration_seconds,
+        ae.meta_json,
+        ae.created_at
       FROM analytics_events ae
       JOIN devices d ON d.id = ae.device_id
       ${where}
-      GROUP BY ae.content_id, ae.content_type
-      ORDER BY plays DESC
-      LIMIT ${limit}
+      ORDER BY ae.created_at DESC
       `,
       params
     );
 
-    let items = rows;
+    const summary = buildAnalyticsSummaryFromRows(rows, {
+      limit,
+      playLimit,
+      start,
+      end,
+    });
+
+    let items = summary.items;
+    let plays = summary.plays;
     try {
       const upstream = await getAnalyticsUpstream(req.admin);
-      if (upstream && rows.length) {
+      if (upstream && summary.items.length) {
         const types = new Set(
-          rows.map((row) => String(row.content_type || "live").toLowerCase())
+          summary.items.map((row) => String(row.content_type || "live").toLowerCase())
         );
         const nameMap = new Map();
 
@@ -843,11 +1030,19 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
           });
         }
 
-        items = rows.map((row) => {
+        items = summary.items.map((row) => {
           const type = String(row.content_type || "live").toLowerCase();
           const id = String(row.content_id || "");
           const key = `${type}:${id}`;
-          const content_name = nameMap.get(key) || null;
+          const content_name = nameMap.get(key) || row.content_name || null;
+          return { ...row, content_name };
+        });
+
+        plays = summary.plays.map((row) => {
+          const type = String(row.content_type || "live").toLowerCase();
+          const id = String(row.content_id || "");
+          const key = `${type}:${id}`;
+          const content_name = nameMap.get(key) || row.content_name || null;
           return { ...row, content_name };
         });
       }
@@ -856,9 +1051,12 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
     }
 
     return res.json({
-      range_days: days,
-      total_plays: totalPlays,
-      items
+      range_days: summary.range_days,
+      window_start: summary.window_start,
+      window_end: summary.window_end,
+      total_plays: summary.total_plays,
+      items,
+      plays
     });
   } catch (err) {
     return sendInternalError(req, res, "admin/analytics/streams", err);
