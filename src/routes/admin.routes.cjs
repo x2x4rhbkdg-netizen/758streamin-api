@@ -409,15 +409,14 @@ function buildAnalyticsSummaryFromRows(rows, { limit, playLimit, start, end }) {
     ? [...rows].sort((left, right) => {
         const leftTime = new Date(left.created_at || 0).getTime();
         const rightTime = new Date(right.created_at || 0).getTime();
-        if (left.device_id !== right.device_id) return Number(left.device_id || 0) - Number(right.device_id || 0);
-        const leftKey = `${left.content_type || ""}:${left.content_id || ""}`;
-        const rightKey = `${right.content_type || ""}:${right.content_id || ""}`;
-        if (leftKey !== rightKey) return leftKey.localeCompare(rightKey);
+        if (left.device_id !== right.device_id) {
+          return Number(left.device_id || 0) - Number(right.device_id || 0);
+        }
         return leftTime - rightTime;
       })
     : [];
 
-  const lastSessionByKey = new Map();
+  const activeSessionByDevice = new Map();
 
   sortedRows.forEach((row, index) => {
     const deviceId = normalizeAnalyticsText(row.device_id);
@@ -426,11 +425,14 @@ function buildAnalyticsSummaryFromRows(rows, { limit, playLimit, start, end }) {
     const createdAt = toAnalyticsDate(row.created_at);
     if (!deviceId || !contentId || !createdAt) return;
 
-    const sessionKey = `${deviceId}:${contentType}:${contentId}`;
     const createdAtMs = createdAt.getTime();
-    const previousSession = lastSessionByKey.get(sessionKey);
+    const previousSession = activeSessionByDevice.get(deviceId);
+    const sameContent =
+      previousSession &&
+      previousSession.content_id === contentId &&
+      previousSession.content_type === contentType;
 
-    if (previousSession && createdAtMs - previousSession.lastSeenAtMs <= SESSION_GAP_MS) {
+    if (sameContent && createdAtMs - previousSession.lastSeenAtMs <= SESSION_GAP_MS) {
       previousSession.lastSeenAtMs = createdAtMs;
       return;
     }
@@ -449,7 +451,7 @@ function buildAnalyticsSummaryFromRows(rows, { limit, playLimit, start, end }) {
       null;
 
     const play = {
-      play_id: normalizeAnalyticsText(row.id) || `${sessionKey}:${index}`,
+      play_id: normalizeAnalyticsText(row.id) || `${deviceId}:${contentType}:${contentId}:${index}`,
       counted_at: createdAt.toISOString(),
       content_id: contentId,
       content_type: contentType,
@@ -461,7 +463,7 @@ function buildAnalyticsSummaryFromRows(rows, { limit, playLimit, start, end }) {
     };
 
     sessions.push(play);
-    lastSessionByKey.set(sessionKey, play);
+    activeSessionByDevice.set(deviceId, play);
 
     const contentKey = `${contentType}:${contentId}`;
     const current = aggregate.get(contentKey) || {
