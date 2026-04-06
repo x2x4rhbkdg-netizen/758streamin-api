@@ -65,8 +65,6 @@ function validHttpUrl(v) {
 
 router.get("/app-updates", adminAuth, async (req, res) => {
   try {
-    if (!requireSuperAdmin(req, res)) return;
-
     const channel = Object.prototype.hasOwnProperty.call(req.query, "channel")
       ? (normChannel(req.query.channel) || null)
       : null;
