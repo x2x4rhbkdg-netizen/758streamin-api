@@ -314,7 +314,7 @@ async function fetchWhmcsClientProfileById(clientId) {
   };
 }
 
-async function getAnalyticsUpstream(admin) {
+async function getAnalyticsUpstreams(admin) {
   const params = [];
   let where = "WHERE du.enc_username IS NOT NULL AND du.enc_password IS NOT NULL";
   if (admin?.role !== "super_admin") {
@@ -324,27 +324,37 @@ async function getAnalyticsUpstream(admin) {
 
   const [rows] = await pool.execute(
     `
-    SELECT d.id, du.upstream_base_url, du.enc_username, du.enc_password
+    SELECT du.upstream_base_url, du.enc_username, du.enc_password
     FROM device_upstream du
     JOIN devices d ON d.id = du.device_id
     ${where}
     ORDER BY du.updated_at DESC
-    LIMIT 1
+    LIMIT 50
     `,
     params
   );
 
-  const row = rows[0];
-  if (!row) return null;
+  const unique = new Map();
 
-  const upstreamBaseUrl = row.upstream_base_url || env.XUI_BASE_URL || "";
-  if (!upstreamBaseUrl) return null;
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const upstreamBaseUrl = row?.upstream_base_url || env.XUI_BASE_URL || "";
+    if (!upstreamBaseUrl) continue;
 
-  return {
-    upstream_base_url: upstreamBaseUrl,
-    username: decryptString(row.enc_username),
-    password: decryptString(row.enc_password),
-  };
+    const username = decryptString(row.enc_username);
+    const password = decryptString(row.enc_password);
+    if (!username || !password) continue;
+
+    const dedupeKey = `${upstreamBaseUrl}\u0000${username}\u0000${password}`;
+    if (unique.has(dedupeKey)) continue;
+
+    unique.set(dedupeKey, {
+      upstream_base_url: upstreamBaseUrl,
+      username,
+      password,
+    });
+  }
+
+  return Array.from(unique.values());
 }
 
 function clampAnalyticsInt(value, fallback, min, max) {
@@ -359,6 +369,14 @@ function normalizeAnalyticsText(value) {
 
 function normalizeAnalyticsDeviceCode(value) {
   return normalizeAnalyticsText(value).toUpperCase();
+}
+
+function normalizeAnalyticsLookupType(value) {
+  const type = normalizeAnalyticsText(value).toLowerCase() || "live";
+  if (["stream", "channel", "radio"].includes(type)) return "live";
+  if (["movie", "vod", "video"].includes(type)) return "vod";
+  if (["show", "season", "episode", "series"].includes(type)) return "series";
+  return type;
 }
 
 function parseAnalyticsCsvParam(value) {
@@ -1000,40 +1018,74 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
     let items = summary.items;
     let plays = summary.plays;
     try {
-      const upstream = await getAnalyticsUpstream(req.admin);
-      if (upstream && summary.items.length) {
-        const types = new Set(
-          summary.items.map((row) => String(row.content_type || "live").toLowerCase())
+      const upstreams = await getAnalyticsUpstreams(req.admin);
+      if (upstreams.length && summary.items.length) {
+        const unresolvedKeys = new Set(
+          summary.items
+            .map((row) => {
+              const id = String(row.content_id || "");
+              if (!id || row.content_name) return "";
+              return `${normalizeAnalyticsLookupType(row.content_type)}:${id}`;
+            })
+            .filter(Boolean)
         );
         const nameMap = new Map();
+        const registerResolvedName = (type, id, name) => {
+          const normalizedId = String(id || "");
+          const normalizedName = String(name || "").trim();
+          if (!normalizedId || !normalizedName) return;
+          const key = `${type}:${normalizedId}`;
+          if (!nameMap.has(key)) {
+            nameMap.set(key, normalizedName);
+          }
+          unresolvedKeys.delete(key);
+        };
+        const needsType = (type) => {
+          for (const key of unresolvedKeys) {
+            if (key.startsWith(`${type}:`)) return true;
+          }
+          return false;
+        };
 
-        if (types.has("live")) {
-          const live = await fetchXuiJson(upstream, "get_live_streams");
-          (Array.isArray(live) ? live : []).forEach((item) => {
-            const id = String(item?.stream_id || "");
-            const name = String(item?.name || "");
-            if (id && name) nameMap.set(`live:${id}`, name);
-          });
-        }
-        if (types.has("vod")) {
-          const vod = await fetchXuiJson(upstream, "get_vod_streams");
-          (Array.isArray(vod) ? vod : []).forEach((item) => {
-            const id = String(item?.stream_id || "");
-            const name = String(item?.name || "");
-            if (id && name) nameMap.set(`vod:${id}`, name);
-          });
-        }
-        if (types.has("series")) {
-          const series = await fetchXuiJson(upstream, "get_series");
-          (Array.isArray(series) ? series : []).forEach((item) => {
-            const id = String(item?.series_id || item?.stream_id || "");
-            const name = String(item?.name || "");
-            if (id && name) nameMap.set(`series:${id}`, name);
-          });
+        for (const upstream of upstreams) {
+          if (!unresolvedKeys.size) break;
+
+          if (needsType("live")) {
+            try {
+              const live = await fetchXuiJson(upstream, "get_live_streams");
+              (Array.isArray(live) ? live : []).forEach((item) => {
+                registerResolvedName("live", item?.stream_id, item?.name);
+              });
+            } catch (err) {
+              console.warn("[admin/analytics/streams] live label resolve skipped:", err?.message || err);
+            }
+          }
+
+          if (needsType("vod")) {
+            try {
+              const vod = await fetchXuiJson(upstream, "get_vod_streams");
+              (Array.isArray(vod) ? vod : []).forEach((item) => {
+                registerResolvedName("vod", item?.stream_id, item?.name);
+              });
+            } catch (err) {
+              console.warn("[admin/analytics/streams] vod label resolve skipped:", err?.message || err);
+            }
+          }
+
+          if (needsType("series")) {
+            try {
+              const series = await fetchXuiJson(upstream, "get_series");
+              (Array.isArray(series) ? series : []).forEach((item) => {
+                registerResolvedName("series", item?.series_id || item?.stream_id, item?.name);
+              });
+            } catch (err) {
+              console.warn("[admin/analytics/streams] series label resolve skipped:", err?.message || err);
+            }
+          }
         }
 
         items = summary.items.map((row) => {
-          const type = String(row.content_type || "live").toLowerCase();
+          const type = normalizeAnalyticsLookupType(row.content_type);
           const id = String(row.content_id || "");
           const key = `${type}:${id}`;
           const content_name = nameMap.get(key) || row.content_name || null;
@@ -1041,7 +1093,7 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
         });
 
         plays = summary.plays.map((row) => {
-          const type = String(row.content_type || "live").toLowerCase();
+          const type = normalizeAnalyticsLookupType(row.content_type);
           const id = String(row.content_id || "");
           const key = `${type}:${id}`;
           const content_name = nameMap.get(key) || row.content_name || null;
