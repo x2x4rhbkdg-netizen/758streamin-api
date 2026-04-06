@@ -406,6 +406,93 @@ function parseAnalyticsMeta(value) {
   }
 }
 
+function getAnalyticsRowContentName(row) {
+  const meta = parseAnalyticsMeta(row?.meta_json) || {};
+  return (
+    normalizeAnalyticsText(row?.content_name) ||
+    normalizeAnalyticsText(
+      meta.content_name ||
+        meta.stream_name ||
+        meta.channel_name ||
+        meta.movie_name ||
+        meta.series_name ||
+        meta.title
+    ) ||
+    null
+  );
+}
+
+async function resolveAnalyticsContentNames(admin, rows) {
+  const unresolvedKeys = new Set(
+    (Array.isArray(rows) ? rows : [])
+      .map((row) => {
+        const id = String(row?.content_id || "");
+        if (!id || getAnalyticsRowContentName(row)) return "";
+        return `${normalizeAnalyticsLookupType(row?.content_type)}:${id}`;
+      })
+      .filter(Boolean)
+  );
+  const nameMap = new Map();
+  if (!unresolvedKeys.size) return nameMap;
+
+  const upstreams = await getAnalyticsUpstreams(admin);
+  const registerResolvedName = (type, id, name) => {
+    const normalizedId = String(id || "");
+    const normalizedName = String(name || "").trim();
+    if (!normalizedId || !normalizedName) return;
+    const key = `${type}:${normalizedId}`;
+    if (!nameMap.has(key)) {
+      nameMap.set(key, normalizedName);
+    }
+    unresolvedKeys.delete(key);
+  };
+  const needsType = (type) => {
+    for (const key of unresolvedKeys) {
+      if (key.startsWith(`${type}:`)) return true;
+    }
+    return false;
+  };
+
+  for (const upstream of upstreams) {
+    if (!unresolvedKeys.size) break;
+
+    if (needsType("live")) {
+      try {
+        const live = await fetchXuiJson(upstream, "get_live_streams");
+        (Array.isArray(live) ? live : []).forEach((item) => {
+          registerResolvedName("live", item?.stream_id, item?.name);
+        });
+      } catch (err) {
+        console.warn("[admin/analytics] live label resolve skipped:", err?.message || err);
+      }
+    }
+
+    if (needsType("vod")) {
+      try {
+        const vod = await fetchXuiJson(upstream, "get_vod_streams");
+        (Array.isArray(vod) ? vod : []).forEach((item) => {
+          registerResolvedName("vod", item?.stream_id, item?.name);
+        });
+      } catch (err) {
+        console.warn("[admin/analytics] vod label resolve skipped:", err?.message || err);
+      }
+    }
+
+    if (needsType("series")) {
+      try {
+        const series = await fetchXuiJson(upstream, "get_series");
+        (Array.isArray(series) ? series : []).forEach((item) => {
+          registerResolvedName("series", item?.series_id || item?.stream_id, item?.name);
+        });
+      } catch (err) {
+        console.warn("[admin/analytics] series label resolve skipped:", err?.message || err);
+      }
+    }
+  }
+
+  return nameMap;
+}
+
 function buildAnalyticsWindow({ days, from, to }) {
   const now = new Date();
   const defaultEnd = now;
@@ -455,18 +542,7 @@ function buildAnalyticsSummaryFromRows(rows, { limit, playLimit, start, end }) {
       return;
     }
 
-    const meta = parseAnalyticsMeta(row.meta_json) || {};
-    const contentName =
-      normalizeAnalyticsText(row.content_name) ||
-      normalizeAnalyticsText(
-        meta.content_name ||
-          meta.stream_name ||
-          meta.channel_name ||
-          meta.movie_name ||
-          meta.series_name ||
-          meta.title
-      ) ||
-      null;
+    const contentName = getAnalyticsRowContentName(row);
 
     const play = {
       play_id: normalizeAnalyticsText(row.id) || `${deviceId}:${contentType}:${contentId}:${index}`,
@@ -863,6 +939,7 @@ router.get("/devices", adminAuth, async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
     const onlineWindowSeconds = Number(env.DEVICE_ONLINE_WINDOW_SECONDS || 8);
+    const currentContentWindowSeconds = 120;
 
     const whereParts = [];
     const params = [onlineWindowSeconds];
@@ -923,6 +1000,57 @@ router.get("/devices", adminAuth, async (req, res) => {
       `,
       params
     );
+
+    const onlineDeviceIds = rows
+      .filter((row) => Boolean(row?.online))
+      .map((row) => Number(row?.id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    if (onlineDeviceIds.length) {
+      const [currentRows] = await pool.execute(
+        `
+        SELECT
+          ae.id,
+          ae.device_id,
+          ae.content_id,
+          ae.content_type,
+          ae.meta_json,
+          ae.created_at,
+          ae.event_type
+        FROM analytics_events ae
+        WHERE ae.device_id IN (${onlineDeviceIds.map(() => "?").join(",")})
+          AND ae.content_id IS NOT NULL
+          AND ae.event_type IN ('play', 'time_watched')
+          AND TIMESTAMPDIFF(SECOND, ae.created_at, NOW()) <= ?
+        ORDER BY ae.device_id ASC, ae.created_at DESC, ae.id DESC
+        `,
+        [...onlineDeviceIds, currentContentWindowSeconds]
+      );
+
+      const latestByDeviceId = new Map();
+      (Array.isArray(currentRows) ? currentRows : []).forEach((row) => {
+        const deviceId = String(row?.device_id || "").trim();
+        if (!deviceId || latestByDeviceId.has(deviceId)) return;
+        latestByDeviceId.set(deviceId, row);
+      });
+
+      if (latestByDeviceId.size) {
+        const nameMap = await resolveAnalyticsContentNames(req.admin, Array.from(latestByDeviceId.values()));
+
+        rows.forEach((row) => {
+          const current = latestByDeviceId.get(String(row?.id || "").trim());
+          if (!current) return;
+
+          const lookupType = normalizeAnalyticsLookupType(current?.content_type);
+          const lookupKey = `${lookupType}:${String(current?.content_id || "")}`;
+          row.current_content_type = lookupType;
+          row.current_content_id = String(current?.content_id || "");
+          row.current_content_name = getAnalyticsRowContentName(current) || nameMap.get(lookupKey) || null;
+          row.current_content_at = current?.created_at || null;
+          row.current_content_event_type = String(current?.event_type || "").trim().toLowerCase() || null;
+        });
+      }
+    }
 
     return res.json({ devices: rows });
   } catch (err) {
