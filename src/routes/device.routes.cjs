@@ -487,7 +487,7 @@ router.post("/device/register", async (req, res) => {
 
 /** =========================================
  *  POST /v1/device/auth
- *  body: { device_uuid, device_code }
+ *  body: { device_uuid, device_code, model?, app_version? }
  *  ========================================= */
 router.post("/device/auth", async (req, res) => {
   try {
@@ -496,6 +496,8 @@ router.post("/device/auth", async (req, res) => {
       64
     );
     const device_code = normStr(req.body?.device_code, 32);
+    const model = normStr(req.body?.model, 80) || null;
+    const app_version = normStr(req.body?.app_version, 32) || null;
 
     if (!device_uuid || !device_code) {
       return res.status(400).json({ error: "device_uuid + device_code required" });
@@ -588,9 +590,11 @@ router.post("/device/auth", async (req, res) => {
 
     await pool.execute(
       `UPDATE devices
-       SET last_seen_at=NOW(), updated_at=NOW()
+       SET last_seen_at=NOW(), updated_at=NOW(),
+           model=COALESCE(?, model),
+           app_version=COALESCE(?, app_version)
        WHERE id=?`,
-      [dev.id]
+      [model, app_version, dev.id]
     );
 
     const token = jwt.sign(
@@ -620,15 +624,19 @@ router.post("/device/auth", async (req, res) => {
 router.post("/device/heartbeat", authJwt, async (req, res) => {
   try {
     const deviceId = Number(req.device?.device_id || 0);
+    const model = normStr(req.body?.model, 80) || null;
+    const app_version = normStr(req.body?.app_version, 32) || null;
     if (!Number.isFinite(deviceId) || deviceId <= 0) {
       return res.status(401).json({ error: "device not found" });
     }
 
     await pool.execute(
       `UPDATE devices
-       SET last_seen_at=NOW()
+       SET last_seen_at=NOW(),
+           model=COALESCE(?, model),
+           app_version=COALESCE(?, app_version)
        WHERE id=?`,
-      [deviceId]
+      [model, app_version, deviceId]
     );
 
     return res.json({
