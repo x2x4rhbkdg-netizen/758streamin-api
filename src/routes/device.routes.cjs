@@ -35,6 +35,42 @@ function normalizePin(pin) {
   return /^\d{4}$/.test(s) ? s : null;
 }
 
+function normalizeVersionCode(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.floor(parsed);
+  return normalized > 0 ? normalized : null;
+}
+
+function normalizeAppVersionPayload(body) {
+  const direct = normStr(
+    body?.app_version ??
+      body?.appVersion ??
+      body?.current_app_build,
+    32
+  );
+  if (direct) return direct;
+
+  const versionName = normStr(
+    body?.version_name ??
+      body?.versionName ??
+      body?.version,
+    24
+  );
+  const versionCode = normalizeVersionCode(
+    body?.version_code ??
+      body?.versionCode ??
+      body?.build_number ??
+      body?.buildNumber
+  );
+
+  if (versionName && versionCode) {
+    return normStr(`${versionName}+${versionCode}`, 32) || null;
+  }
+
+  return versionName || null;
+}
+
 function isTrialExpired(trialExpiresAt) {
   if (!trialExpiresAt) return false;
   const expiresAtMs = new Date(trialExpiresAt).getTime();
@@ -285,7 +321,7 @@ router.post("/device/register", async (req, res) => {
     );
     const platform = normStr(req.body?.platform, 32) || null;
     const model = normStr(req.body?.model, 80) || null;
-    const app_version = normStr(req.body?.app_version, 32) || null;
+    const app_version = normalizeAppVersionPayload(req.body);
 
     if (!device_uuid) {
       return res.status(400).json({ error: "device_uuid, device_id, or device_fingerprint required" });
@@ -497,7 +533,7 @@ router.post("/device/auth", async (req, res) => {
     );
     const device_code = normStr(req.body?.device_code, 32);
     const model = normStr(req.body?.model, 80) || null;
-    const app_version = normStr(req.body?.app_version, 32) || null;
+    const app_version = normalizeAppVersionPayload(req.body);
 
     if (!device_uuid || !device_code) {
       return res.status(400).json({ error: "device_uuid + device_code required" });
@@ -625,7 +661,7 @@ router.post("/device/heartbeat", authJwt, async (req, res) => {
   try {
     const deviceId = Number(req.device?.device_id || 0);
     const model = normStr(req.body?.model, 80) || null;
-    const app_version = normStr(req.body?.app_version, 32) || null;
+    const app_version = normalizeAppVersionPayload(req.body);
     if (!Number.isFinite(deviceId) || deviceId <= 0) {
       return res.status(401).json({ error: "device not found" });
     }
@@ -633,6 +669,7 @@ router.post("/device/heartbeat", authJwt, async (req, res) => {
     await pool.execute(
       `UPDATE devices
        SET last_seen_at=NOW(),
+           updated_at=NOW(),
            model=COALESCE(?, model),
            app_version=COALESCE(?, app_version)
        WHERE id=?`,
