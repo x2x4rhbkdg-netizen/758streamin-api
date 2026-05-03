@@ -22,6 +22,14 @@ const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
 
 const router = Router();
 
+const ANALYTICS_QUERY_ROW_LIMIT = 5000;
+const ANALYTICS_LABEL_UPSTREAM_LIMIT = 3;
+const ANALYTICS_LABEL_TIME_BUDGET_MS = 4500;
+
+function remainingTimeMs(deadlineMs) {
+  return Math.max(0, Number(deadlineMs || 0) - Date.now());
+}
+
 /** =========================================
  *  HELPERS: Datetime
  *  - Converts ISO/Date-ish input to MySQL DATETIME "YYYY-MM-DD HH:MM:SS"
@@ -130,7 +138,7 @@ function normalizePin(pin) {
   return /^\d{4}$/.test(s) ? s : null;
 }
 
-async function fetchXuiJson(upstream, action, params = {}) {
+async function fetchXuiJson(upstream, action, params = {}, options = {}) {
   const urls = buildXuiPlayerApiUrls({
     upstream_base_url: upstream.upstream_base_url,
     username: upstream.username,
@@ -155,7 +163,7 @@ async function fetchXuiJson(upstream, action, params = {}) {
   return fetchJsonWithFallback(
     requestUrls,
     { method: "GET", headers: { "User-Agent": "streamin-api/1.0" } },
-    { timeoutMs: env.XUI_REQUEST_TIMEOUT_MS }
+    { timeoutMs: options.timeoutMs || env.XUI_REQUEST_TIMEOUT_MS }
   );
 }
 
@@ -435,7 +443,8 @@ async function resolveAnalyticsContentNames(admin, rows) {
   const nameMap = new Map();
   if (!unresolvedKeys.size) return nameMap;
 
-  const upstreams = await getAnalyticsUpstreams(admin);
+  const upstreams = (await getAnalyticsUpstreams(admin)).slice(0, ANALYTICS_LABEL_UPSTREAM_LIMIT);
+  const deadlineMs = Date.now() + ANALYTICS_LABEL_TIME_BUDGET_MS;
   const registerResolvedName = (type, id, name) => {
     const normalizedId = String(id || "");
     const normalizedName = String(name || "").trim();
@@ -455,10 +464,13 @@ async function resolveAnalyticsContentNames(admin, rows) {
 
   for (const upstream of upstreams) {
     if (!unresolvedKeys.size) break;
+    if (remainingTimeMs(deadlineMs) < 250) break;
 
     if (needsType("live")) {
       try {
-        const live = await fetchXuiJson(upstream, "get_live_streams");
+        const live = await fetchXuiJson(upstream, "get_live_streams", {}, {
+          timeoutMs: Math.min(env.XUI_REQUEST_TIMEOUT_MS, remainingTimeMs(deadlineMs)),
+        });
         (Array.isArray(live) ? live : []).forEach((item) => {
           registerResolvedName("live", item?.stream_id, item?.name);
         });
@@ -468,8 +480,11 @@ async function resolveAnalyticsContentNames(admin, rows) {
     }
 
     if (needsType("vod")) {
+      if (remainingTimeMs(deadlineMs) < 250) break;
       try {
-        const vod = await fetchXuiJson(upstream, "get_vod_streams");
+        const vod = await fetchXuiJson(upstream, "get_vod_streams", {}, {
+          timeoutMs: Math.min(env.XUI_REQUEST_TIMEOUT_MS, remainingTimeMs(deadlineMs)),
+        });
         (Array.isArray(vod) ? vod : []).forEach((item) => {
           registerResolvedName("vod", item?.stream_id, item?.name);
         });
@@ -479,8 +494,11 @@ async function resolveAnalyticsContentNames(admin, rows) {
     }
 
     if (needsType("series")) {
+      if (remainingTimeMs(deadlineMs) < 250) break;
       try {
-        const series = await fetchXuiJson(upstream, "get_series");
+        const series = await fetchXuiJson(upstream, "get_series", {}, {
+          timeoutMs: Math.min(env.XUI_REQUEST_TIMEOUT_MS, remainingTimeMs(deadlineMs)),
+        });
         (Array.isArray(series) ? series : []).forEach((item) => {
           registerResolvedName("series", item?.series_id || item?.stream_id, item?.name);
         });
@@ -1132,6 +1150,7 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
       JOIN devices d ON d.id = ae.device_id
       ${where}
       ORDER BY ae.created_at DESC
+      LIMIT ${ANALYTICS_QUERY_ROW_LIMIT}
       `,
       params
     );
@@ -1146,8 +1165,9 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
     let items = summary.items;
     let plays = summary.plays;
     try {
-      const upstreams = await getAnalyticsUpstreams(req.admin);
+      const upstreams = (await getAnalyticsUpstreams(req.admin)).slice(0, ANALYTICS_LABEL_UPSTREAM_LIMIT);
       if (upstreams.length && summary.items.length) {
+        const deadlineMs = Date.now() + ANALYTICS_LABEL_TIME_BUDGET_MS;
         const unresolvedKeys = new Set(
           summary.items
             .map((row) => {
@@ -1177,10 +1197,13 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
 
         for (const upstream of upstreams) {
           if (!unresolvedKeys.size) break;
+          if (remainingTimeMs(deadlineMs) < 250) break;
 
           if (needsType("live")) {
             try {
-              const live = await fetchXuiJson(upstream, "get_live_streams");
+              const live = await fetchXuiJson(upstream, "get_live_streams", {}, {
+                timeoutMs: Math.min(env.XUI_REQUEST_TIMEOUT_MS, remainingTimeMs(deadlineMs)),
+              });
               (Array.isArray(live) ? live : []).forEach((item) => {
                 registerResolvedName("live", item?.stream_id, item?.name);
               });
@@ -1190,8 +1213,11 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
           }
 
           if (needsType("vod")) {
+            if (remainingTimeMs(deadlineMs) < 250) break;
             try {
-              const vod = await fetchXuiJson(upstream, "get_vod_streams");
+              const vod = await fetchXuiJson(upstream, "get_vod_streams", {}, {
+                timeoutMs: Math.min(env.XUI_REQUEST_TIMEOUT_MS, remainingTimeMs(deadlineMs)),
+              });
               (Array.isArray(vod) ? vod : []).forEach((item) => {
                 registerResolvedName("vod", item?.stream_id, item?.name);
               });
@@ -1201,8 +1227,11 @@ router.get("/analytics/streams", adminAuth, async (req, res) => {
           }
 
           if (needsType("series")) {
+            if (remainingTimeMs(deadlineMs) < 250) break;
             try {
-              const series = await fetchXuiJson(upstream, "get_series");
+              const series = await fetchXuiJson(upstream, "get_series", {}, {
+                timeoutMs: Math.min(env.XUI_REQUEST_TIMEOUT_MS, remainingTimeMs(deadlineMs)),
+              });
               (Array.isArray(series) ? series : []).forEach((item) => {
                 registerResolvedName("series", item?.series_id || item?.stream_id, item?.name);
               });
