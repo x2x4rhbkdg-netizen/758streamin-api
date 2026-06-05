@@ -52,6 +52,20 @@ function normalizeBaseUrl(v) {
   return String(v || "").trim().replace(/\/+$/, "");
 }
 
+function normalizePlaylistUrl(v) {
+  let raw = String(v || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("//")) raw = `https:${raw}`;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(raw)) raw = `https://${raw}`;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
 function extractWhmcsUpstreamCredentials(rawService) {
   const username = String(
     rawService?.username ||
@@ -1932,6 +1946,91 @@ router.post("/devices/:code/upstream", adminAuth, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     return sendInternalError(req, res, "admin/upstream", err);
+  }
+});
+
+/** =========================================
+ *  GET /v1/admin/devices/:code/playlist
+ *  - returns a custom M3U playlist URL for the device
+ *  ========================================= */
+router.get("/devices/:code/playlist", adminAuth, async (req, res) => {
+  try {
+    const code = String(req.params.code || "").trim();
+    if (!code) return res.status(400).json({ error: "device code required" });
+
+    const [devRows] = await pool.execute(
+      `SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT playlist_url FROM device_playlist WHERE device_id=? LIMIT 1`,
+      [dev.id]
+    );
+
+    return res.json({
+      configured: Boolean(rows[0]?.playlist_url),
+      playlist_url: rows[0]?.playlist_url || "",
+    });
+  } catch (err) {
+    if (String(err?.code || "") === "ER_NO_SUCH_TABLE") {
+      return res.json({ configured: false, playlist_url: "" });
+    }
+    return sendInternalError(req, res, "admin/playlist/get", err);
+  }
+});
+
+router.post("/devices/:code/playlist", adminAuth, async (req, res) => {
+  try {
+    const code = String(req.params.code || "").trim();
+    if (!code) return res.status(400).json({ error: "device code required" });
+
+    const [devRows] = await pool.execute(
+      `SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1`,
+      [code]
+    );
+
+    const dev = devRows[0];
+    if (!dev) return res.status(404).json({ error: "device not found" });
+    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const rawPlaylistUrl = String(req.body?.playlist_url || req.body?.playlistUrl || "").trim();
+    if (!rawPlaylistUrl) {
+      await pool.execute(`DELETE FROM device_playlist WHERE device_id=?`, [dev.id]);
+      return res.json({ ok: true, configured: false, playlist_url: "" });
+    }
+
+    const playlistUrl = normalizePlaylistUrl(rawPlaylistUrl);
+    if (!playlistUrl) return res.status(400).json({ error: "invalid playlist_url" });
+
+    await pool.execute(
+      `
+      INSERT INTO device_playlist (device_id, playlist_url, updated_at)
+      VALUES (?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        playlist_url=VALUES(playlist_url),
+        updated_at=NOW()
+      `,
+      [dev.id, playlistUrl]
+    );
+
+    return res.json({ ok: true, configured: true, playlist_url: playlistUrl });
+  } catch (err) {
+    if (String(err?.code || "") === "ER_NO_SUCH_TABLE") {
+      return res.status(500).json({
+        error: "device_playlist table missing",
+        hint: "Run DB migration for device_playlist table",
+      });
+    }
+    return sendInternalError(req, res, "admin/playlist", err);
   }
 });
 

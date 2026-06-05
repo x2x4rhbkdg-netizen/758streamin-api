@@ -820,6 +820,16 @@ router.get("/device/profile", authJwt, async (req, res) => {
       trialState.status === "suspended"
         ? await fetchWhmcsPriceByServiceId(device.whmcs_service_id)
         : null;
+    let playlistUrl = "";
+    try {
+      const [playlistRows] = await pool.execute(
+        `SELECT playlist_url FROM device_playlist WHERE device_id=? LIMIT 1`,
+        [device.id]
+      );
+      playlistUrl = String(playlistRows[0]?.playlist_url || "").trim();
+    } catch (err) {
+      if (String(err?.code || "") !== "ER_NO_SUCH_TABLE") throw err;
+    }
 
     return res.json({
       status: trialState.status,
@@ -842,6 +852,10 @@ router.get("/device/profile", authJwt, async (req, res) => {
       whmcsNextDueDate: device.whmcs_next_due_date || null,
       next_due_date: device.whmcs_next_due_date || null,
       nextDueDate: device.whmcs_next_due_date || null,
+      playlist_url: playlistUrl || null,
+      playlistUrl: playlistUrl || null,
+      custom_playlist_url: playlistUrl || null,
+      customPlaylistUrl: playlistUrl || null,
       whmcs: {
         account_number: device.whmcs_account_number || null,
         accountNumber: device.whmcs_account_number || null,
