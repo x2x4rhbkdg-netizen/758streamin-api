@@ -9,7 +9,6 @@ const { buildXuiPlayerApiUrls, fetchJsonWithFallback } = require("../utils/xui.c
 const { sendInternalError } = require("../utils/errorResponse.cjs");
 
 const router = Router();
-
 function inferLiveCategoryType(category) {
   const name = String(category?.category_name ?? category?.name ?? "").toLowerCase();
   if (name.includes("radio")) return "radio";
@@ -66,6 +65,15 @@ async function fetchXuiJson(upstream, action, params = {}) {
   );
 }
 
+async function fetchOptionalXuiJson(upstream, action, params = {}) {
+  try {
+    return await fetchXuiJson(upstream, action, params);
+  } catch (err) {
+    console.warn("[catalog] optional upstream action failed:", action || "default", err?.status || "", err?.message || err);
+    return [];
+  }
+}
+
 async function resolveUpstream(req, res) {
   try {
     const upstream = await getDeviceUpstream(req.device.device_id);
@@ -94,14 +102,13 @@ router.get("/catalog/home", authJwt, async (req, res) => {
 
     const limit = parseLimit(req.query.limit, 20);
 
-    const [liveStreams, vodStreams, liveCats, vodCats, seriesCats] =
-      await Promise.all([
-        fetchXuiJson(upstream, "get_live_streams"),
-        fetchXuiJson(upstream, "get_vod_streams"),
-        fetchXuiJson(upstream, "get_live_categories"),
-        fetchXuiJson(upstream, "get_vod_categories"),
-        fetchXuiJson(upstream, "get_series_categories"),
-      ]);
+    const liveStreams = await fetchXuiJson(upstream, "get_live_streams");
+    const [vodStreams, liveCats, vodCats, seriesCats] = await Promise.all([
+      fetchOptionalXuiJson(upstream, "get_vod_streams"),
+      fetchOptionalXuiJson(upstream, "get_live_categories"),
+      fetchOptionalXuiJson(upstream, "get_vod_categories"),
+      fetchOptionalXuiJson(upstream, "get_series_categories"),
+    ]);
 
     const liveList = asArray(liveStreams).slice(0, limit);
     const vodList = asArray(vodStreams);
