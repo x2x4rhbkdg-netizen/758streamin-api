@@ -65,7 +65,7 @@ function publicSettings(settings) {
   return result;
 }
 
-async function readMovieSettings(deviceId) {
+async function readStoredDeviceSettings(deviceId) {
   try {
     const [rows] = await pool.execute('SELECT settings_enc FROM device_movie_settings WHERE device_id=? LIMIT 1', [deviceId]);
     return rows[0] ? { ...DEFAULTS, ...JSON.parse(decryptString(rows[0].settings_enc)) } : { ...DEFAULTS };
@@ -76,11 +76,56 @@ async function readMovieSettings(deviceId) {
 }
 
 async function saveMovieSettings(deviceId, input) {
-  const settings = normalizeSettings(input, await readMovieSettings(deviceId));
+  if (!input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).some((key) => key !== 'enabled') || typeof input.enabled !== 'boolean') {
+    invalid('Device movie settings accept only an enabled boolean');
+  }
+  const settings = normalizeSettings(input, await readStoredDeviceSettings(deviceId));
   await pool.execute(`INSERT INTO device_movie_settings (device_id, settings_enc) VALUES (?, ?)
     ON DUPLICATE KEY UPDATE settings_enc=VALUES(settings_enc), updated_at=NOW()`,
   [deviceId, encryptString(JSON.stringify(settings))]);
+  return { enabled: settings.enabled === true };
+}
+
+async function readDeviceMovieAccess(deviceId) {
+  const settings = await readStoredDeviceSettings(deviceId);
+  return { enabled: settings.enabled === true };
+}
+
+async function readGlobalMovieSettings() {
+  let settings = { ...DEFAULTS };
+  try {
+    const [rows] = await pool.execute('SELECT settings_enc FROM global_movie_settings WHERE id=1 LIMIT 1');
+    if (rows[0]) settings = { ...settings, ...JSON.parse(decryptString(rows[0].settings_enc)) };
+  } catch (error) {
+    if (error.code !== 'ER_NO_SUCH_TABLE') throw error;
+  }
+  delete settings.enabled;
   return settings;
 }
 
-module.exports = { DEFAULTS, normalizeSettings, publicSettings, readMovieSettings, saveMovieSettings };
+async function saveGlobalMovieSettings(input) {
+  if (input && Object.hasOwn(input, 'enabled')) invalid('Movie access is controlled per device');
+  const settings = normalizeSettings(input, await readGlobalMovieSettings());
+  delete settings.enabled;
+  await pool.execute(`INSERT INTO global_movie_settings (id, settings_enc) VALUES (1, ?)
+    ON DUPLICATE KEY UPDATE settings_enc=VALUES(settings_enc), updated_at=NOW()`,
+  [encryptString(JSON.stringify(settings))]);
+  return settings;
+}
+
+function adminGlobalSettings(settings) {
+  const result = { ...publicSettings(settings), scraper_url: settings.scraper_url };
+  delete result.enabled;
+  return result;
+}
+
+async function readMovieSettings(deviceId) {
+  const [globalSettings, access] = await Promise.all([
+    readGlobalMovieSettings(), readDeviceMovieAccess(deviceId),
+  ]);
+  return { ...globalSettings, ...access };
+}
+
+module.exports = { DEFAULTS, normalizeSettings, publicSettings, readMovieSettings, saveMovieSettings,
+  readDeviceMovieAccess, readGlobalMovieSettings, saveGlobalMovieSettings, adminGlobalSettings };

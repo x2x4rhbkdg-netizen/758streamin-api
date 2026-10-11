@@ -12,7 +12,8 @@ const { decryptString, encryptString } = require("../utils/cryptoVault.cjs");
 const { buildXuiPlayerApiUrls, fetchJsonWithFallback } = require("../utils/xui.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
 const { pool } = require("../db/pool.cjs");
-const { publicSettings, readMovieSettings, saveMovieSettings } = require("../utils/movieSettings.cjs");
+const { readDeviceMovieAccess, saveMovieSettings, readGlobalMovieSettings,
+  saveGlobalMovieSettings, adminGlobalSettings } = require("../utils/movieSettings.cjs");
 const { sendResetEmail } = require("../utils/email.cjs");
 const { env } = require("../config/env.cjs");
 const whmcsReminderRoutes = require("./admin.whmcsReminders.routes.cjs");
@@ -22,6 +23,25 @@ const createWhmcsTrialReminderIfNeeded = whmcsReminderRoutes.createTrialReminder
 const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
 
 const router = Router();
+
+router.route('/movie-settings').all(adminAuth, (req, res, next) => {
+  if (!requireSuperAdmin(req, res)) return;
+  next();
+}).get(async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    return res.json(adminGlobalSettings(await readGlobalMovieSettings()));
+  } catch (error) { return sendInternalError(req, res, 'admin/movie-settings/global/get', error); }
+}).post(async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    return res.json(adminGlobalSettings(await saveGlobalMovieSettings(req.body)));
+  } catch (error) {
+    if (error.status === 400) return res.status(400).json({ error: error.message });
+    if (error.code === 'ER_NO_SUCH_TABLE') return res.status(503).json({ error: 'Run migrate.global-movie-settings.mysql.sql before saving global movie settings' });
+    return sendInternalError(req, res, 'admin/movie-settings/global/save', error);
+  }
+});
 
 router.route('/devices/:code/movie-settings').all(adminAuth, async (req, res, next) => {
   try {
@@ -34,15 +54,15 @@ router.route('/devices/:code/movie-settings').all(adminAuth, async (req, res, ne
   } catch (error) { return sendInternalError(req, res, 'admin/movie-settings/access', error); }
 }).get(async (req, res) => {
   try {
-    const settings = await readMovieSettings(req.movieDeviceId);
+    const settings = await readDeviceMovieAccess(req.movieDeviceId);
     res.set('Cache-Control', 'no-store');
-    return res.json({ ...publicSettings(settings), scraper_url: settings.scraper_url });
+    return res.json(settings);
   } catch (error) { return sendInternalError(req, res, 'admin/movie-settings/get', error); }
 }).post(async (req, res) => {
   try {
     const settings = await saveMovieSettings(req.movieDeviceId, req.body);
     res.set('Cache-Control', 'no-store');
-    return res.json({ ...publicSettings(settings), scraper_url: settings.scraper_url });
+    return res.json(settings);
   } catch (error) {
     if (error.status === 400) return res.status(400).json({ error: error.message });
     if (error.code === 'ER_NO_SUCH_TABLE') return res.status(503).json({ error: 'Run migrate.movie-settings.mysql.sql before saving movie settings' });
