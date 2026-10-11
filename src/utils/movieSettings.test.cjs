@@ -101,3 +101,60 @@ test('missing tables default access off and prevent pretending saves succeeded',
   await assert.rejects(api.saveGlobalMovieSettings({ provider: 'Torbox' }), { code: 'ER_NO_SUCH_TABLE' });
   await assert.rejects(api.saveMovieSettings(1, { enabled: true }), { code: 'ER_NO_SUCH_TABLE' });
 });
+
+test('multiple providers remain enabled with independent credentials and masked responses', async () => {
+  const { api } = fixture();
+  await api.saveGlobalMovieSettings({ provider_accounts: {
+    Torbox: { enabled: true, token: 'torbox-key' },
+    'Real-Debrid': { enabled: true, token: 'rd-key' },
+  } });
+  await api.saveGlobalMovieSettings({ max_links: 12 });
+  let settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.provider_accounts.Torbox.enabled, true);
+  assert.equal(settings.provider_accounts['Real-Debrid'].enabled, true);
+  const response = api.adminGlobalSettings(settings);
+  assert.equal(response.provider_accounts.Torbox.token, undefined);
+  assert.equal(response.provider_accounts.Torbox.token_configured, true);
+  assert.equal(api.publicSettings(settings).provider_accounts['Real-Debrid'].token, undefined);
+  await api.saveGlobalMovieSettings({ provider_accounts: { Torbox: { enabled: false } } });
+  settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.provider_accounts.Torbox.token, 'torbox-key');
+  assert.equal(settings.provider_accounts['Real-Debrid'].enabled, true);
+  await api.saveGlobalMovieSettings({ provider_accounts: { Torbox: { token: '' } } });
+  settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.provider_accounts.Torbox.token, '');
+  assert.equal(settings.provider_accounts['Real-Debrid'].token, 'rd-key');
+});
+
+test('legacy global provider is preserved when adding a second provider', async () => {
+  const { api } = fixture();
+  await api.saveGlobalMovieSettings({ provider: 'Torbox', debrid_token: 'existing' });
+  await api.saveGlobalMovieSettings({ provider_accounts: { Premiumize: { enabled: true, token: 'new' } } });
+  const settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.provider_accounts.Torbox.token, 'existing');
+  assert.equal(settings.provider_accounts.Torbox.enabled, true);
+  assert.equal(settings.provider_accounts.Premiumize.enabled, true);
+});
+
+test('provider account updates validate names, booleans and credential types', async () => {
+  const { api } = fixture();
+  for (const provider_accounts of [[], { Unknown: {} }, { Torbox: { enabled: 'yes' } },
+    { Torbox: { token: 123 } }, { Torbox: { token: 'x'.repeat(8193) } }, { Torbox: { extra: true } }]) {
+    await assert.rejects(api.saveGlobalMovieSettings({ provider_accounts }), { status: 400 });
+  }
+});
+
+test('global sorting and codec preferences validate while device control remains only enabled', async () => {
+  const { api } = fixture();
+  await api.saveGlobalMovieSettings({ primary_sort: 'size', primary_sort_direction: 'asc', min_bitrate_mbps: 10,
+    max_bitrate_mbps: 100, auto_select_delay: true, auto_select_delay_seconds: 15, enable_software_codecs: true, prefer_software_codecs: true });
+  let settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.primary_sort, 'size');
+  assert.equal(settings.prefer_software_codecs, true);
+  await api.saveGlobalMovieSettings({ enable_software_codecs: false });
+  assert.equal((await api.readGlobalMovieSettings()).prefer_software_codecs, false);
+  await assert.rejects(api.saveGlobalMovieSettings({ min_bitrate_mbps: 100, max_bitrate_mbps: 20 }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ primary_sort: 'invalid' }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ secondary_sort_direction: 'invalid' }), { status: 400 });
+  await assert.rejects(api.saveMovieSettings(1, { enabled: true, primary_sort: 'size' }), { status: 400 });
+});
