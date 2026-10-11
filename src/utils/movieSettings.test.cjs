@@ -144,6 +144,18 @@ test('provider account updates validate names, booleans and credential types', a
   }
 });
 
+test('default playback provider must be enabled and persists without exposing credentials', async () => {
+  const { api } = fixture();
+  await assert.rejects(api.saveGlobalMovieSettings({ default_provider: 'Torbox' }), { status: 400 });
+  await api.saveGlobalMovieSettings({ default_provider: 'Torbox', provider_accounts: { Torbox: { enabled: true, token: 'private' } } });
+  const settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.default_provider, 'Torbox');
+  assert.equal(api.publicSettings(settings).default_provider, 'Torbox');
+  assert.equal(JSON.stringify(api.publicSettings(settings)).includes('private'), false);
+  await assert.rejects(api.saveGlobalMovieSettings({ provider_accounts: { Torbox: { enabled: false } } }), { status: 400 });
+  await api.saveGlobalMovieSettings({ default_provider: 'none', provider_accounts: { Torbox: { enabled: false } } });
+});
+
 test('global sorting and codec preferences validate while device control remains only enabled', async () => {
   const { api } = fixture();
   await api.saveGlobalMovieSettings({ primary_sort: 'size', primary_sort_direction: 'asc', min_bitrate_mbps: 10,

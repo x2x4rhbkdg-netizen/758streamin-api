@@ -3,7 +3,7 @@ const { encryptString, decryptString } = require('./cryptoVault.cjs');
 
 const PROVIDERS = ['none', 'Real-Debrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token'];
-const DEFAULTS = Object.freeze({ enabled: false, scraper_url: '', provider: 'none',
+const DEFAULTS = Object.freeze({ enabled: false, scraper_url: '', provider: 'none', default_provider: 'none',
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
   auto_select_min_links: 10, auto_select_delay: false, auto_select_delay_seconds: 15,
@@ -50,6 +50,10 @@ function invalid(message) {
 function normalizeSettings(input, previous = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Movie settings must be an object');
   const next = { ...DEFAULTS, ...previous };
+  if (Object.hasOwn(input, 'default_provider')) {
+    if (!PROVIDERS.includes(input.default_provider)) invalid('Unsupported default movie provider');
+    next.default_provider = input.default_provider;
+  }
   for (const key of ['enabled', 'auto_select', 'auto_select_delay', 'enable_software_codecs', 'prefer_software_codecs']) {
     if (Object.hasOwn(input, key)) {
       if (typeof input[key] !== 'boolean') invalid(`${key} must be a boolean`);
@@ -174,6 +178,9 @@ async function saveGlobalMovieSettings(input) {
     }
   }
   delete settings.enabled;
+  if (settings.default_provider !== 'none' && !settings.provider_accounts[settings.default_provider]?.enabled) {
+    invalid('Enable the default movie provider before saving');
+  }
   await pool.execute(`INSERT INTO global_movie_settings (id, settings_enc) VALUES (1, ?)
     ON DUPLICATE KEY UPDATE settings_enc=VALUES(settings_enc), updated_at=NOW()`,
   [encryptString(JSON.stringify(settings))]);
