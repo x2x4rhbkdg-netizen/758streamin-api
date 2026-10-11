@@ -12,8 +12,16 @@ const { authJwt } = require("../middleware/authJwt.cjs");
 const { decryptString, encryptString } = require("../utils/cryptoVault.cjs");
 const { env } = require("../config/env.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
+const { publicSettings, readMovieSettings } = require("../utils/movieSettings.cjs");
 
 const router = Router();
+
+router.get('/device/movie-settings', authJwt, async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    return res.json(publicSettings(await readMovieSettings(req.device.device_id)));
+  } catch (error) { return sendInternalError(req, res, 'device/movie-settings', error); }
+});
 
 /** =========================================
  *  HELPERS

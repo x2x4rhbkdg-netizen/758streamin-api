@@ -12,6 +12,7 @@ const { decryptString, encryptString } = require("../utils/cryptoVault.cjs");
 const { buildXuiPlayerApiUrls, fetchJsonWithFallback } = require("../utils/xui.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
 const { pool } = require("../db/pool.cjs");
+const { publicSettings, readMovieSettings, saveMovieSettings } = require("../utils/movieSettings.cjs");
 const { sendResetEmail } = require("../utils/email.cjs");
 const { env } = require("../config/env.cjs");
 const whmcsReminderRoutes = require("./admin.whmcsReminders.routes.cjs");
@@ -21,6 +22,33 @@ const createWhmcsTrialReminderIfNeeded = whmcsReminderRoutes.createTrialReminder
 const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
 
 const router = Router();
+
+router.route('/devices/:code/movie-settings').all(adminAuth, async (req, res, next) => {
+  try {
+    const [rows] = await pool.execute('SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1', [String(req.params.code || '').trim()]);
+    const device = rows[0];
+    if (!device) return res.status(404).json({ error: 'Device not found' });
+    if (req.admin?.role !== 'super_admin' && String(device.reseller_admin_id) !== String(req.admin.id)) return res.status(403).json({ error: 'Forbidden' });
+    req.movieDeviceId = device.id;
+    next();
+  } catch (error) { return sendInternalError(req, res, 'admin/movie-settings/access', error); }
+}).get(async (req, res) => {
+  try {
+    const settings = await readMovieSettings(req.movieDeviceId);
+    res.set('Cache-Control', 'no-store');
+    return res.json({ ...publicSettings(settings), scraper_url: settings.scraper_url });
+  } catch (error) { return sendInternalError(req, res, 'admin/movie-settings/get', error); }
+}).post(async (req, res) => {
+  try {
+    const settings = await saveMovieSettings(req.movieDeviceId, req.body);
+    res.set('Cache-Control', 'no-store');
+    return res.json({ ...publicSettings(settings), scraper_url: settings.scraper_url });
+  } catch (error) {
+    if (error.status === 400) return res.status(400).json({ error: error.message });
+    if (error.code === 'ER_NO_SUCH_TABLE') return res.status(503).json({ error: 'Run migrate.movie-settings.mysql.sql before saving movie settings' });
+    return sendInternalError(req, res, 'admin/movie-settings/save', error);
+  }
+});
 
 const ANALYTICS_QUERY_ROW_LIMIT = 5000;
 const ANALYTICS_LABEL_UPSTREAM_LIMIT = 3;
