@@ -51,7 +51,7 @@ function normalizeSettings(input, previous = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Movie settings must be an object');
   const next = { ...DEFAULTS, ...previous };
   if (Object.hasOwn(input, 'default_provider')) {
-    if (!PROVIDERS.includes(input.default_provider)) invalid('Unsupported default movie provider');
+    if (input.default_provider !== 'auto' && !PROVIDERS.includes(input.default_provider)) invalid('Unsupported default movie provider');
     next.default_provider = input.default_provider;
   }
   for (const key of ['enabled', 'auto_select', 'auto_select_delay', 'enable_software_codecs', 'prefer_software_codecs']) {
@@ -178,7 +178,7 @@ async function saveGlobalMovieSettings(input) {
     }
   }
   delete settings.enabled;
-  if (settings.default_provider !== 'none' && !settings.provider_accounts[settings.default_provider]?.enabled) {
+  if (!['none', 'auto'].includes(settings.default_provider) && !settings.provider_accounts[settings.default_provider]?.enabled) {
     invalid('Enable the default movie provider before saving');
   }
   await pool.execute(`INSERT INTO global_movie_settings (id, settings_enc) VALUES (1, ?)

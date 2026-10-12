@@ -2,6 +2,7 @@ const { Router } = require('express');
 const { authJwt } = require('../middleware/authJwt.cjs');
 const { readMovieSettings } = require('../utils/movieSettings.cjs');
 const { resolveMovieSource } = require('../utils/movieResolver.cjs');
+const { requireDiscoveredSource } = require('../utils/movieSourceSessions.cjs');
 const router = Router();
 const active = new Set();
 router.post('/movies/resolve', authJwt, async (req, res) => {
@@ -12,7 +13,8 @@ router.post('/movies/resolve', authJwt, async (req, res) => {
   try {
     const settings = await readMovieSettings(req.device.device_id);
     if (settings.enabled !== true) return res.status(403).json({ error: 'Movies and Series are disabled for this device' });
-    return res.json(await resolveMovieSource(settings, req.body));
+    const input = requireDiscoveredSource(req.device.device_id, req.body);
+    return res.json(await resolveMovieSource(settings, input));
   } catch (error) {
     return res.status(error.status || 502).json({ error: error.status ? error.message : 'Movie playback temporarily unavailable' });
   } finally { active.delete(device); }

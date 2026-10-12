@@ -11,6 +11,8 @@ function factory() {
       if (name === 'express') return require('express');
       if (name.includes('authJwt')) return { authJwt: (_req, _res, next) => next() };
       if (name.includes('movieSettings')) return { readMovieSettings: async () => ({ enabled: false }) };
+      if (name.includes('movieResolver')) return require('../utils/movieResolver.cjs');
+      if (name.includes('movieSourceSessions')) return require('../utils/movieSourceSessions.cjs');
       if (name.includes('Scraper')) return require('../utils/Scraper.cjs');
       throw new Error('Unexpected dependency');
     },
