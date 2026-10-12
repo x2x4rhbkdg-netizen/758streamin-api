@@ -181,7 +181,8 @@ async function discoverSources(settings, input, { fetchText = readText } = {}) {
       }
       if (!deduplicated.has(result.hash)) deduplicated.set(result.hash, result);
     }
-    return { sources: [...deduplicated.values()].sort((a, b) => compareSources(a, b, settings)).slice(0, Math.min(50, Math.max(1, Number(settings.max_links) || 10))),
+    // Discovery is already bounded per scraper. Do not discard lower resolutions before cache checks.
+    return { sources: [...deduplicated.values()].sort((a, b) => compareSources(a, b, settings)),
       diagnostics: { scrapers: definitions.length, failed: results.filter((entry) => !entry.ok).length,
         definition_errors: loaded.definition_errors || 0, timed_out: controller.signal.aborted },
       playable: false };

@@ -84,6 +84,19 @@ test('sorting respects both priorities and keeps unknown metadata last', () => {
   assert.ok(compareSources(a, { ...a, bitrate_mbps: null }, settings) < 0);
 });
 
+test('quality sorting does not truncate lower resolutions at the legacy maximum links setting', async () => {
+  const streams = Array.from({ length: 24 }, (_, index) => ({
+    infoHash: (index + 1).toString(16).padStart(40, '0'),
+    title: `Example 2001 ${index < 12 ? '2160p' : index < 20 ? '1080p' : '720p'}`,
+  }));
+  const fetchText = async (url) => url === 'https://manifest.test' ? JSON.stringify(['https://defs.test/a']) :
+    url === 'https://defs.test/a' ? JSON.stringify(definition) : JSON.stringify({ streams });
+  const result = await discoverSources({ scraper_url: 'https://manifest.test', max_links: 10 },
+    { type: 'movie', imdb_id: 'tt1234567', title: 'Example', year_int: 2001 }, { fetchText });
+  assert.equal(result.sources.length, 24);
+  assert.deepEqual([...new Set(result.sources.map((item) => item.quality))], ['2160p', '1080p', '720p']);
+});
+
 test('bounded concurrency keeps scraper work limited', async () => {
   let active = 0, peak = 0;
   await mapLimit([1, 2, 3, 4, 5, 6], 2, async () => {

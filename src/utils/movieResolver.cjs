@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 const SUPPORTED_PROVIDERS = ['Real-Debrid', 'Premiumize', 'Torbox', 'EasyDebrid', 'OffCloud'];
 const transfers = new Map();
-function failure(message, status = 409) { return Object.assign(new Error(message), { status }); }
+function failure(message, status = 409) { return Object.assign(new Error(message), { status, publicMessage: message }); }
 
 function chooseVideo(files, input) {
   const videos = files.filter((file) => /\.(mkv|mp4|avi|mov|m4v|webm|ts)$/i.test(file.path || '') && !/\bsample\b/i.test(file.path));
@@ -63,6 +63,34 @@ function configuredProviders(settings) {
 }
 
 async function lookupProviders(settings, sources, { request = providerRequest, signal } = {}) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+  const timer = setTimeout(abort, 8000);
+  const available = {}, provider_status = {};
+  let cursor = 0;
+  try {
+    // Bound provider request sizes without limiting the resolutions shown in the app.
+    await Promise.all(Array.from({ length: Math.min(2, Math.ceil(sources.length / 100)) }, async () => {
+      while (cursor < sources.length && !controller.signal.aborted) {
+        const batch = sources.slice(cursor, cursor += 100);
+        const result = await lookupProviderBatch(settings, batch, { request, signal: controller.signal });
+        Object.assign(available, result.available);
+        for (const [provider, status] of Object.entries(result.provider_status)) {
+          const previous = provider_status[provider];
+          provider_status[provider] = previous && previous !== status ? 'partial' : status;
+        }
+      }
+    }));
+    if (cursor < sources.length || controller.signal.aborted) {
+      for (const provider of configuredProviders(settings)) provider_status[provider] = 'partial';
+    }
+    return { available, provider_status };
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+}
+
+async function lookupProviderBatch(settings, sources, { request = providerRequest, signal } = {}) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -196,12 +224,19 @@ async function resolveMovieSource(settings, input, options = {}) {
     const ready = available[input.hash.toLowerCase()] || [];
     const providers = ['auto', 'none'].includes(choice) ? configured.filter((provider) => ready.includes(provider)) : ready.filter((provider) => provider === choice);
     if (!providers.length) throw failure('No enabled provider has a ready copy of this source. Choose another source.');
+    const failures = [];
     for (const provider of providers) {
       if (controller.signal.aborted) break;
       try { return await resolveSingle(settings, { ...input, provider }, { ...options, signal: controller.signal }); }
-      catch (error) { if (error.status === 400) throw error; if (providers.length === 1) throw error; }
+      catch (error) {
+        if (error.status === 400) throw error;
+        // Only messages created by our adapter are safe to expose, never raw network errors.
+        const reason = error.publicMessage || 'Provider request failed or timed out';
+        if (providers.length === 1) throw failure(`${provider}: ${reason}`, error.status || 502);
+        failures.push(`${provider}: ${reason}`);
+      }
     }
-    throw failure('Ready providers could not prepare this source. Choose another source.', 502);
+    throw failure(failures.length ? failures.join(' | ') : 'Provider preparation timed out. Choose another source.', 502);
   } finally { clearTimeout(timer); }
 }
 module.exports = { SUPPORTED_PROVIDERS, chooseVideo, resolveMovieSource, lookupProviders, configuredProviders };

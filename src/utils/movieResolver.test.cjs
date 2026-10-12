@@ -4,6 +4,20 @@ const { chooseVideo, resolveMovieSource, lookupProviders } = require('./movieRes
 const { createSourceCapabilities } = require('./movieSourceSessions.cjs');
 const hash = 'a'.repeat(40);
 const settings = (provider) => ({ default_provider: provider, provider_accounts: { [provider]: { enabled: true, token: 'private-key' } } });
+
+test('cache checks retain lower resolutions beyond the first bounded batch', async () => {
+  const sources = Array.from({ length: 225 }, (_, index) => ({ hash: (index + 1).toString(16).padStart(40, '0') }));
+  const batches = [];
+  const result = await lookupProviders(settings('Premiumize'), sources, { request: async (_provider, _token, path, form) => {
+    assert.equal(path, 'cache/check');
+    assert.ok(form.items.length <= 100);
+    batches.push(form.items);
+    return { response: form.items.map(() => true) };
+  } });
+  assert.equal(batches.length, 3);
+  assert.equal(Object.keys(result.available).length, 225);
+  assert.deepEqual(result.available[sources[224].hash], ['Premiumize']);
+});
 function cachedRequest(run) {
   return async (provider, token, path, form, signal) => {
     if (path === 'cache/check') return { status: 'success', response: [true] };
@@ -85,6 +99,20 @@ test('automatic provider selection falls back after a ready provider fails', asy
     return { files: [{ filename: 'Movie.mp4', url: 'https://cdn.example/movie.mp4' }] };
   }) });
   assert.equal(result.provider, 'EasyDebrid');
+});
+test('provider failover reports adapter reasons but never raw upstream credentials', async () => {
+  const configuration = { provider_accounts: { Premiumize: { enabled: true, token: 'secret-pm' }, EasyDebrid: { enabled: true, token: 'secret-ed' } } };
+  await assert.rejects(resolveMovieSource(configuration, { hash, type: 'movie', provider: 'auto' }, { request: cachedRequest(async (provider) => {
+    if (provider === 'Premiumize') return { status: 'success', content: [{ path: 'Readme.txt' }] };
+    throw new Error('https://upstream.example/?token=secret-ed');
+  }) }), (error) => {
+    assert.equal(error.status, 502);
+    assert.match(error.message, /Premiumize: No matching video file/);
+    assert.match(error.message, /EasyDebrid: Provider request failed or timed out/);
+    assert.equal(error.message.includes('secret-ed'), false);
+    assert.equal(error.message.includes('upstream.example'), false);
+    return true;
+  });
 });
 test('invalid/disabled/uncached sources cannot start transfer requests', async () => {
   let calls = 0;
