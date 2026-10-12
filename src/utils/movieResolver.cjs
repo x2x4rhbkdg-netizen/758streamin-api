@@ -175,7 +175,9 @@ async function resolveSingle(settings, input, { request = providerRequest, signa
     let url;
     try { url = new URL(download); } catch { throw failure('Provider did not return a playable URL', 502); }
     if (url.protocol !== 'https:' || url.username || url.password) throw failure('Provider returned an unsupported playback URL', 502);
-    if (account.token.length >= 8 && url.href.includes(account.token)) throw failure('Provider returned an unsafe playback URL', 502);
+    if (account.token.length >= 8 && (url.href.includes(account.token) || decodeURIComponent(url.href).includes(account.token))) {
+      return { protectedPlaybackUrl: url.href, provider };
+    }
     return { playbackUrl: url.href, provider };
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }

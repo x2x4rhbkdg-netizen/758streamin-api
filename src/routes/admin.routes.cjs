@@ -24,6 +24,20 @@ const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
 
 const router = Router();
 
+router.post('/movie-settings/premiumize/:action', adminAuth, async (req, res) => {
+  if (!requireSuperAdmin(req, res)) return;
+  res.set('Cache-Control', 'no-store');
+  if (!['start', 'poll'].includes(req.params.action)) return res.sendStatus(404);
+  try {
+    const auth = require('../utils/premiumizeAuth.cjs').createPremiumizeAuth({ clientId: process.env.PREMIUMIZE_CLIENT_ID || '622231542',
+      encrypt: encryptString, decrypt: decryptString, save: saveGlobalMovieSettings });
+    const admin = req.admin.id || 'api-key';
+    return res.json(req.params.action === 'start' ? await auth.start(admin) : await auth.poll(admin, req.body?.state));
+  } catch (error) {
+    return res.status(error.status || 502).json({ error: error.status ? error.message : 'Premiumize authentication temporarily unavailable' });
+  }
+});
+
 router.route('/movie-settings').all(adminAuth, (req, res, next) => {
   if (!requireSuperAdmin(req, res)) return;
   next();

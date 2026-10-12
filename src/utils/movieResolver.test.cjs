@@ -49,6 +49,13 @@ test('EasyDebrid selects only the requested video from generated files', async (
   }) });
   assert.equal(result.provider, 'EasyDebrid');
 });
+test('credential-bearing links are server-only until wrapped with a playback ticket', async () => {
+  const result = await resolveMovieSource(settings('Premiumize'), { hash, type: 'movie' }, { request: cachedRequest(async () => ({
+    status: 'success', content: [{ path: 'Movie.mp4', link: 'https://cdn.example/movie.mp4?token=private-key' }],
+  })) });
+  assert.equal(result.playbackUrl, undefined);
+  assert.equal(result.protectedPlaybackUrl, 'https://cdn.example/movie.mp4?token=private-key');
+});
 test('OffCloud resolves a ready cached cloud file without returning its key', async () => {
   const result = await resolveMovieSource(settings('OffCloud'), { hash, type: 'movie' }, { request: cachedRequest(async (_provider, _token, path) => {
     if (path === 'cloud') return { requestId: 'ABC' };
@@ -89,8 +96,8 @@ test('invalid/disabled/uncached sources cannot start transfer requests', async (
   } }), { status: 409 });
   assert.throws(() => chooseVideo([{ path: 'Show.S01E01.mkv' }], { type: 'series', season_int: 1, episode_int: 2 }));
 });
-test('non-HTTPS links and URLs containing provider credentials never reach the app', async () => {
-  for (const link of ['file:///tmp/private.mp4', 'https://cdn.example/movie.mp4?token=private-key']) {
+test('non-HTTPS links and embedded user/password credentials are rejected', async () => {
+  for (const link of ['file:///tmp/private.mp4', 'https://private-key:password@cdn.example/movie.mp4']) {
     await assert.rejects(resolveMovieSource(settings('Premiumize'), { hash, type: 'movie' }, { request: cachedRequest(async () => ({ status: 'success', content: [{ path: 'Movie.mp4', link }] })) }), { status: 502 });
   }
 });
@@ -103,4 +110,29 @@ test('source capability is device/episode bound, tamper protected, and portable 
   assert.throws(() => second.requireDiscoveredSource(2, input), { status: 409 });
   assert.throws(() => second.requireDiscoveredSource(1, { ...input, episode_int: 4 }), { status: 409 });
   assert.throws(() => second.requireDiscoveredSource(1, { ...input, source_token: token + 'bad' }), { status: 409 });
+});
+
+test('production Torbox HTTP adapter builds the cache/create/link requests without returning its API key', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push(url.pathname);
+    assert.equal(url.origin, 'https://api.torbox.app');
+    assert.equal(options.redirect, 'error');
+    let data;
+    if (url.pathname.endsWith('/checkcached')) data = { [hash]: { files: [{ name: 'Movie.mp4' }] } };
+    else if (url.pathname.endsWith('/createtorrent')) {
+      assert.equal(options.body.get('add_only_if_cached'), 'true');
+      assert.equal(options.body.get('magnet'), `magnet:?xt=urn:btih:${hash}`);
+      data = { torrent_id: 22 };
+    } else if (url.pathname.endsWith('/mylist')) data = [{ id: 22, download_present: true, download_finished: true, files: [{ id: 1, name: 'Movie.mp4' }] }];
+    else { assert.equal(url.searchParams.get('token'), 'private-key'); data = 'https://cdn.example/Movie.mp4'; }
+    return new Response(JSON.stringify({ success: true, data }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const result = await resolveMovieSource(settings('Torbox'), { hash, provider: 'Torbox', type: 'movie' });
+    assert.equal(result.playbackUrl, 'https://cdn.example/Movie.mp4');
+    assert.equal(calls.length, 4);
+    assert.equal(JSON.stringify(result).includes('private-key'), false);
+  } finally { global.fetch = originalFetch; }
 });

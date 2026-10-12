@@ -84,6 +84,7 @@ app.use("/v1", deviceRoutes);
 app.use("/v1", playlistRoutes);
 app.use("/v1", catalogRoutes);
 app.use("/v1", playbackRoutes);
+app.use("/v1", require("./routes/movieStream.routes.cjs"));
 app.use("/v1", movieSourcesRoutes);
 app.use("/v1", movieCatalogRoutes);
 app.use("/v1", moviePlaybackRoutes);
