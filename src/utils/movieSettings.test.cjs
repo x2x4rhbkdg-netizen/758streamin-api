@@ -54,7 +54,7 @@ test('legacy per-device configuration is ignored without deleting existing recor
   devices.set(1, vault.encryptString(JSON.stringify({ enabled: true, provider: 'Real-Debrid', debrid_token: 'legacy' })));
   await api.saveGlobalMovieSettings({ provider: 'Torbox', debrid_token: 'shared' });
   assert.equal((await api.readMovieSettings(1)).debrid_token, 'shared');
-  assert.deepEqual(Object.keys(await api.readDeviceMovieAccess(1)), ['enabled']);
+  assert.deepEqual(Object.keys(await api.readDeviceMovieAccess(1)), ['enabled', 'live_tv_enabled', 'radio_enabled']);
   await api.saveMovieSettings(1, { enabled: false });
   assert.equal(JSON.parse(vault.decryptString(devices.get(1))).debrid_token, 'legacy');
 });
@@ -64,6 +64,8 @@ test('device saves reject configuration fields and global saves reject access sw
   await assert.rejects(api.saveMovieSettings(1, { enabled: true, provider: 'Torbox' }), { status: 400 });
   await assert.rejects(api.saveMovieSettings(1, { enabled: 'true' }), { status: 400 });
   await assert.rejects(api.saveGlobalMovieSettings({ enabled: true }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ live_tv_enabled: false }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ radio_enabled: false }), { status: 400 });
 });
 
 test('public and admin responses mask secrets; only global admin response includes scraper URL', async () => {
@@ -75,6 +77,8 @@ test('public and admin responses mask secrets; only global admin response includ
   assert.equal(publicData.scraper_url, undefined);
   assert.equal(adminData.scraper_url, settings.scraper_url);
   assert.equal(adminData.enabled, undefined);
+  assert.equal(adminData.live_tv_enabled, undefined);
+  assert.equal(adminData.radio_enabled, undefined);
   for (const key of ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token']) {
     assert.equal(publicData[key], undefined);
     assert.equal(adminData[key], undefined);
@@ -156,7 +160,7 @@ test('default playback provider must be enabled and persists without exposing cr
   await api.saveGlobalMovieSettings({ default_provider: 'none', provider_accounts: { Torbox: { enabled: false } } });
 });
 
-test('global sorting and codec preferences validate while device control remains only enabled', async () => {
+test('global sorting and codec preferences validate while device control remains access only', async () => {
   const { api } = fixture();
   await api.saveGlobalMovieSettings({ primary_sort: 'size', primary_sort_direction: 'asc', min_bitrate_mbps: 10,
     max_bitrate_mbps: 100, auto_select_delay: true, auto_select_delay_seconds: 15, enable_software_codecs: true, prefer_software_codecs: true });
@@ -169,4 +173,26 @@ test('global sorting and codec preferences validate while device control remains
   await assert.rejects(api.saveGlobalMovieSettings({ primary_sort: 'invalid' }), { status: 400 });
   await assert.rejects(api.saveGlobalMovieSettings({ secondary_sort_direction: 'invalid' }), { status: 400 });
   await assert.rejects(api.saveMovieSettings(1, { enabled: true, primary_sort: 'size' }), { status: 400 });
+});
+
+test('Live TV and Radio default on, with independent device and legacy partial updates', async () => {
+  const { api } = fixture();
+  const defaults = await api.readDeviceMovieAccess(1);
+  assert.equal(defaults.live_tv_enabled, true);
+  assert.equal(defaults.radio_enabled, true);
+  await api.saveMovieSettings(1, { live_tv_enabled: false });
+  await api.saveMovieSettings(1, { enabled: true });
+  let access = await api.readMovieSettings(1);
+  assert.equal(access.live_tv_enabled, false);
+  assert.equal(access.radio_enabled, true);
+  assert.equal(access.enabled, true);
+  await api.saveMovieSettings(1, { radio_enabled: false });
+  await api.saveMovieSettings(1, { live_tv_enabled: true });
+  access = api.publicSettings(await api.readMovieSettings(1));
+  assert.equal(access.live_tv_enabled, true);
+  assert.equal(access.radio_enabled, false);
+  assert.equal((await api.readDeviceMovieAccess(2)).radio_enabled, true);
+  for (const input of [{}, { radio_enabled: 'false' }, { live_tv_enabled: 0 }]) {
+    await assert.rejects(api.saveMovieSettings(1, input), { status: 400 });
+  }
 });

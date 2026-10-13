@@ -3,7 +3,8 @@ const { encryptString, decryptString } = require('./cryptoVault.cjs');
 
 const PROVIDERS = ['none', 'Real-Debrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token'];
-const DEFAULTS = Object.freeze({ enabled: false, scraper_url: '', provider: 'none', default_provider: 'none',
+const ACCESS_KEYS = ['enabled', 'live_tv_enabled', 'radio_enabled'];
+const DEFAULTS = Object.freeze({ enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', provider: 'none', default_provider: 'none',
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
   auto_select_min_links: 10, auto_select_delay: false, auto_select_delay_seconds: 15,
@@ -54,7 +55,7 @@ function normalizeSettings(input, previous = {}) {
     if (input.default_provider !== 'auto' && !PROVIDERS.includes(input.default_provider)) invalid('Unsupported default movie provider');
     next.default_provider = input.default_provider;
   }
-  for (const key of ['enabled', 'auto_select', 'auto_select_delay', 'enable_software_codecs', 'prefer_software_codecs']) {
+  for (const key of [...ACCESS_KEYS, 'auto_select', 'auto_select_delay', 'enable_software_codecs', 'prefer_software_codecs']) {
     if (Object.hasOwn(input, key)) {
       if (typeof input[key] !== 'boolean') invalid(`${key} must be a boolean`);
       next[key] = input[key];
@@ -133,19 +134,24 @@ async function readStoredDeviceSettings(deviceId) {
 
 async function saveMovieSettings(deviceId, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-      Object.keys(input).some((key) => key !== 'enabled') || typeof input.enabled !== 'boolean') {
-    invalid('Device movie settings accept only an enabled boolean');
+      !Object.keys(input).length || Object.keys(input).some((key) => !ACCESS_KEYS.includes(key) || typeof input[key] !== 'boolean')) {
+    invalid('Device access accepts only enabled, live_tv_enabled and radio_enabled booleans');
   }
   const settings = normalizeSettings(input, await readStoredDeviceSettings(deviceId));
   await pool.execute(`INSERT INTO device_movie_settings (device_id, settings_enc) VALUES (?, ?)
     ON DUPLICATE KEY UPDATE settings_enc=VALUES(settings_enc), updated_at=NOW()`,
   [deviceId, encryptString(JSON.stringify(settings))]);
-  return { enabled: settings.enabled === true };
+  return deviceAccess(settings);
+}
+
+function deviceAccess(settings) {
+  return { enabled: settings.enabled === true, live_tv_enabled: settings.live_tv_enabled !== false,
+    radio_enabled: settings.radio_enabled !== false };
 }
 
 async function readDeviceMovieAccess(deviceId) {
   const settings = await readStoredDeviceSettings(deviceId);
-  return { enabled: settings.enabled === true };
+  return deviceAccess(settings);
 }
 
 async function readGlobalMovieSettings() {
@@ -156,13 +162,13 @@ async function readGlobalMovieSettings() {
   } catch (error) {
     if (error.code !== 'ER_NO_SUCH_TABLE') throw error;
   }
-  delete settings.enabled;
+  for (const key of ACCESS_KEYS) delete settings[key];
   settings.provider_accounts = providerAccounts(settings);
   return settings;
 }
 
 async function saveGlobalMovieSettings(input) {
-  if (input && Object.hasOwn(input, 'enabled')) invalid('Movie access is controlled per device');
+  if (input && ACCESS_KEYS.some((key) => Object.hasOwn(input, key))) invalid('Service access is controlled per device');
   const previous = await readGlobalMovieSettings();
   const settings = normalizeSettings(input, previous);
   if (Object.hasOwn(input, 'provider_accounts')) {
@@ -177,7 +183,7 @@ async function saveGlobalMovieSettings(input) {
       settings.provider_accounts[settings.provider] = { enabled: true, token: settings.debrid_token || '' };
     }
   }
-  delete settings.enabled;
+  for (const key of ACCESS_KEYS) delete settings[key];
   if (!['none', 'auto'].includes(settings.default_provider) && !settings.provider_accounts[settings.default_provider]?.enabled) {
     invalid('Enable the default movie provider before saving');
   }
@@ -189,7 +195,7 @@ async function saveGlobalMovieSettings(input) {
 
 function adminGlobalSettings(settings) {
   const result = { ...publicSettings(settings), scraper_url: settings.scraper_url };
-  delete result.enabled;
+  for (const key of ACCESS_KEYS) delete result[key];
   return result;
 }
 
