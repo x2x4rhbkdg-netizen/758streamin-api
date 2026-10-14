@@ -36,6 +36,21 @@ test('disabled devices cannot invoke scraper work', async () => {
   assert.equal(calls, 0);
 });
 
+test('add-on-only configurations pass access checks and retain signed source capabilities', async () => {
+  const hash = 'b'.repeat(40);
+  const router = factory()({ readSettings: async () => ({ enabled: true, stremio_addons: [{ enabled: true, scopes: ['movie'] }] }),
+    discover: async () => ({ sources: [{ hash }], diagnostics: { addons: [{ id: 'fixture', status: 'ok' }] } }),
+    lookup: async () => ({ available: { [hash]: ['Premiumize'] }, provider_status: {} }), issue: () => 'signed-proof' });
+  const response = await invoke(router);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.sources[0].source_token, 'signed-proof');
+  assert.equal(response.body.sources[0].providers[0], 'Premiumize');
+  const disabled = factory()({ readSettings: async () => ({ enabled: true, stremio_addons: [{ enabled: false, scopes: ['movie'] }] }) });
+  assert.equal((await invoke(disabled)).statusCode, 409);
+  const wrongScope = factory()({ readSettings: async () => ({ enabled: true, stremio_addons: [{ enabled: true, scopes: ['anime'] }] }) });
+  assert.equal((await invoke(wrongScope)).statusCode, 409);
+});
+
 test('source search rate-limits repeated device work and applies no-store', async () => {
   const router = factory()({ readSettings: async () => ({ enabled: true, scraper_url: 'https://example.com' }),
     discover: async () => ({ sources: [], playable: false }) });

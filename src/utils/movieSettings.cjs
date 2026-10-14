@@ -1,5 +1,6 @@
 const { pool } = require('../db/pool.cjs');
 const { encryptString, decryptString } = require('./cryptoVault.cjs');
+const { normalizeAddons, publicAddons } = require('./stremioAddons.cjs');
 
 const PROVIDERS = ['none', 'Real-Debrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token'];
@@ -51,6 +52,7 @@ function invalid(message) {
 function normalizeSettings(input, previous = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Movie settings must be an object');
   const next = { ...DEFAULTS, ...previous };
+  if (Object.hasOwn(input, 'stremio_addons')) next.stremio_addons = normalizeAddons(input.stremio_addons, previous.stremio_addons);
   if (Object.hasOwn(input, 'default_provider')) {
     if (input.default_provider !== 'auto' && !PROVIDERS.includes(input.default_provider)) invalid('Unsupported default movie provider');
     next.default_provider = input.default_provider;
@@ -194,7 +196,7 @@ async function saveGlobalMovieSettings(input) {
 }
 
 function adminGlobalSettings(settings) {
-  const result = { ...publicSettings(settings), scraper_url: settings.scraper_url };
+  const result = { ...publicSettings(settings), scraper_url: settings.scraper_url, stremio_addons: publicAddons(settings.stremio_addons) };
   for (const key of ACCESS_KEYS) delete result[key];
   return result;
 }

@@ -19,7 +19,9 @@ function createMovieSourcesRouter({ auth = authJwt, readSettings = readMovieSett
       let metadata = validateSearch(req.body);
       const settings = await readSettings(req.device.device_id);
       requireCatalogAccess(settings, metadata.section);
-      if (!settings.scraper_url) return res.status(409).json({ error: 'Configure the global Scraper URL first' });
+      if (!settings.scraper_url && !settings.stremio_addons?.some((a) => a.enabled && a.scopes.includes(metadata.section === 'anime' ? 'anime' : metadata.type))) {
+        return res.status(409).json({ error: 'Configure a Scraper URL or enable a Stremio add-on for this section' });
+      }
       const now = Date.now();
       for (const [key, timestamp] of recent) if (now - timestamp > 60000) recent.delete(key);
       if (active.has(deviceId) || active.size >= 4 || now - (recent.get(deviceId) || 0) < 10000 || recent.size >= 10000) {

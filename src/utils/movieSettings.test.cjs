@@ -27,6 +27,7 @@ function fixture() {
     module, URL, require(name) {
       if (name === '../db/pool.cjs') return { pool };
       if (name === './cryptoVault.cjs') return vault;
+      if (name === './stremioAddons.cjs') return require('./stremioAddons.cjs');
       throw new Error(`Unexpected dependency: ${name}`);
     },
   });
@@ -47,6 +48,21 @@ test('device access defaults disabled and saves independently from global settin
   assert.equal(enabled.max_links, 8);
   await api.saveMovieSettings(1, { enabled: false });
   assert.equal((await api.readGlobalMovieSettings()).debrid_token, 'private-key');
+});
+
+test('global add-on settings roundtrip encrypted with masked URLs and preserve legacy configuration', async () => {
+  const { api } = fixture();
+  const addon = { id: 'fixture', name: 'Fixture', enabled: true, scopes: ['movie'], manifest_url: 'https://fixture.example/private-key/manifest.json' };
+  await api.saveGlobalMovieSettings({ scraper_url: 'https://scraper.example', stremio_addons: [addon] });
+  const raw = await api.readGlobalMovieSettings();
+  const admin = api.adminGlobalSettings(raw);
+  assert.equal(admin.stremio_addons[0].manifest_configured, true);
+  assert.equal(JSON.stringify(admin).includes('private-key'), false);
+  assert.equal(JSON.stringify(api.publicSettings(raw)).includes('private-key'), false);
+  await api.saveGlobalMovieSettings({ stremio_addons: admin.stremio_addons });
+  assert.equal((await api.readGlobalMovieSettings()).stremio_addons[0].manifest_url, addon.manifest_url);
+  assert.equal((await api.readGlobalMovieSettings()).scraper_url, 'https://scraper.example');
+  await assert.rejects(api.saveMovieSettings(1, { stremio_addons: [addon] }), { status: 400 });
 });
 
 test('Anime defaults off for new and legacy devices and is independent from Movies/Series', async () => {

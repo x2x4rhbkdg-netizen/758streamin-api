@@ -24,6 +24,25 @@ const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
 
 const router = Router();
 
+const addonTests = new Map();
+router.post('/movie-settings/addons/test', adminAuth, async (req, res) => {
+  if (!requireSuperAdmin(req, res)) return;
+  res.set('Cache-Control', 'no-store');
+  const admin = String(req.admin.id || 'api-key');
+  const now = Date.now();
+  for (const [id, time] of addonTests) if (now - time > 60000) addonTests.delete(id);
+  if (now - (addonTests.get(admin) || 0) < 2000 || addonTests.size >= 1000) return res.status(429).json({ error: 'Wait before testing another add-on' });
+  addonTests.set(admin, now);
+  try {
+    const { normalizeAddons, testAddon } = require('../utils/stremioAddons.cjs');
+    const settings = await readGlobalMovieSettings();
+    const [addon] = normalizeAddons([req.body], settings.stremio_addons);
+    return res.json(await testAddon(addon));
+  } catch (error) {
+    return res.status(error.status === 400 ? 400 : 502).json({ error: error.status === 400 ? error.message : 'Add-on test unavailable' });
+  }
+});
+
 router.post('/movie-settings/premiumize/:action', adminAuth, async (req, res) => {
   if (!requireSuperAdmin(req, res)) return;
   res.set('Cache-Control', 'no-store');

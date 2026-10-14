@@ -1,5 +1,6 @@
 const cheerio = require('cheerio');
 const { readText } = require('./scraperHttp.cjs');
+const { discoverAddons } = require('./stremioAddons.cjs');
 
 const MAX_DEFINITIONS = 48;
 const MAX_RESULTS = 100;
@@ -156,7 +157,8 @@ async function discoverSources(settings, input, { fetchText = readText } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const loaded = await loadDefinitions(settings.scraper_url, fetchText, controller.signal);
+    const addonPromise = discoverAddons(settings, query, { fetchText });
+    const loaded = settings.scraper_url ? await loadDefinitions(settings.scraper_url, fetchText, controller.signal).catch(() => ({ definitions: [], definition_errors: 1 })) : { definitions: [], definition_errors: 0 };
     const definitions = loaded.definitions;
     const results = await mapLimit(definitions, 4, async (definition) => {
       if (controller.signal.aborted) throw new Error('Search timed out');
@@ -172,17 +174,20 @@ async function discoverSources(settings, input, { fetchText = readText } = {}) {
       const details = await mapLimit(links, 2, async (link) => parseHtml(definition, await fetchText(link, { signal: controller.signal }), link));
       return details.filter((entry) => entry.ok).flatMap((entry) => entry.value);
     });
+    const addons = await addonPromise;
     const excluded = String(settings.hide_phrases || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
     const deduplicated = new Map();
-    for (const result of results.filter((entry) => entry.ok).flatMap((entry) => entry.value)) {
+    const scraperSources = results.filter((entry) => entry.ok).flatMap((entry) => entry.value);
+    const addonSources = new Set(addons.sources);
+    for (const result of [...scraperSources, ...addons.sources]) {
       const canonical = (value) => String(value).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       const wanted = canonical(query.title);
-      if (wanted && !(` ${canonical(result.title)} `).includes(` ${wanted} `)) continue;
-      if (query.type === 'movie' && query.year_int != null && !new RegExp(`\\b${query.year_int}\\b`).test(result.title)) continue;
+      if (!addonSources.has(result) && wanted && !(` ${canonical(result.title)} `).includes(` ${wanted} `)) continue;
+      if (!addonSources.has(result) && query.type === 'movie' && query.year_int != null && !new RegExp(`\\b${query.year_int}\\b`).test(result.title)) continue;
       if (excluded.some((phrase) => result.title.toLowerCase().includes(phrase))) continue;
       if (!result.bitrate_mbps && result.size_bytes && query.duration_seconds) result.bitrate_mbps = result.size_bytes * 8 / query.duration_seconds / 1000000;
       if (result.bitrate_mbps && (result.bitrate_mbps < Number(settings.min_bitrate_mbps || 0) || result.bitrate_mbps > Number(settings.max_bitrate_mbps || 100))) continue;
-      if (query.type === 'series') {
+      if (!addonSources.has(result) && query.type === 'series') {
         const episode = /s(\d{1,3})e(\d{1,4})/i.exec(result.title);
         if (!episode || Number(episode[1]) !== query.season_int || Number(episode[2]) !== query.episode_int) continue;
       }
@@ -191,7 +196,8 @@ async function discoverSources(settings, input, { fetchText = readText } = {}) {
     // Discovery is already bounded per scraper. Do not discard lower resolutions before cache checks.
     return { sources: [...deduplicated.values()].sort((a, b) => compareSources(a, b, settings)),
       diagnostics: { scrapers: definitions.length, failed: results.filter((entry) => !entry.ok).length,
-        definition_errors: loaded.definition_errors || 0, timed_out: controller.signal.aborted },
+        definition_errors: loaded.definition_errors || 0, timed_out: controller.signal.aborted,
+        addons: addons.diagnostics },
       playable: false };
   } finally { clearTimeout(timer); }
 }
