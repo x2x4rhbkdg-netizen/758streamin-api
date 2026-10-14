@@ -11,6 +11,7 @@ function factory() {
       if (name === 'express') return require('express');
       if (name.includes('authJwt')) return { authJwt: (_req, _res, next) => next() };
       if (name.includes('movieSettings')) return { readMovieSettings: async () => ({ enabled: false }) };
+      if (name.includes('tmdbCatalog') || name.includes('animeCatalog')) return require(name);
       throw new Error('Unexpected dependency');
     },
   });
@@ -60,4 +61,45 @@ test('catalog rejects invalid type and never returns raw upstream errors', async
   const response = await invoke(options, '/movies/catalog');
   assert.equal(response.statusCode, 502);
   assert.equal(JSON.stringify(response.body).includes('private-token'), false);
+});
+
+const animeSettings = async () => ({ enabled: false, anime_enabled: true, tmdb_read_access_token: 'private-token' });
+test('Anime permission is independent and legacy devices cannot browse it', async () => {
+  let called = false;
+  const request = async () => { called = true; return { results: [] }; };
+  assert.equal((await invoke({ readSettings: configured, request }, '/movies/catalog', { section: 'anime' })).statusCode, 403);
+  assert.equal(called, false);
+  assert.equal((await invoke({ readSettings: animeSettings, request }, '/movies/catalog', { section: 'anime' })).statusCode, 200);
+  assert.equal((await invoke({ readSettings: animeSettings, request }, '/movies/catalog')).statusCode, 403);
+  assert.equal((await invoke({ readSettings: animeSettings, request }, '/movies/catalog', { section: 'unknown' })).statusCode, 400);
+});
+
+test('anime discovery uses Animation AND Japan with rating safeguards', async () => {
+  const response = await invoke({ readSettings: animeSettings, request: async (_settings, endpoint, params) => {
+    assert.equal(endpoint, 'discover/tv');
+    assert.equal(params.with_genres, '16'); assert.equal(params.with_origin_country, 'JP');
+    assert.equal(params.sort_by, 'vote_average.desc'); assert.equal(params['vote_count.gte'], 100);
+    return { results: [{ id: 20, name: 'Anime' }] };
+  } }, '/movies/catalog', { section: 'anime', type: 'series', category: 'top_rated' });
+  assert.equal(response.body.items[0].section, 'anime');
+});
+
+test('anime search verifies movie country/genre and excludes cartoons, live action, and adults', async () => {
+  const titles = [
+    { id: 1, genres: [{ id: 16 }], production_countries: [{ iso_3166_1: 'JP' }] },
+    { id: 2, genres: [{ id: 16 }], production_countries: [{ iso_3166_1: 'US' }] },
+    { id: 3, genres: [{ id: 18 }], production_countries: [{ iso_3166_1: 'JP' }] },
+    { id: 4, adult: true, genres: [{ id: 16 }], production_countries: [{ iso_3166_1: 'JP' }] },
+  ];
+  const response = await invoke({ readSettings: animeSettings, request: async (_settings, endpoint) =>
+    endpoint === 'search/movie' ? { total_pages: 3, results: titles.map((title) => ({ id: title.id, genre_ids: [16] })) }
+      : titles[Number(endpoint.split('/')[1]) - 1] }, '/movies/catalog', { section: 'anime', type: 'movie', q: 'Example' });
+  assert.deepEqual(Array.from(response.body.items, (value) => value.id), [1]);
+  assert.equal(response.body.total_pages, 3);
+});
+
+test('anime-only devices cannot request non-anime details or seasons', async () => {
+  const options = { readSettings: animeSettings, request: async () => ({ id: 10, genres: [{ id: 16 }], origin_country: ['US'] }) };
+  assert.equal((await invoke(options, '/movies/details/:id', { section: 'anime', type: 'series' }, { id: 10 })).statusCode, 404);
+  assert.equal((await invoke(options, '/movies/season/:id/:season', { section: 'anime' }, { id: 10, season: 1 })).statusCode, 404);
 });

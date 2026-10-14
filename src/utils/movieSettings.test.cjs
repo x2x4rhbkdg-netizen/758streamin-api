@@ -49,12 +49,29 @@ test('device access defaults disabled and saves independently from global settin
   assert.equal((await api.readGlobalMovieSettings()).debrid_token, 'private-key');
 });
 
+test('Anime defaults off for new and legacy devices and is independent from Movies/Series', async () => {
+  const { api, devices, vault } = fixture();
+  devices.set(1, vault.encryptString(JSON.stringify({ enabled: true })));
+  assert.equal((await api.readMovieSettings(1)).anime_enabled, false);
+  assert.equal((await api.readMovieSettings(2)).anime_enabled, false);
+  await api.saveMovieSettings(2, { anime_enabled: true });
+  assert.equal((await api.readMovieSettings(2)).enabled, false);
+  assert.equal((await api.readMovieSettings(2)).anime_enabled, true);
+  await api.saveMovieSettings(2, { enabled: true });
+  assert.equal((await api.readMovieSettings(2)).anime_enabled, true);
+  await api.saveMovieSettings(2, { anime_enabled: false });
+  assert.equal((await api.readMovieSettings(2)).enabled, true);
+  await assert.rejects(api.saveMovieSettings(2, { anime_enabled: 'true' }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ anime_enabled: true }), { status: 400 });
+  assert.equal(api.adminGlobalSettings(await api.readGlobalMovieSettings()).anime_enabled, undefined);
+});
+
 test('legacy per-device configuration is ignored without deleting existing records', async () => {
   const { api, devices, vault } = fixture();
   devices.set(1, vault.encryptString(JSON.stringify({ enabled: true, provider: 'Real-Debrid', debrid_token: 'legacy' })));
   await api.saveGlobalMovieSettings({ provider: 'Torbox', debrid_token: 'shared' });
   assert.equal((await api.readMovieSettings(1)).debrid_token, 'shared');
-  assert.deepEqual(Object.keys(await api.readDeviceMovieAccess(1)), ['enabled', 'live_tv_enabled', 'radio_enabled']);
+  assert.deepEqual(Object.keys(await api.readDeviceMovieAccess(1)), ['enabled', 'anime_enabled', 'live_tv_enabled', 'radio_enabled']);
   await api.saveMovieSettings(1, { enabled: false });
   assert.equal(JSON.parse(vault.decryptString(devices.get(1))).debrid_token, 'legacy');
 });

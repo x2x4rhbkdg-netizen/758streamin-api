@@ -13,6 +13,13 @@ function validateSearch(input) {
     throw Object.assign(new Error('Valid title or IMDb ID required'), { status: 400 });
   }
   const result = { type: input.type, title, title_lower: title.toLowerCase(), imdb_id };
+  if (input.section != null) {
+    if (input.section !== 'anime' || !Number.isInteger(input.tmdb_id) || input.tmdb_id < 1 || input.tmdb_id > 2147483647) {
+      throw Object.assign(new Error('Anime requires a valid TMDB identifier'), { status: 400 });
+    }
+    result.section = 'anime';
+    result.tmdb_id = input.tmdb_id;
+  }
   for (const [key, min, max] of [['year_int', 1800, 2200], ['season_int', 0, 1000], ['episode_int', 1, 10000]]) {
     if (input[key] != null) {
       const value = Number(input[key]);

@@ -6,7 +6,7 @@ const { EventEmitter } = require('node:events');
 const { Readable, PassThrough } = require('node:stream');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { publicAddress } = require('../utils/scraperHttp.cjs');
-function fixture({ enabled = true, redirect } = {}) {
+function fixture({ enabled = true, anime_enabled = false, redirect } = {}) {
   let handler, calls = [];
   const context = { module: { exports: {} }, process: { env: { JWT_SECRET: 'test-secret' } }, URL, AbortController, setTimeout, clearTimeout,
     require(name) {
@@ -23,7 +23,7 @@ function fixture({ enabled = true, redirect } = {}) {
         };
         return request;
       } };
-      if (name === '../utils/movieSettings.cjs') return { readMovieSettings: async () => ({ enabled }) };
+      if (name === '../utils/movieSettings.cjs') return { readMovieSettings: async () => ({ enabled, anime_enabled }) };
       if (name === '../utils/moviePlaybackTickets.cjs') return { createPlaybackTickets };
       if (name === '../utils/scraperHttp.cjs') return { publicAddress };
       return require(name);
@@ -60,4 +60,12 @@ test('protected stream blocks invalid tickets, revoked access, private destinati
   assert.equal(privateTarget.calls.length, 0);
   assert.equal((await fixture({ redirect: 'https://private.example/movie' }).run('https://cdn.example/movie')).code, 502);
   assert.equal((await fixture().run('https://cdn.example/movie', 'bytes=0-1,3-4')).code, 416);
+});
+
+test('protected anime tickets enforce independent device permission on every stream request', async () => {
+  const url = 'https://cdn.example/anime.mp4';
+  const ticket = createPlaybackTickets('test-secret').issue(url, 1, 'anime');
+  assert.equal((await fixture({ enabled: false, anime_enabled: true }).run(url, undefined, ticket)).code, 206);
+  assert.equal((await fixture({ enabled: true, anime_enabled: false }).run(url, undefined, ticket)).code, 403);
+  assert.equal((await fixture({ enabled: false, anime_enabled: true }).run(url)).code, 403);
 });

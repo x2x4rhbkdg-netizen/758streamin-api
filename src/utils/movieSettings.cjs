@@ -3,8 +3,8 @@ const { encryptString, decryptString } = require('./cryptoVault.cjs');
 
 const PROVIDERS = ['none', 'Real-Debrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token'];
-const ACCESS_KEYS = ['enabled', 'live_tv_enabled', 'radio_enabled'];
-const DEFAULTS = Object.freeze({ enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', provider: 'none', default_provider: 'none',
+const ACCESS_KEYS = ['enabled', 'anime_enabled', 'live_tv_enabled', 'radio_enabled'];
+const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', provider: 'none', default_provider: 'none',
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
   auto_select_min_links: 10, auto_select_delay: false, auto_select_delay_seconds: 15,
@@ -135,7 +135,7 @@ async function readStoredDeviceSettings(deviceId) {
 async function saveMovieSettings(deviceId, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       !Object.keys(input).length || Object.keys(input).some((key) => !ACCESS_KEYS.includes(key) || typeof input[key] !== 'boolean')) {
-    invalid('Device access accepts only enabled, live_tv_enabled and radio_enabled booleans');
+    invalid('Device access accepts only enabled, anime_enabled, live_tv_enabled and radio_enabled booleans');
   }
   const settings = normalizeSettings(input, await readStoredDeviceSettings(deviceId));
   await pool.execute(`INSERT INTO device_movie_settings (device_id, settings_enc) VALUES (?, ?)
@@ -145,7 +145,7 @@ async function saveMovieSettings(deviceId, input) {
 }
 
 function deviceAccess(settings) {
-  return { enabled: settings.enabled === true, live_tv_enabled: settings.live_tv_enabled !== false,
+  return { enabled: settings.enabled === true, anime_enabled: settings.anime_enabled === true, live_tv_enabled: settings.live_tv_enabled !== false,
     radio_enabled: settings.radio_enabled !== false };
 }
 

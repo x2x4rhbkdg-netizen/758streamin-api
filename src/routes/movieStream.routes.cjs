@@ -5,6 +5,7 @@ const { pipeline } = require('node:stream/promises');
 const { publicAddress } = require('../utils/scraperHttp.cjs');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { readMovieSettings } = require('../utils/movieSettings.cjs');
+const { requireCatalogAccess } = require('../utils/animeCatalog.cjs');
 const router = Router();
 let active = 0;
 
@@ -45,7 +46,8 @@ router.get('/movies/stream/:ticket', async (req, res) => {
   const timer = setTimeout(abort, 30000);
   let upstream;
   try {
-    if ((await readMovieSettings(record.device)).enabled !== true) return res.sendStatus(403);
+    try { requireCatalogAccess(await readMovieSettings(record.device), record.section); }
+    catch (error) { if (error.status === 403) return res.sendStatus(403); throw error; }
     upstream = await openStream(record.url, req.method === 'HEAD' ? 'HEAD' : 'GET', range ? { Range: range } : {}, controller.signal);
     clearTimeout(timer);
     if (![200, 206, 416].includes(upstream.statusCode)) { upstream.destroy(); return res.sendStatus(502); }
