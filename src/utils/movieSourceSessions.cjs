@@ -21,7 +21,7 @@ function createSourceCapabilities(secret) {
     if (record.device !== String(deviceId) || record.expires <= Date.now() || record.hash !== String(input.hash).toLowerCase() ||
       record.metadata?.type !== input.type || (input.type === 'series' &&
       (record.metadata.season_int !== input.season_int || record.metadata.episode_int !== input.episode_int))) throw expired();
-    return { ...record.metadata, hash: record.hash, provider: input.provider };
+    return { ...record.metadata, hash: record.hash, provider: input.provider, allow_uncached_rd: input.allow_uncached_rd === true };
   }
   return { issueSource, requireDiscoveredSource };
 }

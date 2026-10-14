@@ -47,6 +47,16 @@ test('source search rate-limits repeated device work and applies no-store', asyn
   assert.equal(next.headers['Retry-After'], '10');
 });
 
+test('source responses distinguish RD on-demand candidates from ready copies', async () => {
+  const hash = 'a'.repeat(40);
+  const router = factory()({ readSettings: async () => ({ enabled: true, scraper_url: 'https://example.com' }),
+    discover: async () => ({ sources: [{ hash }] }), issue: () => 'proof',
+    lookup: async () => ({ available: {}, on_demand: { [hash]: ['Real-Debrid'] }, provider_status: { 'Real-Debrid': 'on_demand' } }) });
+  const response = await invoke(router);
+  assert.equal(response.body.sources[0].providers.length, 0);
+  assert.equal(response.body.sources[0].on_demand_providers[0], 'Real-Debrid');
+});
+
 test('upstream errors never disclose scraper credentials', async () => {
   const router = factory()({ readSettings: async () => ({ enabled: true, scraper_url: 'https://example.com/?key=private' }),
     discover: async () => { throw new Error('private-secret'); } });

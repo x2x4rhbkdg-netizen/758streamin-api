@@ -39,6 +39,7 @@ function createMovieSourcesRouter({ auth = authJwt, readSettings = readMovieSett
         const sources = Array.isArray(data.sources) ? data.sources : [];
         const providers = sources.length ? await lookup(settings, sources) : { available: {}, provider_status: {} };
         return res.json({ ...data, sources: sources.map((source) => ({ ...source, providers: providers.available[source.hash] || [],
+          on_demand_providers: providers.on_demand?.[source.hash] || [],
           source_token: issue(req.device.device_id, source.hash, metadata) })),
           provider_status: providers.provider_status });
       }

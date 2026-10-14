@@ -3,6 +3,16 @@ const SUPPORTED_PROVIDERS = ['Real-Debrid', 'Premiumize', 'Torbox', 'EasyDebrid'
 const transfers = new Map();
 function failure(message, status = 409) { return Object.assign(new Error(message), { status, publicMessage: message }); }
 
+function waitForProvider(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(new Error('Provider preparation cancelled')); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, milliseconds);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });
+}
+const RD_FAILED = new Set(['magnet_error', 'error', 'virus', 'dead']);
+
 function chooseVideo(files, input) {
   const videos = files.filter((file) => /\.(mkv|mp4|avi|mov|m4v|webm|ts)$/i.test(file.path || '') && !/\bsample\b/i.test(file.path));
   const matched = input.type === 'series' ? videos.filter((file) => {
@@ -40,7 +50,11 @@ async function providerRequest(provider, token, path, form, signal) {
   // TorBox requires its token on requestdl; resolve server-side rather than exposing the credential to the app.
   if (provider === 'Torbox' && url.pathname.endsWith('/requestdl')) url.searchParams.set('token', token);
   const response = await fetch(url, { method: form ? 'POST' : 'GET', signal, redirect: 'error', headers, body });
-  if (!response.ok) throw failure(response.status === 401 || response.status === 403 ? `${provider} rejected its credential. Update Movie Settings.` : `${provider} could not resolve this source`, 502);
+  if (!response.ok) {
+    const rejected = response.status === 401 || response.status === 403;
+    throw Object.assign(failure(rejected ? `${provider} rejected access. Check its token and account status in Media Settings.` : `${provider} could not resolve this source`, 502),
+      { credentialRejected: rejected });
+  }
   let text = '';
   if (response.status !== 204) {
     let size = 0;
@@ -68,15 +82,22 @@ async function lookupProviders(settings, sources, { request = providerRequest, s
   signal?.addEventListener('abort', abort, { once: true });
   if (signal?.aborted) abort();
   const timer = setTimeout(abort, 8000);
-  const available = {}, provider_status = {};
+  const available = {}, on_demand = {}, provider_status = {};
+  // RD's account list is independent of the hash batch; fetch it only once per search.
+  let rdList;
+  const batchRequest = (...args) => {
+    if (args[0] === 'Real-Debrid' && args[2] === 'torrents?limit=5000') return rdList ||= request(...args);
+    return request(...args);
+  };
   let cursor = 0;
   try {
     // Bound provider request sizes without limiting the resolutions shown in the app.
     await Promise.all(Array.from({ length: Math.min(2, Math.ceil(sources.length / 100)) }, async () => {
       while (cursor < sources.length && !controller.signal.aborted) {
         const batch = sources.slice(cursor, cursor += 100);
-        const result = await lookupProviderBatch(settings, batch, { request, signal: controller.signal });
+        const result = await lookupProviderBatch(settings, batch, { request: batchRequest, signal: controller.signal });
         Object.assign(available, result.available);
+        Object.assign(on_demand, result.on_demand);
         for (const [provider, status] of Object.entries(result.provider_status)) {
           const previous = provider_status[provider];
           provider_status[provider] = previous && previous !== status ? 'partial' : status;
@@ -86,7 +107,7 @@ async function lookupProviders(settings, sources, { request = providerRequest, s
     if (cursor < sources.length || controller.signal.aborted) {
       for (const provider of configuredProviders(settings)) provider_status[provider] = 'partial';
     }
-    return { available, provider_status };
+    return { available, on_demand, provider_status };
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
 
@@ -96,7 +117,7 @@ async function lookupProviderBatch(settings, sources, { request = providerReques
   signal?.addEventListener('abort', abort, { once: true });
   if (signal?.aborted) controller.abort();
   const timer = setTimeout(abort, 8000);
-  const available = {}, statuses = {};
+  const available = {}, on_demand = {}, statuses = {};
   try {
     await Promise.all(configuredProviders(settings).map(async (provider) => {
       const token = settings.provider_accounts[provider].token;
@@ -117,26 +138,28 @@ async function lookupProviderBatch(settings, sources, { request = providerReques
         } else {
           const list = await call('torrents?limit=5000');
           if (!Array.isArray(list)) throw failure('Unexpected torrent list');
-          cached = sources.map((s) => list.some((item) => String(item.hash).toLowerCase() === s.hash && item.status === 'downloaded'));
+          const readyHashes = new Set(list.filter((item) => item.status === 'downloaded').map((item) => String(item.hash).toLowerCase()));
+          cached = sources.map((s) => readyHashes.has(s.hash.toLowerCase()));
+          sources.forEach((source, index) => { if (!cached[index]) on_demand[source.hash] = ['Real-Debrid']; });
         }
         if (!Array.isArray(cached) || cached.length !== sources.length) throw failure('Unexpected cache response');
         sources.forEach((source, index) => {
           if (cached[index] === true) (available[source.hash] ||= []).push(provider);
         });
-        statuses[provider] = provider === 'Real-Debrid' ? 'ready_account_torrents' : 'checked';
-      } catch { statuses[provider] = 'unavailable'; }
+        statuses[provider] = provider === 'Real-Debrid' ? 'on_demand' : 'checked';
+      } catch (error) { statuses[provider] = error.credentialRejected ? 'credential_rejected' : 'unavailable'; }
     }));
-    return { available, provider_status: statuses };
+    return { available, on_demand, provider_status: statuses };
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
 
-async function resolveSingle(settings, input, { request = providerRequest, signal } = {}) {
+async function resolveSingle(settings, input, { request = providerRequest, signal, sleep = waitForProvider } = {}) {
   if (!input || !/^[a-f0-9]{40}$/i.test(input.hash || '') || !['movie', 'series'].includes(input.type)) throw failure('Invalid movie source', 400);
   if (input.type === 'series' && (!Number.isInteger(input.season_int) || input.season_int < 0 || input.season_int > 1000 || !Number.isInteger(input.episode_int) || input.episode_int < 1 || input.episode_int > 10000)) throw failure('Invalid episode', 400);
   const provider = input.provider;
   if (!SUPPORTED_PROVIDERS.includes(provider)) throw failure(provider && provider !== 'none' ? `${provider} playback adapter is not available yet` : 'Choose a playback provider');
   const account = settings.provider_accounts?.[provider] || (settings.provider === provider ? { enabled: true, token: settings.debrid_token } : null);
-  if (!account?.enabled || !account.token) throw failure(`Enable and configure ${provider} in Movie Settings`);
+  if (!account?.enabled || !account.token) throw failure(`Enable and configure ${provider} in Media Settings`);
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -189,12 +212,42 @@ async function resolveSingle(settings, input, { request = providerRequest, signa
       download = chooseVideo(files.map((url) => ({ path: decodeURIComponent(new URL(url).pathname), url })), input).url;
     } else {
       const list = await call('torrents?limit=5000');
-      const id = Array.isArray(list) ? list.find((item) => String(item.hash).toLowerCase() === input.hash.toLowerCase() && item.status === 'downloaded')?.id : null;
-      if (!/^[a-z0-9]+$/i.test(id || '')) throw failure('Real-Debrid has no ready account torrent for this source. Choose another provider.');
-      let info = await call(`torrents/info/${id}`);
-      if (!Array.isArray(info.files) || !info.files.length) throw failure('Real-Debrid is still preparing file information. Retry later.');
-      const file = chooseVideo(info.files.filter((value) => value.selected), input);
-      if (info.status !== 'downloaded') throw failure('This source is not ready on Real-Debrid. Choose another source or retry later.');
+      if (!Array.isArray(list)) throw failure('Real-Debrid returned an invalid account torrent list', 502);
+      const matching = list.filter((item) => String(item.hash).toLowerCase() === input.hash.toLowerCase() && !RD_FAILED.has(item.status));
+      let id = (request === providerRequest ? transfers.get(key)?.id : null) ||
+        matching.find((item) => item.status === 'downloaded')?.id || matching[0]?.id;
+      if (!id && input.allow_uncached_rd === true) {
+        id = (await call('torrents/addMagnet', { magnet })).id;
+        if (!/^[a-z0-9]+$/i.test(id || '')) throw failure('Real-Debrid could not add this source', 502);
+        remember(id);
+      }
+      if (!/^[a-z0-9]+$/i.test(id || '')) throw failure('Real-Debrid has no ready account torrent for this source. Select a source to prepare it.');
+      let info, file, selectionSent = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        if (controller.signal.aborted) throw failure('Real-Debrid preparation timed out. Retry this source shortly.');
+        info = await call(`torrents/info/${id}`);
+        if (RD_FAILED.has(info.status)) throw failure('Real-Debrid could not download this source. Choose another source.');
+        if (info.status === 'waiting_files_selection' && Array.isArray(info.files) && info.files.length) {
+          if (input.allow_uncached_rd !== true) throw failure('Real-Debrid requires manual source selection before downloading.');
+          file = chooseVideo(info.files, input);
+          if (!Number.isInteger(file.id) || file.id < 1) throw failure('Real-Debrid returned an invalid video file', 502);
+          if (!selectionSent) {
+            await call(`torrents/selectFiles/${id}`, { files: String(file.id) });
+            selectionSent = true;
+          }
+        } else if (info.status === 'downloaded') {
+          file = chooseVideo((info.files || []).filter((value) => value.selected), input);
+          break;
+        } else if (Array.isArray(info.files) && info.files.some((value) => value.selected)) {
+          // Never replace another episode's selection in an existing account transfer.
+          file = chooseVideo(info.files.filter((value) => value.selected), input);
+        }
+        if (attempt < 7) await sleep(750, controller.signal);
+      }
+      if (info?.status !== 'downloaded' || !file) {
+        const progress = Math.max(0, Math.min(100, Math.floor(Number(info?.progress) || 0)));
+        throw failure(`Real-Debrid is ${info?.status === 'downloading' ? `downloading this source (${progress}%)` : 'preparing this source'}. Retry this source shortly.`);
+      }
       const index = (info.files || []).filter((value) => value.selected).findIndex((value) => value.id === file.id);
       const link = info.links?.[index];
       if (!link) throw failure('Real-Debrid did not return a matching file');
@@ -214,16 +267,21 @@ async function resolveMovieSource(settings, input, options = {}) {
   if (!input || !/^[a-f0-9]{40}$/i.test(input.hash || '') || !['movie', 'series'].includes(input.type)) throw failure('Invalid movie source', 400);
   if (input.type === 'series' && (!Number.isInteger(input.season_int) || input.season_int < 0 || !Number.isInteger(input.episode_int) || input.episode_int < 1)) throw failure('Invalid episode', 400);
   const configured = configuredProviders(settings);
-  if (!configured.length) throw failure('Enable and configure a movie provider in Movie Settings');
+  if (!configured.length) throw failure('Enable and configure a playback provider in Media Settings');
   const choice = input.provider || settings.default_provider || 'auto';
   if (!['auto', 'none'].includes(choice) && !configured.includes(choice)) throw failure('Selected provider is not enabled and configured');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25000);
   try {
-    const { available } = await lookupProviders(settings, [{ hash: input.hash.toLowerCase() }], { ...options, signal: controller.signal });
+    const { available, on_demand, provider_status } = await lookupProviders(settings, [{ hash: input.hash.toLowerCase() }], { ...options, signal: controller.signal });
     const ready = available[input.hash.toLowerCase()] || [];
-    const providers = ['auto', 'none'].includes(choice) ? configured.filter((provider) => ready.includes(provider)) : ready.filter((provider) => provider === choice);
-    if (!providers.length) throw failure('No enabled provider has a ready copy of this source. Choose another source.');
+    const candidates = configured.filter((provider) => ready.includes(provider));
+    if (input.allow_uncached_rd === true && on_demand[input.hash.toLowerCase()]?.includes('Real-Debrid')) candidates.push('Real-Debrid');
+    const providers = ['auto', 'none'].includes(choice) ? candidates.filter((provider) => configured.includes(provider)) : candidates.filter((provider) => provider === choice);
+    if (!providers.length) {
+      if (choice === 'Real-Debrid' && provider_status['Real-Debrid'] === 'credential_rejected') throw failure('Real-Debrid rejected access. Check its token and account status in Media Settings.', 502);
+      throw failure('No enabled provider has a ready copy of this source. Choose another source.');
+    }
     const failures = [];
     for (const provider of providers) {
       if (controller.signal.aborted) break;

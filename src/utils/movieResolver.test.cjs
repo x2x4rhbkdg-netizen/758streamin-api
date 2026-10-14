@@ -18,6 +18,83 @@ test('cache checks retain lower resolutions beyond the first bounded batch', asy
   assert.equal(Object.keys(result.available).length, 225);
   assert.deepEqual(result.available[sources[224].hash], ['Premiumize']);
 });
+
+test('RD search is read-only and reports uncached availability as unverified, with one account-list request', async () => {
+  const sources = Array.from({ length: 225 }, (_, index) => ({ hash: (index + 1).toString(16).padStart(40, '0') }));
+  const calls = [];
+  const result = await lookupProviders(settings('Real-Debrid'), sources, { request: async (_provider, _token, path, form) => {
+    calls.push(path); assert.equal(path, 'torrents?limit=5000'); assert.equal(form, undefined); return [];
+  } });
+  assert.equal(calls.length, 1);
+  assert.equal(Object.keys(result.available).length, 0);
+  assert.equal(Object.keys(result.on_demand).length, 225);
+  assert.deepEqual(result.on_demand[sources[224].hash], ['Real-Debrid']);
+});
+
+test('a manual RD selection adds only its magnet and selects only the requested episode', async () => {
+  const calls = [];
+  let selected = false;
+  const result = await resolveMovieSource(settings('Real-Debrid'), { hash, type: 'series', season_int: 1, episode_int: 2, allow_uncached_rd: true }, {
+    sleep: async () => {}, request: async (_provider, _token, path, form) => {
+      calls.push(path);
+      if (path === 'torrents?limit=5000') return [];
+      if (path === 'torrents/addMagnet') { assert.equal(form.magnet, `magnet:?xt=urn:btih:${hash}`); return { id: 'NEW123' }; }
+      if (path === 'torrents/info/NEW123') return { status: selected ? 'downloaded' : 'waiting_files_selection',
+        files: [{ id: 1, path: '/Show.S01E01.mkv', bytes: 200, selected: 0 }, { id: 2, path: '/Show.S01E02.mkv', bytes: 100, selected: selected ? 1 : 0 }],
+        links: selected ? ['https://host.example/episode2'] : [] };
+      if (path === 'torrents/selectFiles/NEW123') { assert.equal(form.files, '2'); selected = true; return {}; }
+      assert.equal(path, 'unrestrict/link'); assert.equal(form.link, 'https://host.example/episode2');
+      return { download: 'https://cdn.example/episode2.mkv' };
+    },
+  });
+  assert.equal(result.playbackUrl, 'https://cdn.example/episode2.mkv');
+  assert.equal(calls.filter(path => path === 'torrents/addMagnet').length, 1);
+  assert.equal(calls.filter(path => path.startsWith('torrents/selectFiles')).length, 1);
+});
+
+test('RD autoplay/background preparation cannot add a missing torrent without manual opt-in', async () => {
+  await assert.rejects(resolveMovieSource(settings('Real-Debrid'), { hash, type: 'movie' }, { request: async (_provider, _token, path) => {
+    assert.equal(path, 'torrents?limit=5000'); return [];
+  } }), { status: 409 });
+});
+
+test('manual automatic failover tries known-ready providers before unverified RD', async () => {
+  const config = { provider_accounts: { 'Real-Debrid': { enabled: true, token: 'rd' }, Premiumize: { enabled: true, token: 'pm' } } };
+  const result = await resolveMovieSource(config, { hash, type: 'movie', provider: 'auto', allow_uncached_rd: true }, { request: async (provider, _token, path) => {
+    if (provider === 'Real-Debrid') { assert.equal(path, 'torrents?limit=5000'); return []; }
+    if (path === 'cache/check') return { response: [true] };
+    return { status: 'success', content: [{ path: 'Movie.mp4', link: 'https://cdn.example/movie.mp4' }] };
+  } });
+  assert.equal(result.provider, 'Premiumize');
+});
+
+test('RD preparing/downloading/failed sources never generate playback links or repeatedly select files', async () => {
+  for (const status of ['downloading', 'magnet_conversion', 'waiting_files_selection', 'virus', 'dead', 'error']) {
+    let selections = 0;
+    await assert.rejects(resolveMovieSource(settings('Real-Debrid'), { hash, type: 'movie', allow_uncached_rd: true }, {
+      sleep: async () => {}, request: async (_provider, _token, path) => {
+        if (path === 'torrents?limit=5000') return [];
+        if (path === 'torrents/addMagnet') return { id: 'PENDING' };
+        if (path === 'torrents/info/PENDING') return { status, progress: 27, files: [{ id: 1, path: 'Movie.mp4' }] };
+        assert.equal(path, 'torrents/selectFiles/PENDING'); selections++; return {};
+      },
+    }), error => { assert.equal(error.status, 409); assert.match(error.message, status === 'downloading' ? /27%/ : /preparing|could not download/); return true; });
+    assert.ok(selections <= 1);
+  }
+});
+
+test('RD no-match episodes and invalid new torrent IDs never select or unrestrict files', async () => {
+  for (const invalidId of [false, true]) {
+    await assert.rejects(resolveMovieSource(settings('Real-Debrid'), { hash, type: 'series', season_int: 1, episode_int: 2, allow_uncached_rd: true }, {
+      sleep: async () => {}, request: async (_provider, _token, path) => {
+        if (path === 'torrents?limit=5000') return [];
+        if (path === 'torrents/addMagnet') return { id: invalidId ? '../unsafe' : 'SAFE' };
+        assert.equal(path, 'torrents/info/SAFE');
+        return { status: 'waiting_files_selection', files: [{ id: 1, path: 'Show.S01E01.mkv' }] };
+      },
+    }));
+  }
+});
 function cachedRequest(run) {
   return async (provider, token, path, form, signal) => {
     if (path === 'cache/check') return { status: 'success', response: [true] };
@@ -135,6 +212,9 @@ test('source capability is device/episode bound, tamper protected, and portable 
   const token = first.issueSource(1, hash, { type: 'series', season_int: 2, episode_int: 3 });
   const input = { source_token: token, hash, type: 'series', season_int: 2, episode_int: 3, provider: 'auto' };
   assert.equal(second.requireDiscoveredSource(1, input).hash, hash);
+  assert.equal(second.requireDiscoveredSource(1, input).allow_uncached_rd, false);
+  assert.equal(second.requireDiscoveredSource(1, { ...input, allow_uncached_rd: true }).allow_uncached_rd, true);
+  assert.equal(second.requireDiscoveredSource(1, { ...input, allow_uncached_rd: 'true' }).allow_uncached_rd, false);
   assert.throws(() => second.requireDiscoveredSource(2, input), { status: 409 });
   assert.throws(() => second.requireDiscoveredSource(1, { ...input, episode_int: 4 }), { status: 409 });
   assert.throws(() => second.requireDiscoveredSource(1, { ...input, source_token: token + 'bad' }), { status: 409 });
@@ -163,4 +243,47 @@ test('production Torbox HTTP adapter builds the cache/create/link requests witho
     assert.equal(calls.length, 4);
     assert.equal(JSON.stringify(result).includes('private-key'), false);
   } finally { global.fetch = originalFetch; }
+});
+
+test('production RD adapter handles 201/204, reports pending downloads, and reuses the transfer on retry', async () => {
+  const originalFetch = global.fetch;
+  let additions = 0, selections = 0, unrestricts = 0, selected = false, completed = false;
+  global.fetch = async (url, options) => {
+    assert.equal(url.origin, 'https://api.real-debrid.com');
+    assert.equal(options.headers.Authorization, 'Bearer private-key');
+    const form = new URLSearchParams(options.body);
+    let data;
+    if (url.pathname.endsWith('/torrents')) data = [];
+    else if (url.pathname.endsWith('/addMagnet')) {
+      assert.equal(form.get('magnet'), `magnet:?xt=urn:btih:${hash}`); additions++;
+      return new Response(JSON.stringify({ id: 'HTTP123' }), { status: 201 });
+    } else if (url.pathname.endsWith('/selectFiles/HTTP123')) {
+      assert.equal(form.get('files'), '7'); selected = true; selections++;
+      return new Response(null, { status: 204 });
+    } else if (url.pathname.endsWith('/info/HTTP123')) data = {
+      status: !selected ? 'waiting_files_selection' : completed ? 'downloaded' : 'downloading', progress: 35,
+      files: [{ id: 7, path: 'Movie.mp4', bytes: 100, selected: selected ? 1 : 0 }], links: completed ? ['https://host.example/video'] : [],
+    };
+    else { assert.ok(url.pathname.endsWith('/unrestrict/link')); unrestricts++; data = { download: 'https://cdn.example/Movie.mp4' }; }
+    return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+  };
+  const input = { hash, provider: 'Real-Debrid', type: 'movie', allow_uncached_rd: true };
+  try {
+    await assert.rejects(resolveMovieSource(settings('Real-Debrid'), input, { sleep: async () => {} }), /downloading this source \(35%\)/);
+    assert.equal(unrestricts, 0);
+    completed = true;
+    const result = await resolveMovieSource(settings('Real-Debrid'), input, { sleep: async () => {} });
+    assert.equal(result.playbackUrl, 'https://cdn.example/Movie.mp4');
+    assert.equal(additions, 1); assert.equal(selections, 1); assert.equal(unrestricts, 1);
+    assert.equal(JSON.stringify(result).includes('private-key'), false);
+  } finally { global.fetch = originalFetch; }
+});
+
+test('RD rejected credentials are reported without claiming on-demand availability', async () => {
+  const result = await lookupProviders(settings('Real-Debrid'), [{ hash }], { request: async () => {
+    throw Object.assign(new Error('private-key'), { credentialRejected: true });
+  } });
+  assert.equal(result.provider_status['Real-Debrid'], 'credential_rejected');
+  assert.deepEqual(result.available, {}); assert.deepEqual(result.on_demand, {});
+  assert.equal(JSON.stringify(result).includes('private-key'), false);
 });

@@ -31,7 +31,7 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
       req.movieSettings = await readSettings(req.device.device_id);
       req.catalogSection = catalogSection(req.query.section);
       requireCatalogAccess(req.movieSettings, req.catalogSection);
-      if (!req.movieSettings.tmdb_read_access_token) return res.status(409).json({ error: 'Configure the TMDB Read Access Token in Movie Settings first' });
+      if (!req.movieSettings.tmdb_read_access_token) return res.status(409).json({ error: 'Configure the TMDB Read Access Token in Media Settings first' });
       next();
     } catch (error) { return res.status(error.status || 502).json({ error: error.status ? error.message : 'Movie settings unavailable' }); }
   });
