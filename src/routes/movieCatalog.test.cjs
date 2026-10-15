@@ -11,7 +11,7 @@ function factory() {
       if (name === 'express') return require('express');
       if (name.includes('authJwt')) return { authJwt: (_req, _res, next) => next() };
       if (name.includes('movieSettings')) return { readMovieSettings: async () => ({ enabled: false }) };
-      if (name.includes('tmdbCatalog') || name.includes('animeCatalog')) return require(name);
+      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('kitsuCatalog')) return require(name);
       throw new Error('Unexpected dependency');
     },
   });
@@ -69,33 +69,38 @@ test('Anime permission is independent and legacy devices cannot browse it', asyn
   const request = async () => { called = true; return { results: [] }; };
   assert.equal((await invoke({ readSettings: configured, request }, '/movies/catalog', { section: 'anime' })).statusCode, 403);
   assert.equal(called, false);
-  assert.equal((await invoke({ readSettings: animeSettings, request }, '/movies/catalog', { section: 'anime' })).statusCode, 200);
+  assert.equal((await invoke({ readSettings: animeSettings, request, animeCatalog: async () => ({ items: [] }) }, '/movies/catalog', { section: 'anime' })).statusCode, 200);
   assert.equal((await invoke({ readSettings: animeSettings, request }, '/movies/catalog')).statusCode, 403);
   assert.equal((await invoke({ readSettings: animeSettings, request }, '/movies/catalog', { section: 'unknown' })).statusCode, 400);
 });
 
-test('anime discovery uses Animation AND Japan with rating safeguards', async () => {
-  const response = await invoke({ readSettings: animeSettings, request: async (_settings, endpoint, params) => {
-    assert.equal(endpoint, 'discover/tv');
-    assert.equal(params.with_genres, '16'); assert.equal(params.with_origin_country, 'JP');
-    assert.equal(params.sort_by, 'vote_average.desc'); assert.equal(params['vote_count.gte'], 100);
-    return { results: [{ id: 20, name: 'Anime' }] };
+test('Anime discovery uses Kitsu without a TMDB token or request', async () => {
+  const response = await invoke({ readSettings: async () => ({ anime_enabled: true }), request: async () => { throw new Error('TMDB must not be used'); }, animeCatalog: async (options) => {
+    assert.equal(options.type, 'series'); assert.equal(options.category, 'top_rated');
+    return { items: [{ id: 'kitsu:20', title: 'Anime', section: 'anime' }] };
   } }, '/movies/catalog', { section: 'anime', type: 'series', category: 'top_rated' });
   assert.equal(response.body.items[0].section, 'anime');
 });
 
-test('anime search verifies movie country/genre and excludes cartoons, live action, and adults', async () => {
-  const titles = [
-    { id: 1, genres: [{ id: 16 }], production_countries: [{ iso_3166_1: 'JP' }] },
-    { id: 2, genres: [{ id: 16 }], production_countries: [{ iso_3166_1: 'US' }] },
-    { id: 3, genres: [{ id: 18 }], production_countries: [{ iso_3166_1: 'JP' }] },
-    { id: 4, adult: true, genres: [{ id: 16 }], production_countries: [{ iso_3166_1: 'JP' }] },
-  ];
-  const response = await invoke({ readSettings: animeSettings, request: async (_settings, endpoint) =>
-    endpoint === 'search/movie' ? { total_pages: 3, results: titles.map((title) => ({ id: title.id, genre_ids: [16] })) }
-      : titles[Number(endpoint.split('/')[1]) - 1] }, '/movies/catalog', { section: 'anime', type: 'movie', q: 'Example' });
-  assert.deepEqual(Array.from(response.body.items, (value) => value.id), [1]);
-  assert.equal(response.body.total_pages, 3);
+test('Anime search passes paging, type and query to the isolated Kitsu catalog', async () => {
+  const response = await invoke({ readSettings: animeSettings, animeCatalog: async (options) => {
+    assert.equal(options.query, 'Example'); assert.equal(options.type, 'movie'); assert.equal(options.page, 2);
+    return { items: [{ id: 'kitsu:1' }], page: 2, total_pages: 2 };
+  } }, '/movies/catalog', { section: 'anime', type: 'movie', q: 'Example', page: '2' });
+  assert.equal(response.body.items[0].id, 'kitsu:1');
+  assert.equal(response.body.total_pages, 2);
+});
+
+test('Kitsu details and episode routes preserve IDs without numeric coercion', async () => {
+  const options = { readSettings: async () => ({ anime_enabled: true }), animeDetails: async (id, type) => {
+    assert.equal(id, 'kitsu:1'); assert.equal(type, 'series');
+    return { id, episodes: [{ video_id: 'kitsu:1:12', number: 12 }] };
+  } };
+  const details = await invoke(options, '/movies/details/:id', { section: 'anime', type: 'series' }, { id: 'kitsu:1' });
+  assert.equal(details.body.id, 'kitsu:1');
+  const episodes = await invoke(options, '/movies/season/:id/:season', { section: 'anime' }, { id: 'kitsu:1', season: '1' });
+  assert.equal(episodes.body.episodes[0].video_id, 'kitsu:1:12');
+  assert.equal((await invoke(options, '/movies/season/:id/:season', { section: 'anime' }, { id: 'kitsu:1', season: '2' })).statusCode, 404);
 });
 
 test('anime-only devices cannot request non-anime details or seasons', async () => {

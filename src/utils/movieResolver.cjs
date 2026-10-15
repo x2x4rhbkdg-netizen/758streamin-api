@@ -15,6 +15,20 @@ const RD_FAILED = new Set(['magnet_error', 'error', 'virus', 'dead']);
 
 function chooseVideo(files, input) {
   const videos = files.filter((file) => /\.(mkv|mp4|avi|mov|m4v|webm|ts)$/i.test(file.path || '') && !/\bsample\b/i.test(file.path));
+  if (input.section === 'anime' && input.kitsu_id) {
+    const basename = (value) => String(value || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
+    let matched;
+    if (input.file_name) matched = videos.filter((file) => basename(file.path) === basename(input.file_name));
+    else if (input.type === 'movie') matched = videos;
+    else matched = videos.filter((file) => {
+      const episode = /s(\d{1,3})e(\d{1,4})/i.exec(file.path) || /(\d{1,3})x(\d{1,4})/i.exec(file.path);
+      if (episode) return Number(episode[1]) === (input.mapped_season ?? input.season_int) && Number(episode[2]) === (input.mapped_episode ?? input.episode_int);
+      const absolute = /(?:\s-\s|^)(\d{1,4})(?:v\d+)?(?=[\s[.(]|$)/i.exec(basename(file.path));
+      return absolute && Number(absolute[1]) === input.absolute_episode;
+    });
+    if (matched.length !== 1) throw failure('No unambiguous matching Anime episode is available in this source');
+    return matched[0];
+  }
   const matched = input.type === 'series' ? videos.filter((file) => {
     const episode = /s(\d{1,3})e(\d{1,4})/i.exec(file.path) || /(\d{1,3})x(\d{1,4})/i.exec(file.path);
     return episode && Number(episode[1]) === input.season_int && Number(episode[2]) === input.episode_int;
@@ -166,7 +180,7 @@ async function resolveSingle(settings, input, { request = providerRequest, signa
   if (signal?.aborted) controller.abort();
   const timer = setTimeout(() => controller.abort(), 20000);
   const call = (path, form) => request(provider, account.token, path, form, controller.signal);
-  const key = crypto.createHash('sha256').update(`${provider}\n${account.token}\n${input.hash.toLowerCase()}\n${input.season_int || 0}\n${input.episode_int || 0}`).digest('hex');
+  const key = crypto.createHash('sha256').update(`${provider}\n${account.token}\n${input.hash.toLowerCase()}\n${input.season_int || 0}\n${input.episode_int || 0}\n${input.stream_id || ''}\n${input.file_name || ''}`).digest('hex');
   for (const [hash, entry] of transfers) if (entry.expires < Date.now()) transfers.delete(hash);
   const remember = (id) => {
     if (request !== providerRequest) return;

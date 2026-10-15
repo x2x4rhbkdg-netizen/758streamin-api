@@ -50,10 +50,11 @@ async function testAddon(addon, { fetchText = readText } = {}) {
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const manifest = await json(addon.manifest_url, fetchText, controller.signal);
-    if (!['movie', 'series'].some((type) => supports(manifest, type, 'tt1254207'))) {
-      return { status: 'unsupported', message: 'No supported IMDb movie/series stream resource' };
+    const supported = ['tt1254207', 'kitsu:1:1'].filter((id) => ['movie', 'series', ...(id.startsWith('kitsu:') ? ['anime'] : [])].some((type) => supports(manifest, type, id)));
+    if (!supported.length) {
+      return { status: 'unsupported', message: 'No supported IMDb or Kitsu stream resource' };
     }
-    return { status: 'connected', message: 'IMDb stream resource available' };
+    return { status: 'connected', message: `${supported.map((id) => id.startsWith('kitsu:') ? 'Kitsu' : 'IMDb').join(' / ')} stream resource available` };
   } catch { return { status: 'unavailable', message: 'Manifest could not be loaded or validated' }; }
   finally { clearTimeout(timer); }
 }
@@ -68,12 +69,13 @@ async function discoverAddons(settings, query, { fetchText = readText } = {}) {
       const sources = [];
       const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
       try {
-        if (!query.imdb_id) { diagnostic.status = 'missing_imdb'; results[index] = { sources, diagnostic }; continue; }
-        const id = query.type === 'series' ? `${query.imdb_id}:${query.season_int}:${query.episode_int}` : query.imdb_id;
+        if (!query.stream_id && !query.imdb_id) { diagnostic.status = 'missing_identifier'; results[index] = { sources, diagnostic }; continue; }
+        const id = query.stream_id || (query.type === 'series' ? `${query.imdb_id}:${query.season_int}:${query.episode_int}` : query.imdb_id);
         const manifest = await json(addon.manifest_url, fetchText, controller.signal);
-        if (!supports(manifest, query.type, id)) { diagnostic.status = 'unsupported'; results[index] = { sources, diagnostic }; continue; }
+        const type = supports(manifest, query.type, id) ? query.type : query.kitsu_id && supports(manifest, 'anime', id) ? 'anime' : null;
+        if (!type) { diagnostic.status = 'unsupported'; results[index] = { sources, diagnostic }; continue; }
         const base = addon.manifest_url.slice(0, -'manifest.json'.length);
-        const response = await json(`${base}stream/${query.type}/${encodeURIComponent(id)}.json`, fetchText, controller.signal);
+        const response = await json(`${base}stream/${type}/${encodeURIComponent(id)}.json`, fetchText, controller.signal);
         if (!Array.isArray(response.streams)) throw new Error('Invalid stream response');
         for (const stream of response.streams.slice(0, 100)) {
           const hash = String(stream?.infoHash || '').toLowerCase();
@@ -81,6 +83,7 @@ async function discoverAddons(settings, query, { fetchText = readText } = {}) {
           const title = String(stream.behaviorHints?.filename || stream.description || stream.title || stream.name || query.title).slice(0, 500);
           const size = Number(stream.behaviorHints?.videoSize);
           sources.push({ hash, magnet: `magnet:?xt=urn:btih:${hash}`, title, scraper: addon.name,
+            ...(query.kitsu_id && typeof stream.behaviorHints?.filename === 'string' ? { file_name: stream.behaviorHints.filename.slice(0, 500) } : {}),
             quality: /\b(2160|1080|720|480)p\b/i.exec(`${stream.name || ''} ${title}`)?.[0] || (/\b4k\b/i.test(`${stream.name || ''} ${title}`) ? '2160p' : ''),
             size_bytes: Number.isFinite(size) && size > 0 ? size : 0, seeders: 0, bitrate_mbps: null });
         }

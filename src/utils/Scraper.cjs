@@ -1,6 +1,7 @@
 const cheerio = require('cheerio');
 const { readText } = require('./scraperHttp.cjs');
 const { discoverAddons } = require('./stremioAddons.cjs');
+const { kitsuId } = require('./kitsuCatalog.cjs');
 
 const MAX_DEFINITIONS = 48;
 const MAX_RESULTS = 100;
@@ -10,16 +11,27 @@ function validateSearch(input) {
   if (!input || !['movie', 'series'].includes(input.type)) throw Object.assign(new Error('type must be movie or series'), { status: 400 });
   const title = String(input.title || '').trim();
   const imdb_id = String(input.imdb_id || '').trim();
-  if ((!title && !imdb_id) || title.length > 200 || (imdb_id && !/^tt\d{5,12}$/.test(imdb_id))) {
+  const kitsu = input.section === 'anime' && kitsuId(input.kitsu_id);
+  if ((!title && !imdb_id && !kitsu) || title.length > 200 || (imdb_id && !/^tt\d{5,12}$/.test(imdb_id))) {
     throw Object.assign(new Error('Valid title or IMDb ID required'), { status: 400 });
   }
   const result = { type: input.type, title, title_lower: title.toLowerCase(), imdb_id };
   if (input.section != null) {
-    if (input.section !== 'anime' || !Number.isInteger(input.tmdb_id) || input.tmdb_id < 1 || input.tmdb_id > 2147483647) {
+    if (input.section !== 'anime' || (!kitsu && (!Number.isInteger(input.tmdb_id) || input.tmdb_id < 1 || input.tmdb_id > 2147483647))) {
       throw Object.assign(new Error('Anime requires a valid TMDB identifier'), { status: 400 });
     }
     result.section = 'anime';
-    result.tmdb_id = input.tmdb_id;
+    if (kitsu) {
+      result.kitsu_id = input.kitsu_id;
+      if (input.type === 'series' && (typeof input.video_id !== 'string' ||
+        !(input.video_id === input.kitsu_id || new RegExp(`^${input.kitsu_id}:[1-9]\\d{0,4}$`).test(input.video_id)))) invalidKitsu();
+      result.video_id = input.video_id;
+      // Only server-canonical metadata may carry the upstream stream identity.
+      if (input.stream_id) result.stream_id = input.stream_id;
+      if (Number.isInteger(input.absolute_episode)) result.absolute_episode = input.absolute_episode;
+      if (Number.isInteger(input.mapped_season)) result.mapped_season = input.mapped_season;
+      if (Number.isInteger(input.mapped_episode)) result.mapped_episode = input.mapped_episode;
+    } else result.tmdb_id = input.tmdb_id;
   }
   for (const [key, min, max] of [['year_int', 1800, 2200], ['season_int', 0, 1000], ['episode_int', 1, 10000]]) {
     if (input[key] != null) {
@@ -38,6 +50,7 @@ function validateSearch(input) {
   }
   return result;
 }
+function invalidKitsu() { throw Object.assign(new Error('Invalid Anime episode identifier'), { status: 400 }); }
 
 function searchUrl(definition, query) {
   const format = definition[query.type === 'movie' ? 'search_url_format_movie' : 'search_url_format_episode'];
@@ -158,7 +171,7 @@ async function discoverSources(settings, input, { fetchText = readText } = {}) {
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
     const addonPromise = discoverAddons(settings, query, { fetchText });
-    const loaded = settings.scraper_url ? await loadDefinitions(settings.scraper_url, fetchText, controller.signal).catch(() => ({ definitions: [], definition_errors: 1 })) : { definitions: [], definition_errors: 0 };
+    const loaded = settings.scraper_url && !query.kitsu_id ? await loadDefinitions(settings.scraper_url, fetchText, controller.signal).catch(() => ({ definitions: [], definition_errors: 1 })) : { definitions: [], definition_errors: 0 };
     const definitions = loaded.definitions;
     const results = await mapLimit(definitions, 4, async (definition) => {
       if (controller.signal.aborted) throw new Error('Search timed out');

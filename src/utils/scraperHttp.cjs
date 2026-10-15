@@ -28,7 +28,7 @@ function validateUrl(value) {
   return url;
 }
 
-async function readText(value, { signal, redirects = 0 } = {}) {
+async function readText(value, { signal, redirects = 0, accept = 'application/json,text/html' } = {}) {
   const url = validateUrl(value);
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -49,14 +49,14 @@ async function readText(value, { signal, redirects = 0 } = {}) {
     return await new Promise((resolve, reject) => {
       const request = (url.protocol === 'https:' ? https : http).get(url, {
         signal: controller.signal,
-        headers: { 'User-Agent': 'StreamIN-Scraper/1.0', Accept: 'application/json,text/html', 'Accept-Encoding': 'identity' },
+        headers: { 'User-Agent': 'StreamIN-Scraper/1.0', Accept: accept, 'Accept-Encoding': 'identity' },
         // Pin the validated DNS result to prevent rebinding between lookup and connection.
         lookup: (_host, options, callback) => options?.all ? callback(null, [selected]) : callback(null, selected.address, selected.family),
       }, (response) => {
         if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
           response.resume();
           if (redirects >= 3 || !response.headers.location) return reject(new Error('Invalid scraper redirect'));
-          resolve(readText(new URL(response.headers.location, url).href, { signal: controller.signal, redirects: redirects + 1 }));
+          resolve(readText(new URL(response.headers.location, url).href, { signal: controller.signal, redirects: redirects + 1, accept }));
           return;
         }
         if (response.statusCode !== 200) {

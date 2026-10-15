@@ -14,7 +14,7 @@ function factory() {
       if (name.includes('movieResolver')) return require('../utils/movieResolver.cjs');
       if (name.includes('movieSourceSessions')) return require('../utils/movieSourceSessions.cjs');
       if (name.includes('Scraper')) return require('../utils/Scraper.cjs');
-      if (name.includes('tmdbCatalog') || name.includes('animeCatalog')) return require(name);
+      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('kitsuCatalog')) return require(name);
       throw new Error('Unexpected dependency');
     },
   });
@@ -100,4 +100,22 @@ test('anime source search cannot bypass access or classification', async () => {
     assert.equal((await invoke(router, input)).statusCode, expected);
   }
   assert.equal((await invoke(factory()(), { ...input, tmdb_id: undefined })).statusCode, 400);
+});
+
+test('Kitsu source search signs canonical episode and file identity without requiring TMDB', async () => {
+  let signed;
+  const router = factory()({ readSettings: async () => ({ anime_enabled: true, stremio_addons: [{ enabled: true, scopes: ['anime'] }] }),
+    animeSearch: async (input) => {
+      assert.equal(input.video_id, 'kitsu:1:12');
+      return { ...input, stream_id: 'kitsu:1:12', title: 'Canonical', absolute_episode: 12 };
+    }, request: async () => { throw new Error('TMDB must not run'); },
+    discover: async (_settings, input) => {
+      assert.equal(input.stream_id, 'kitsu:1:12');
+      return { sources: [{ hash: 'a'.repeat(40), file_name: 'Episode - 12.mkv' }] };
+    }, lookup: async () => ({ available: {}, provider_status: {} }),
+    issue: (_device, _hash, metadata) => { signed = metadata; return 'proof'; } });
+  const response = await invoke(router, { type: 'series', section: 'anime', kitsu_id: 'kitsu:1', video_id: 'kitsu:1:12', season_int: 1, episode_int: 12 });
+  assert.equal(response.statusCode, 200);
+  assert.equal(signed.stream_id, 'kitsu:1:12'); assert.equal(signed.file_name, 'Episode - 12.mkv');
+  assert.equal(response.body.sources[0].source_token, 'proof');
 });
