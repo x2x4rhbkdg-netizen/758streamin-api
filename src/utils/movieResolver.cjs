@@ -1,4 +1,7 @@
 const crypto = require('node:crypto');
+const { createProviderScheduler, createAvailabilityCache } = require('./movieProviderScheduling.cjs');
+const providerScheduler = createProviderScheduler();
+const providerAvailability = createAvailabilityCache();
 const SUPPORTED_PROVIDERS = ['Real-Debrid', 'Premiumize', 'Torbox', 'EasyDebrid', 'OffCloud'];
 const transfers = new Map();
 function failure(message, status = 409) { return Object.assign(new Error(message), { status, publicMessage: message }); }
@@ -90,7 +93,8 @@ function configuredProviders(settings) {
   return SUPPORTED_PROVIDERS.filter((name) => settings.provider_accounts?.[name]?.enabled && settings.provider_accounts[name].token);
 }
 
-async function lookupProviders(settings, sources, { request = providerRequest, signal } = {}) {
+async function lookupProviders(settings, sources, { request = providerRequest, signal, availabilityCache } = {}) {
+  const availability = availabilityCache || (request === providerRequest ? providerAvailability : null);
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -109,7 +113,7 @@ async function lookupProviders(settings, sources, { request = providerRequest, s
     await Promise.all(Array.from({ length: Math.min(2, Math.ceil(sources.length / 100)) }, async () => {
       while (cursor < sources.length && !controller.signal.aborted) {
         const batch = sources.slice(cursor, cursor += 100);
-        const result = await lookupProviderBatch(settings, batch, { request: batchRequest, signal: controller.signal });
+        const result = await lookupProviderBatch(settings, batch, { request: batchRequest, signal: controller.signal, availability });
         Object.assign(available, result.available);
         Object.assign(on_demand, result.on_demand);
         for (const [provider, status] of Object.entries(result.provider_status)) {
@@ -125,7 +129,7 @@ async function lookupProviders(settings, sources, { request = providerRequest, s
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
 
-async function lookupProviderBatch(settings, sources, { request = providerRequest, signal } = {}) {
+async function lookupProviderBatch(settings, sources, { request = providerRequest, signal, availability } = {}) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -137,31 +141,42 @@ async function lookupProviderBatch(settings, sources, { request = providerReques
       const token = settings.provider_accounts[provider].token;
       const call = (path, form) => request(provider, token, path, form, controller.signal);
       try {
+        const previousError = availability?.error(provider, token);
+        if (previousError) { statuses[provider] = previousError; return; }
+        const known = sources.map((source) => availability?.get(provider, token, source.hash));
+        const missing = sources.filter((_source, index) => known[index] === undefined);
         let cached;
-        if (provider === 'Torbox') {
-          const data = await call(`torrents/checkcached?hash=${sources.map((s) => s.hash).join(',')}&format=object&list_files=true`);
-          cached = sources.map((s) => Boolean(data.data?.[s.hash]));
+        if (!missing.length) cached = [];
+        else if (provider === 'Torbox') {
+          const data = await call(`torrents/checkcached?hash=${missing.map((s) => s.hash).join(',')}&format=object&list_files=true`);
+          cached = missing.map((s) => Boolean(data.data?.[s.hash]));
         } else if (provider === 'Premiumize') {
-          cached = (await call('cache/check', { items: sources.map((s) => s.hash) })).response;
+          cached = (await call('cache/check', { items: missing.map((s) => s.hash) })).response;
         } else if (provider === 'EasyDebrid') {
-          cached = (await call('link/lookup', { urls: sources.map((s) => `magnet:?xt=urn:btih:${s.hash}`) })).cached;
+          cached = (await call('link/lookup', { urls: missing.map((s) => `magnet:?xt=urn:btih:${s.hash}`) })).cached;
         } else if (provider === 'OffCloud') {
-          const data = await call('cache', { hashes: sources.map((s) => s.hash) });
+          const data = await call('cache', { hashes: missing.map((s) => s.hash) });
           if (!Array.isArray(data.cachedItems)) throw failure('Unexpected cache response');
-          cached = sources.map((s) => data.cachedItems.includes(s.hash));
+          cached = missing.map((s) => data.cachedItems.includes(s.hash));
         } else {
           const list = await call('torrents?limit=5000');
           if (!Array.isArray(list)) throw failure('Unexpected torrent list');
           const readyHashes = new Set(list.filter((item) => item.status === 'downloaded').map((item) => String(item.hash).toLowerCase()));
-          cached = sources.map((s) => readyHashes.has(s.hash.toLowerCase()));
-          sources.forEach((source, index) => { if (!cached[index]) on_demand[source.hash] = ['Real-Debrid']; });
+          cached = missing.map((s) => readyHashes.has(s.hash.toLowerCase()));
         }
-        if (!Array.isArray(cached) || cached.length !== sources.length) throw failure('Unexpected cache response');
+        if (!Array.isArray(cached) || cached.length !== missing.length || cached.some((value) => typeof value !== 'boolean')) throw failure('Unexpected cache response');
+        missing.forEach((source, index) => availability?.put(provider, token, source.hash, cached[index]));
+        let missingIndex = 0;
+        const combined = known.map((value) => value === undefined ? cached[missingIndex++] : value);
         sources.forEach((source, index) => {
-          if (cached[index] === true) (available[source.hash] ||= []).push(provider);
+          if (combined[index] === true) (available[source.hash] ||= []).push(provider);
+          else if (provider === 'Real-Debrid') on_demand[source.hash] = ['Real-Debrid'];
         });
         statuses[provider] = provider === 'Real-Debrid' ? 'on_demand' : 'checked';
-      } catch (error) { statuses[provider] = error.credentialRejected ? 'credential_rejected' : 'unavailable'; }
+      } catch (error) {
+        statuses[provider] = error.credentialRejected ? 'credential_rejected' : 'unavailable';
+        if (!signal?.aborted) availability?.failed(provider, token, statuses[provider]);
+      }
     }));
     return { available, on_demand, provider_status: statuses };
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
@@ -283,6 +298,9 @@ async function resolveMovieSource(settings, input, options = {}) {
   const configured = configuredProviders(settings);
   if (!configured.length) throw failure('Enable and configure a playback provider in Media Settings');
   const choice = input.provider || settings.default_provider || 'auto';
+  const automatic = ['auto', 'none'].includes(choice);
+  const scheduler = options.scheduler || (options.request ? createProviderScheduler({ randomInt: (limit) => limit - 1 }) : providerScheduler);
+  const availability = options.availabilityCache || (options.request ? null : providerAvailability);
   if (!['auto', 'none'].includes(choice) && !configured.includes(choice)) throw failure('Selected provider is not enabled and configured');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25000);
@@ -290,8 +308,10 @@ async function resolveMovieSource(settings, input, options = {}) {
     const { available, on_demand, provider_status } = await lookupProviders(settings, [{ hash: input.hash.toLowerCase() }], { ...options, signal: controller.signal });
     const ready = available[input.hash.toLowerCase()] || [];
     const candidates = configured.filter((provider) => ready.includes(provider));
-    if (input.allow_uncached_rd === true && on_demand[input.hash.toLowerCase()]?.includes('Real-Debrid')) candidates.push('Real-Debrid');
-    const providers = ['auto', 'none'].includes(choice) ? candidates.filter((provider) => configured.includes(provider)) : candidates.filter((provider) => provider === choice);
+    const providers = automatic ? scheduler.order(candidates, settings) : candidates.filter((provider) => provider === choice);
+    // Unknown RD remains a last resort and never competes with ready copies.
+    if (input.allow_uncached_rd === true && on_demand[input.hash.toLowerCase()]?.includes('Real-Debrid') &&
+      (automatic || choice === 'Real-Debrid') && !providers.includes('Real-Debrid')) providers.push('Real-Debrid');
     if (!providers.length) {
       if (choice === 'Real-Debrid' && provider_status['Real-Debrid'] === 'credential_rejected') throw failure('Real-Debrid rejected access. Check its token and account status in Media Settings.', 502);
       throw failure('No enabled provider has a ready copy of this source. Choose another source.');
@@ -299,9 +319,17 @@ async function resolveMovieSource(settings, input, options = {}) {
     const failures = [];
     for (const provider of providers) {
       if (controller.signal.aborted) break;
-      try { return await resolveSingle(settings, { ...input, provider }, { ...options, signal: controller.signal }); }
+      scheduler.reserve(provider, settings);
+      try {
+        const result = await resolveSingle(settings, { ...input, provider }, { ...options, signal: controller.signal });
+        scheduler.succeeded(provider, settings);
+        availability?.put(provider, settings.provider_accounts[provider].token, input.hash, true);
+        return result;
+      }
       catch (error) {
         if (error.status === 400) throw error;
+        scheduler.failed(provider, settings, error);
+        availability?.invalidate(provider, settings.provider_accounts[provider].token, input.hash);
         // Only messages created by our adapter are safe to expose, never raw network errors.
         const reason = error.publicMessage || 'Provider request failed or timed out';
         if (providers.length === 1) throw failure(`${provider}: ${reason}`, error.status || 502);
