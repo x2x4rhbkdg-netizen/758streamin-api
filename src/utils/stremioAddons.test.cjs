@@ -27,6 +27,18 @@ test('Adult connection tests require catalog and stream resources', async () => 
   assert.equal((await testAddon(pending, { fetchText: async () => '{}' })).status, 'unsupported');
   assert.equal((await testAddon(pending, { fetchText: async () => { throw new Error('404'); } })).status, 'unavailable');
 });
+
+test('Adult manifest tests accept custom catalog types and explain the actual missing resource', async () => {
+  const configured = addon('adult', ['adult']);
+  const custom = { id: 'fixture', types: ['hanime'], resources: ['catalog', 'meta', 'stream'],
+    catalogs: [{ id: 'fixture', type: 'hanime' }] };
+  assert.equal((await testAddon(configured, { fetchText: async () => JSON.stringify(custom) })).status, 'connected');
+  for (const missing of ['catalog', 'stream']) {
+    const result = await testAddon(configured, { fetchText: async () => JSON.stringify({ ...custom, resources: custom.resources.filter((name) => name !== missing) }) });
+    assert.equal(result.status, 'unsupported');
+    assert.match(result.message, new RegExp(`no ${missing} resource`));
+  }
+});
 test('validates bounds, identifiers, scopes and HTTPS manifest URLs', () => {
   const good = addon('one');
   assert.equal(normalizeAddons([good])[0].manifest_url, good.manifest_url);

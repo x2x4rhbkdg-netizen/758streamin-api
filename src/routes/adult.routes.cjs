@@ -92,7 +92,8 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
     let url = source.url, provider = '';
     if (!url) {
       if (item.type === 'series' && (!Number.isInteger(item.season) || !Number.isInteger(item.episode))) throw fail('This add-on did not identify the episode for provider playback', 409);
-      const result = await resolve(req.adultSettings, { section: 'adult', type: item.type,
+      const customType = !['movie', 'series'].includes(item.type);
+      const result = await resolve(req.adultSettings, { section: 'adult', type: item.type === 'series' ? 'series' : 'movie', adult_custom_type: customType,
         hash: source.hash, file_name: source.file_name, season_int: item.season, episode_int: item.episode,
         provider: req.body?.provider || 'auto', allow_uncached_rd: req.body?.allow_uncached_rd === true });
       url = result.protectedPlaybackUrl || result.playbackUrl; provider = result.provider;

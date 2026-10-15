@@ -71,3 +71,29 @@ test('provider resolution honors the signed filename instead of a larger differe
   assert.equal(chooseVideo(files, { section: 'adult', type: 'movie', file_name: 'chosen.mp4' }).path, 'folder/chosen.mp4');
   assert.throws(() => chooseVideo(files, { section: 'adult', type: 'movie', file_name: 'missing.mp4' }), { status: 409 });
 });
+
+test('custom Adult catalog types are preserved through catalog, metadata and stream endpoints', async () => {
+  const requests = [];
+  const custom = { ...manifest, types: ['hanime'], catalogs: [{ id: 'custom', type: 'hanime' }] };
+  const client = createAdultAddonClient({ fetchText: async (url) => {
+    requests.push(url);
+    if (url.endsWith('manifest.json')) return JSON.stringify(custom);
+    if (url.includes('/catalog/')) return JSON.stringify({ metas: [{ id: 'fixture:1', name: 'Fixture title' }] });
+    if (url.includes('/meta/')) return JSON.stringify({ meta: { id: 'fixture:1', description: 'Fixture description' } });
+    return JSON.stringify({ streams: [{ url: 'https://cdn.example/master.m3u8' }] });
+  } });
+  assert.equal((await client.catalogs(settings)).catalogs[0].type, 'hanime');
+  const result = await client.catalog(settings, { addon_id: 'adult', catalog_id: 'custom', type: 'hanime' });
+  const item = result.items[0];
+  await client.details(settings, item);
+  assert.equal((await client.sources(settings, item))[0].url, 'https://cdn.example/master.m3u8');
+  for (const endpoint of ['catalog/hanime/custom', 'meta/hanime/fixture%3A1', 'stream/hanime/fixture%3A1']) {
+    assert.equal(requests.some((url) => url.includes(endpoint)), true);
+  }
+});
+
+test('custom-type torrent packs need an exact file hint rather than guessing the largest video', () => {
+  const input = { section: 'adult', type: 'movie', adult_custom_type: true };
+  assert.throws(() => chooseVideo([{ path: 'one.mp4' }, { path: 'two.mp4' }], input), { status: 409 });
+  assert.equal(chooseVideo([{ path: 'one.mp4' }], input).path, 'one.mp4');
+});

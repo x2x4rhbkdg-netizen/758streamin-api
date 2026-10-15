@@ -1,5 +1,6 @@
 const { readText, validateUrl } = require('./scraperHttp.cjs');
 const { createHash } = require('node:crypto');
+const { adultCatalogs } = require('./adultAddons.cjs');
 const cache = new Map();
 function invalid(message) { throw Object.assign(new Error(message), { status: 400 }); }
 function normalizeAddons(input, previous = []) {
@@ -56,10 +57,10 @@ async function testAddon(addon, { fetchText = readText } = {}) {
         return { status: 'unsupported', message: 'Invalid add-on manifest' };
       }
       const names = manifest.resources.map((entry) => typeof entry === 'string' ? entry : entry?.name);
-      return names.includes('catalog') && names.includes('stream') && manifest.catalogs?.some((catalog) =>
-        ['movie', 'series'].includes(catalog?.type) && typeof catalog.id === 'string' && manifest.types.includes(catalog.type))
-        ? { status: 'connected', message: 'Adult catalog and stream resources available' }
-        : { status: 'unsupported', message: 'Adult add-on requires catalog and stream resources' };
+      if (!names.includes('catalog')) return { status: 'unsupported', message: 'Manifest has no catalog resource; this add-on cannot supply Adult browsing' };
+      if (!names.includes('stream')) return { status: 'unsupported', message: 'Manifest has no stream resource; this add-on cannot supply playback links' };
+      if (!adultCatalogs(manifest).length) return { status: 'unsupported', message: 'Manifest declares no usable Adult catalogs, or requires unsupported catalog filters' };
+      return { status: 'connected', message: 'Adult catalog and stream resources available' };
     }
     const supported = ['tt1254207', 'kitsu:1:1'].filter((id) => ['movie', 'series', ...(id.startsWith('kitsu:') ? ['anime'] : [])].some((type) => supports(manifest, type, id)));
     if (!supported.length) {

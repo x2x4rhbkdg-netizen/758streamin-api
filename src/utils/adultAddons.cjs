@@ -11,6 +11,13 @@ function resource(manifest, name, type, id = '') {
       (!id || !prefixes?.length || prefixes.some((prefix) => id.startsWith(prefix)));
   });
 }
+function adultCatalogs(data) {
+  return (Array.isArray(data.catalogs) ? data.catalogs : []).filter((catalog) =>
+    catalog && typeof catalog.type === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(catalog.type) && data.types.includes(catalog.type) &&
+    typeof catalog.id === 'string' && catalog.id.length > 0 && catalog.id.length <= 200 &&
+    resource(data, 'catalog', catalog.type) && resource(data, 'stream', catalog.type) &&
+    !(catalog.extra || []).some((extra) => extra.isRequired && extra.name !== 'search'));
+}
 function adultAddons(settings) {
   return (settings.stremio_addons || []).filter((addon) => addon.enabled && addon.scopes.length === 1 && addon.scopes[0] === 'adult');
 }
@@ -39,10 +46,6 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
     if (typeof result?.id !== 'string' || !Array.isArray(result.types) || !Array.isArray(result.resources)) throw fail('Invalid Adult add-on manifest', 502);
     return result;
   };
-  const catalogs = (data) => (Array.isArray(data.catalogs) ? data.catalogs : []).filter((catalog) =>
-    ['movie', 'series'].includes(catalog.type) && typeof catalog.id === 'string' && catalog.id.length > 0 && catalog.id.length <= 200 &&
-    resource(data, 'catalog', catalog.type) &&
-    !(catalog.extra || []).some((extra) => extra.isRequired && extra.name !== 'search'));
   const safeItem = (value, type) => {
     if (!value || typeof value.id !== 'string' || !value.id || value.id.length > 500) return null;
     return { id: value.id, type, title: bounded(value.name || value.id), overview: bounded(value.description, 2000), poster: poster(value.poster) };
@@ -57,7 +60,7 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
         await Promise.all(addons.slice(start, start + 3).map(async (addon) => {
           try {
             const data = await manifest(addon);
-            catalogs(data).slice(0, 30).forEach((catalog) => results.push({ addon_id: addon.id, id: catalog.id,
+            adultCatalogs(data).slice(0, 30).forEach((catalog) => results.push({ addon_id: addon.id, id: catalog.id,
               type: catalog.type, name: bounded(catalog.name || catalog.id), addon_name: addon.name,
               search_supported: (catalog.extra || []).some((extra) => extra.name === 'search') || catalog.extraSupported?.includes('search') === true }));
             diagnostics.push({ id: addon.id, status: 'ok' });
@@ -70,7 +73,7 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
     async catalog(settings, input) {
       const addon = selectedAddon(settings, input.addon_id);
       const data = await manifest(addon);
-      const catalog = catalogs(data).find((entry) => entry.id === input.catalog_id && entry.type === input.type);
+      const catalog = adultCatalogs(data).find((entry) => entry.id === input.catalog_id && entry.type === input.type);
       if (!catalog) throw fail('Adult catalog unavailable', 404);
       const query = bounded(input.query, 200).trim();
       const page = Number(input.page || 1);
@@ -127,4 +130,4 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
     },
   };
 }
-module.exports = { createAdultAddonClient, adultAddons, addonVersion };
+module.exports = { createAdultAddonClient, adultAddons, addonVersion, adultCatalogs };

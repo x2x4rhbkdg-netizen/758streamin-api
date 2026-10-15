@@ -24,6 +24,10 @@ function chooseVideo(files, input) {
     if (matched.length !== 1) throw failure('No unambiguous matching file is available in this source');
     return matched[0];
   }
+  if (input.section === 'adult' && input.adult_custom_type) {
+    if (videos.length !== 1) throw failure('This source needs an exact filename to select a video');
+    return videos[0];
+  }
   if (input.section === 'anime' && input.kitsu_id) {
     const basename = (value) => String(value || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
     let matched;
