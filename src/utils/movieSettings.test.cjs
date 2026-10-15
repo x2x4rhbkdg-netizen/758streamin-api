@@ -65,6 +65,34 @@ test('global add-on settings roundtrip encrypted with masked URLs and preserve l
   await assert.rejects(api.saveMovieSettings(1, { stremio_addons: [addon] }), { status: 400 });
 });
 
+test('second scraper persists independently, stays private and works without the first', async () => {
+  const { api } = fixture();
+  const first = 'https://first.example/manifest?key=first-secret';
+  const second = 'https://second.example/manifest?key=second-secret';
+  await api.saveGlobalMovieSettings({ scraper_url: first });
+  assert.equal((await api.readGlobalMovieSettings()).secondary_scraper_url, '');
+  await api.saveGlobalMovieSettings({ secondary_scraper_url: ` ${second} ` });
+  let settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.scraper_url, first);
+  assert.equal(settings.secondary_scraper_url, second);
+  assert.equal(api.adminGlobalSettings(settings).secondary_scraper_url, second);
+  const safe = api.publicSettings(settings);
+  assert.equal(safe.scraper_url, undefined);
+  assert.equal(safe.secondary_scraper_url, undefined);
+  assert.equal(safe.secondary_scraper_configured, true);
+  assert.equal(JSON.stringify(safe).includes('secret'), false);
+  await api.saveGlobalMovieSettings({ scraper_url: '' });
+  settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.secondary_scraper_url, second);
+  assert.equal(api.publicSettings(settings).scraper_configured, true);
+  await api.saveGlobalMovieSettings({ secondary_scraper_url: '' });
+  assert.equal(api.publicSettings(await api.readGlobalMovieSettings()).scraper_configured, false);
+  await assert.rejects(api.saveMovieSettings(1, { secondary_scraper_url: second }), { status: 400 });
+  for (const value of ['file:///etc/passwd', 'https://user:pass@example.com', 'invalid', 'https://example.com/' + 'x'.repeat(2048), {}]) {
+    await assert.rejects(api.saveGlobalMovieSettings({ secondary_scraper_url: value }), { status: 400 });
+  }
+});
+
 test('Anime defaults off for new and legacy devices and is independent from Movies/Series', async () => {
   const { api, devices, vault } = fixture();
   devices.set(1, vault.encryptString(JSON.stringify({ enabled: true })));
@@ -82,12 +110,30 @@ test('Anime defaults off for new and legacy devices and is independent from Movi
   assert.equal(api.adminGlobalSettings(await api.readGlobalMovieSettings()).anime_enabled, undefined);
 });
 
+test('Adult defaults off on existing and new devices and is independent of other sections', async () => {
+  const { api, devices, vault } = fixture();
+  devices.set(1, vault.encryptString(JSON.stringify({ enabled: true, anime_enabled: true })));
+  assert.equal((await api.readMovieSettings(1)).adult_enabled, false);
+  assert.equal((await api.readMovieSettings(2)).adult_enabled, false);
+  await api.saveMovieSettings(2, { adult_enabled: true });
+  assert.equal((await api.readMovieSettings(2)).adult_enabled, true);
+  assert.equal((await api.readMovieSettings(2)).enabled, false);
+  assert.equal((await api.readMovieSettings(2)).anime_enabled, false);
+  await api.saveMovieSettings(2, { enabled: true });
+  assert.equal((await api.readMovieSettings(2)).adult_enabled, true);
+  await api.saveMovieSettings(2, { adult_enabled: false });
+  assert.equal((await api.readMovieSettings(2)).enabled, true);
+  await assert.rejects(api.saveMovieSettings(2, { adult_enabled: 'true' }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ adult_enabled: true }), { status: 400 });
+  assert.equal(api.adminGlobalSettings(await api.readGlobalMovieSettings()).adult_enabled, undefined);
+});
+
 test('legacy per-device configuration is ignored without deleting existing records', async () => {
   const { api, devices, vault } = fixture();
   devices.set(1, vault.encryptString(JSON.stringify({ enabled: true, provider: 'Real-Debrid', debrid_token: 'legacy' })));
   await api.saveGlobalMovieSettings({ provider: 'Torbox', debrid_token: 'shared' });
   assert.equal((await api.readMovieSettings(1)).debrid_token, 'shared');
-  assert.deepEqual(Object.keys(await api.readDeviceMovieAccess(1)), ['enabled', 'anime_enabled', 'live_tv_enabled', 'radio_enabled']);
+  assert.deepEqual(Object.keys(await api.readDeviceMovieAccess(1)), ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled']);
   await api.saveMovieSettings(1, { enabled: false });
   assert.equal(JSON.parse(vault.decryptString(devices.get(1))).debrid_token, 'legacy');
 });

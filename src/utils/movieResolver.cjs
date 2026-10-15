@@ -18,6 +18,12 @@ const RD_FAILED = new Set(['magnet_error', 'error', 'virus', 'dead']);
 
 function chooseVideo(files, input) {
   const videos = files.filter((file) => /\.(mkv|mp4|avi|mov|m4v|webm|ts)$/i.test(file.path || '') && !/\bsample\b/i.test(file.path));
+  if (input.section === 'adult' && input.file_name) {
+    const basename = (value) => String(value || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
+    const matched = videos.filter((file) => basename(file.path) === basename(input.file_name));
+    if (matched.length !== 1) throw failure('No unambiguous matching file is available in this source');
+    return matched[0];
+  }
   if (input.section === 'anime' && input.kitsu_id) {
     const basename = (value) => String(value || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
     let matched;

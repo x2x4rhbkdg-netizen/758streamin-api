@@ -107,6 +107,74 @@ test('bounded concurrency keeps scraper work limited', async () => {
   assert.equal(peak, 2);
 });
 
+test('two scraper packs merge sources and fetch shared definitions and hashes only once', async () => {
+  const calls = [];
+  const fetchText = async (url) => {
+    calls.push(url);
+    if (url === 'https://first.test') return JSON.stringify(['https://defs.test/shared', 'https://defs.test/one']);
+    if (url === 'https://second.test') return JSON.stringify(['https://defs.test/shared', 'https://defs.test/two']);
+    if (url.startsWith('https://defs.test/')) return JSON.stringify({ ...definition, base_url: `https://${url.split('/').at(-1)}.test` });
+    return JSON.stringify({ streams: [{ infoHash: url.includes('two.test') ? otherHash : hash, title: url.includes('two.test') ? 'Example 720p' : 'Example 1080p' }] });
+  };
+  const result = await discoverSources({ scraper_url: 'https://first.test', secondary_scraper_url: 'https://second.test' },
+    { type: 'movie', imdb_id: 'tt1234567' }, { fetchText });
+  assert.equal(result.sources.length, 2);
+  assert.equal(result.diagnostics.scrapers, 3);
+  assert.equal(result.diagnostics.definition_errors, 0);
+  assert.equal(calls.filter((url) => url === 'https://defs.test/shared').length, 1);
+  assert.equal(calls.filter((url) => url.startsWith('https://shared.test/')).length, 1);
+});
+
+test('either scraper pack may fail without discarding the other pack results', async () => {
+  for (const failed of ['https://first.test', 'https://second.test']) {
+    const fetchText = async (url) => {
+      if (url === failed) throw new Error('private upstream credentials');
+      if (url === 'https://first.test' || url === 'https://second.test') return JSON.stringify(['https://defs.test/shared']);
+      if (url === 'https://defs.test/shared') return JSON.stringify(definition);
+      return JSON.stringify({ streams: [{ infoHash: hash, title: 'Example 1080p' }] });
+    };
+    const result = await discoverSources({ scraper_url: 'https://first.test', secondary_scraper_url: 'https://second.test' },
+      { type: 'movie', imdb_id: 'tt1234567' }, { fetchText });
+    assert.equal(result.sources.length, 1);
+    assert.equal(result.diagnostics.definition_errors, 1);
+    assert.equal(JSON.stringify(result).includes('private'), false);
+  }
+});
+
+test('second-only and duplicate scraper URLs do not require or double-fetch a first pack', async () => {
+  for (const settings of [{ secondary_scraper_url: 'https://manifest.test' },
+    { scraper_url: 'https://manifest.test', secondary_scraper_url: 'https://manifest.test' }]) {
+    const calls = [];
+    const fetchText = async (url) => {
+      calls.push(url);
+      return JSON.stringify(url === 'https://manifest.test' ? ['https://defs.test/one'] :
+        url === 'https://defs.test/one' ? definition : { streams: [{ infoHash: hash, title: 'Example 1080p' }] });
+    };
+    const result = await discoverSources(settings, { type: 'movie', imdb_id: 'tt1234567' }, { fetchText });
+    assert.equal(result.sources.length, 1);
+    assert.equal(calls.filter((url) => url === 'https://manifest.test').length, 1);
+  }
+});
+
+test('two scraper packs share the definition and search concurrency limit', async () => {
+  let active = 0, peak = 0;
+  const searches = [];
+  const fetchText = async (url) => {
+    active++; peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    active--;
+    if (url === 'https://first.test' || url === 'https://second.test') return JSON.stringify(Array.from({ length: 8 }, (_, i) => `https://defs.test/${url.includes('first') ? 'a' : 'b'}${i}`));
+    if (url.startsWith('https://defs.test/')) return JSON.stringify({ ...definition, base_url: `https://${url.split('/').at(-1)}.test` });
+    searches.push(url);
+    return JSON.stringify({ streams: [] });
+  };
+  await discoverSources({ scraper_url: 'https://first.test', secondary_scraper_url: 'https://second.test' },
+    { type: 'movie', imdb_id: 'tt1234567' }, { fetchText });
+  assert.equal(peak, 4);
+  assert.match(searches[0], /^https:\/\/a0.test\//);
+  assert.match(searches[1], /^https:\/\/b0.test\//);
+});
+
 test('blocks private, mapped, reserved and non-HTTP destinations', async () => {
   for (const address of ['127.0.0.1', '10.1.2.3', '172.16.1.1', '192.168.1.1', '169.254.169.254',
     '100.64.1.1', '0.0.0.0', '::1', '::ffff:127.0.0.1', 'fe80::1', 'fc00::1', '2001:db8::1']) {

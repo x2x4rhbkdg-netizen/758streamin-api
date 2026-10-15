@@ -6,6 +6,7 @@ const { kitsuId } = require('./kitsuCatalog.cjs');
 const MAX_DEFINITIONS = 48;
 const MAX_RESULTS = 100;
 const manifestCache = new Map();
+const definitionCache = new Map();
 
 function validateSearch(input) {
   if (!input || !['movie', 'series'].includes(input.type)) throw Object.assign(new Error('type must be movie or series'), { status: 400 });
@@ -142,27 +143,47 @@ async function mapLimit(items, limit, run) {
   return results;
 }
 
-async function loadDefinitions(url, fetchText, signal) {
+async function loadDefinitionLinks(url, fetchText, signal) {
   const cached = manifestCache.get(url);
   if (fetchText === readText && cached?.expires > Date.now()) return cached.value;
   const manifest = JSON.parse(await fetchText(url, { signal }));
   const links = Array.isArray(manifest) ? manifest : Object.values(manifest).flat();
   const unique = [...new Set(links.filter((link) => typeof link === 'string'))].slice(0, MAX_DEFINITIONS);
   if (!unique.length) throw new Error('Invalid WEYD manifest');
+  if (fetchText === readText && !signal.aborted) {
+    if (manifestCache.size >= 10) manifestCache.delete(manifestCache.keys().next().value);
+    manifestCache.set(url, { expires: Date.now() + 300000, value: unique });
+  }
+  return unique;
+}
+
+async function loadDefinitions(urls, fetchText, signal) {
+  const manifests = await mapLimit(urls, 2, (url) => loadDefinitionLinks(url, fetchText, signal));
+  const packs = manifests.filter((entry) => entry.ok).map((entry) => entry.value);
+  const unique = [], seen = new Set();
+  // Alternate packs so the second does not sit behind every definition in the first.
+  for (let index = 0; index < MAX_DEFINITIONS; index++) {
+    for (const pack of packs) {
+      const link = pack[index];
+      if (link && !seen.has(link)) { seen.add(link); unique.push(link); }
+    }
+  }
+  // Share the definition budget across packs, including definitions referenced by both.
   const loaded = await mapLimit(unique, 4, async (link) => {
     if (signal.aborted) throw new Error('Search timed out');
+    const cached = definitionCache.get(link);
+    if (fetchText === readText && cached?.expires > Date.now()) return cached.value;
     const definition = JSON.parse(await fetchText(link, { signal }));
     if (!definition || typeof definition.base_url !== 'string' || Object.entries(definition).some(([key, value]) =>
       key.endsWith('_path') && (typeof value !== 'string' || value.length > 500))) throw new Error('Invalid scraper definition');
+    if (fetchText === readText && !signal.aborted) {
+      if (definitionCache.size >= 500) definitionCache.delete(definitionCache.keys().next().value);
+      definitionCache.set(link, { expires: Date.now() + 300000, value: definition });
+    }
     return definition;
   });
   const definitions = loaded.filter((entry) => entry.ok && entry.value?.is_torrent === true).map((entry) => entry.value);
-  const value = { definitions, definition_errors: loaded.filter((entry) => !entry.ok).length };
-  if (fetchText === readText && definitions.length && !signal.aborted) {
-    if (manifestCache.size >= 10) manifestCache.delete(manifestCache.keys().next().value);
-    manifestCache.set(url, { expires: Date.now() + 300000, value });
-  }
-  return value;
+  return { definitions, definition_errors: loaded.filter((entry) => !entry.ok).length + manifests.filter((entry) => !entry.ok).length };
 }
 
 async function discoverSources(settings, input, { fetchText = readText } = {}) {
@@ -171,7 +192,8 @@ async function discoverSources(settings, input, { fetchText = readText } = {}) {
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
     const addonPromise = discoverAddons(settings, query, { fetchText });
-    const loaded = settings.scraper_url && !query.kitsu_id ? await loadDefinitions(settings.scraper_url, fetchText, controller.signal).catch(() => ({ definitions: [], definition_errors: 1 })) : { definitions: [], definition_errors: 0 };
+    const urls = query.kitsu_id ? [] : [...new Set([settings.scraper_url, settings.secondary_scraper_url].filter(Boolean))];
+    const loaded = await loadDefinitions(urls, fetchText, controller.signal);
     const definitions = loaded.definitions;
     const results = await mapLimit(definitions, 4, async (definition) => {
       if (controller.signal.aborted) throw new Error('Search timed out');

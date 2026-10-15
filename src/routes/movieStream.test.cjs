@@ -6,9 +6,9 @@ const { EventEmitter } = require('node:events');
 const { Readable, PassThrough } = require('node:stream');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { publicAddress } = require('../utils/scraperHttp.cjs');
-function fixture({ enabled = true, anime_enabled = false, redirect } = {}) {
+function fixture({ enabled = true, anime_enabled = false, adult_enabled = false, pinFingerprint = 'pin-one', redirect, content = 'video', mime = 'video/mp4' } = {}) {
   let handler, calls = [];
-  const context = { module: { exports: {} }, process: { env: { JWT_SECRET: 'test-secret' } }, URL, AbortController, setTimeout, clearTimeout,
+  const context = { module: { exports: {} }, process: { env: { JWT_SECRET: 'test-secret' } }, Buffer, URL, AbortController, setTimeout, clearTimeout,
     require(name) {
       if (name === 'express') return { Router: () => ({ get(_path, callback) { handler = callback; } }) };
       if (name === 'node:dns/promises') return { lookup: async (hostname) => [{ address: hostname === 'private.example' ? '127.0.0.1' : '8.8.8.8', family: 4 }] };
@@ -16,14 +16,15 @@ function fixture({ enabled = true, anime_enabled = false, redirect } = {}) {
         calls.push({ url, options });
         const request = new EventEmitter(); request.setTimeout = () => {};
         request.end = () => {
-          const response = Readable.from(redirect ? [] : ['video']);
+          const response = Readable.from(redirect ? [] : [content]);
           response.statusCode = redirect ? 302 : 206;
-          response.headers = redirect ? { location: redirect } : { 'content-type': 'video/mp4', 'content-range': 'bytes 0-4/5', 'content-length': '5' };
+          response.headers = redirect ? { location: redirect } : { 'content-type': mime, 'content-range': 'bytes 0-4/5', 'content-length': String(Buffer.byteLength(content)) };
           callback(response);
         };
         return request;
       } };
-      if (name === '../utils/movieSettings.cjs') return { readMovieSettings: async () => ({ enabled, anime_enabled }) };
+      if (name === '../utils/movieSettings.cjs') return { readMovieSettings: async () => ({ enabled, anime_enabled, adult_enabled }) };
+      if (name === '../utils/adultAccess.cjs') return { readAdultPin: async () => pinFingerprint ? { fingerprint: pinFingerprint } : null };
       if (name === '../utils/moviePlaybackTickets.cjs') return { createPlaybackTickets };
       if (name === '../utils/scraperHttp.cjs') return { publicAddress };
       return require(name);
@@ -51,6 +52,29 @@ test('protected stream forwards range, pipes content and never forwards credenti
   let pinned;
   calls[0].options.lookup('cdn.example', {}, (_error, address) => { pinned = address; });
   assert.equal(pinned, '8.8.8.8');
+});
+
+test('Adult streaming rechecks independent access and PIN rotation/removal on each request', async () => {
+  const ticket = createPlaybackTickets('test-secret').issue('https://cdn.example/movie.mp4', 1, 'adult', 'pin-one');
+  assert.equal((await fixture({ enabled: false, adult_enabled: true }).run(null, undefined, ticket)).code, 206);
+  for (const options of [{ adult_enabled: false }, { adult_enabled: true, pinFingerprint: 'pin-two' }, { adult_enabled: true, pinFingerprint: null }]) {
+    const f = fixture(options);
+    assert.equal((await f.run(null, undefined, ticket)).code, 403);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test('Adult HLS playlists hide upstream URLs and issue PIN-scoped segment tickets', async () => {
+  const ticket = createPlaybackTickets('test-secret').issue('https://cdn.example/path/master.m3u8', 1, 'adult', 'pin-one');
+  const { run } = fixture({ adult_enabled: true, mime: 'application/vnd.apple.mpegurl', content: '#EXTM3U\nsegment.ts?key=private\n' });
+  const result = await run(null, undefined, ticket);
+  assert.equal(result.code, 200);
+  assert.equal(result.body.includes('private'), false);
+  const segment = result.body.split('\n')[1].split('/').at(-1);
+  const record = createPlaybackTickets('test-secret').read(segment);
+  assert.equal(record.url, 'https://cdn.example/path/segment.ts?key=private');
+  assert.equal(record.section, 'adult');
+  assert.equal(record.adultPinFingerprint, 'pin-one');
 });
 test('protected stream blocks invalid tickets, revoked access, private destinations, unsafe redirects and multiranges', async () => {
   assert.equal((await fixture().run('https://cdn.example/movie', undefined, 'tampered')).code, 403);

@@ -4,8 +4,8 @@ const { normalizeAddons, publicAddons } = require('./stremioAddons.cjs');
 
 const PROVIDERS = ['none', 'Real-Debrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token'];
-const ACCESS_KEYS = ['enabled', 'anime_enabled', 'live_tv_enabled', 'radio_enabled'];
-const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', provider: 'none', default_provider: 'none',
+const ACCESS_KEYS = ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled'];
+const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, adult_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', secondary_scraper_url: '', provider: 'none', default_provider: 'none',
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
   auto_select_min_links: 10, auto_select_delay: false, auto_select_delay_seconds: 15,
@@ -68,13 +68,15 @@ function normalizeSettings(input, previous = {}) {
     if (next.provider !== input.provider) next.debrid_token = '';
     next.provider = input.provider;
   }
-  if (Object.hasOwn(input, 'scraper_url')) {
-    next.scraper_url = String(input.scraper_url || '').trim();
-    if (next.scraper_url) {
+  for (const key of ['scraper_url', 'secondary_scraper_url']) {
+    if (!Object.hasOwn(input, key)) continue;
+    if (typeof input[key] !== 'string') invalid('Scraper URL must be a string');
+    next[key] = input[key].trim();
+    if (next[key]) {
       let url;
-      try { url = new URL(next.scraper_url); } catch { invalid('Invalid scraper URL'); }
+      try { url = new URL(next[key]); } catch { invalid('Invalid scraper URL'); }
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) invalid('Scraper URL must use HTTP or HTTPS without embedded credentials');
-      if (next.scraper_url.length > 2048) invalid('Scraper URL is too long');
+      if (next[key].length > 2048) invalid('Scraper URL is too long');
     }
   }
   for (const [key, min, max] of [['max_bitrate_mbps', 1, 100], ['min_bitrate_mbps', 0, 100], ['max_links', 1, 50],
@@ -117,7 +119,9 @@ function publicSettings(settings) {
   for (const key of Object.keys(DEFAULTS)) result[key] = settings[key] ?? DEFAULTS[key];
   // Configured scraper URLs may contain provider keys in their path or query.
   delete result.scraper_url;
-  result.scraper_configured = Boolean(settings.scraper_url);
+  delete result.secondary_scraper_url;
+  result.scraper_configured = Boolean(settings.scraper_url || settings.secondary_scraper_url);
+  result.secondary_scraper_configured = Boolean(settings.secondary_scraper_url);
   for (const key of SECRETS) result[`${key}_configured`] = Boolean(settings[key]);
   result.provider_accounts = Object.fromEntries(Object.entries(providerAccounts(settings)).map(([provider, account]) =>
     [provider, { enabled: account.enabled, token_configured: Boolean(account.token) }]));
@@ -137,7 +141,7 @@ async function readStoredDeviceSettings(deviceId) {
 async function saveMovieSettings(deviceId, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       !Object.keys(input).length || Object.keys(input).some((key) => !ACCESS_KEYS.includes(key) || typeof input[key] !== 'boolean')) {
-    invalid('Device access accepts only enabled, anime_enabled, live_tv_enabled and radio_enabled booleans');
+    invalid('Device access accepts only enabled, anime_enabled, adult_enabled, live_tv_enabled and radio_enabled booleans');
   }
   const settings = normalizeSettings(input, await readStoredDeviceSettings(deviceId));
   await pool.execute(`INSERT INTO device_movie_settings (device_id, settings_enc) VALUES (?, ?)
@@ -147,7 +151,7 @@ async function saveMovieSettings(deviceId, input) {
 }
 
 function deviceAccess(settings) {
-  return { enabled: settings.enabled === true, anime_enabled: settings.anime_enabled === true, live_tv_enabled: settings.live_tv_enabled !== false,
+  return { enabled: settings.enabled === true, anime_enabled: settings.anime_enabled === true, adult_enabled: settings.adult_enabled === true, live_tv_enabled: settings.live_tv_enabled !== false,
     radio_enabled: settings.radio_enabled !== false };
 }
 
@@ -196,7 +200,8 @@ async function saveGlobalMovieSettings(input) {
 }
 
 function adminGlobalSettings(settings) {
-  const result = { ...publicSettings(settings), scraper_url: settings.scraper_url, stremio_addons: publicAddons(settings.stremio_addons) };
+  const result = { ...publicSettings(settings), scraper_url: settings.scraper_url, secondary_scraper_url: settings.secondary_scraper_url,
+    stremio_addons: publicAddons(settings.stremio_addons) };
   for (const key of ACCESS_KEYS) delete result[key];
   return result;
 }

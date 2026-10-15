@@ -7,6 +7,10 @@ function catalogSection(value) {
 }
 
 function requireCatalogAccess(settings, section) {
+  if (section === 'adult') {
+    if (settings.adult_enabled !== true) throw fail('Adult Content is disabled for this device', 403);
+    return;
+  }
   if (section === 'anime' ? settings.anime_enabled !== true : settings.enabled !== true) {
     throw fail(section === 'anime' ? 'Anime is disabled for this device' : 'Movies and Series are disabled for this device', 403);
   }

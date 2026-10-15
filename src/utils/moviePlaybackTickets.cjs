@@ -3,10 +3,12 @@ function createPlaybackTickets(secret) {
   if (!secret) throw new Error('Missing movie playback signing key');
   const key = crypto.createHmac('sha256', secret).update('streamin-movie-playback-v1').digest();
   return {
-    issue(url, device, section) {
+    issue(url, device, section, adultPinFingerprint) {
       const iv = crypto.randomBytes(12);
       const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-      const body = Buffer.from(JSON.stringify({ url, device: String(device), ...(section === 'anime' ? { section } : {}), expires: Date.now() + 6 * 60 * 60 * 1000 }));
+      if (section === 'adult' && !adultPinFingerprint) throw new Error('Missing Adult PIN scope');
+      const body = Buffer.from(JSON.stringify({ url, device: String(device), ...(['anime', 'adult'].includes(section) ? { section } : {}),
+        ...(section === 'adult' ? { adultPinFingerprint } : {}), expires: Date.now() + 6 * 60 * 60 * 1000 }));
       const encrypted = Buffer.concat([cipher.update(body), cipher.final()]);
       return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
     },

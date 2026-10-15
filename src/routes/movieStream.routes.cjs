@@ -6,6 +6,8 @@ const { publicAddress } = require('../utils/scraperHttp.cjs');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { readMovieSettings } = require('../utils/movieSettings.cjs');
 const { requireCatalogAccess } = require('../utils/animeCatalog.cjs');
+const { readAdultPin } = require('../utils/adultAccess.cjs');
+const { rewriteAdultHls } = require('../utils/adultHls.cjs');
 const router = Router();
 let active = 0;
 
@@ -23,7 +25,7 @@ async function openStream(value, method, headers, signal, redirects = 0) {
         response.resume();
         if (redirects >= 3 || !response.headers.location) return reject(new Error('Invalid stream redirect'));
         resolve(openStream(new URL(response.headers.location, url).href, method, headers, signal, redirects + 1));
-      } else resolve(response);
+      } else { response.streaminUrl = url.href; resolve(response); }
     });
     request.setTimeout(30000, () => request.destroy(new Error('Stream timed out')));
     request.on('error', reject);
@@ -46,11 +48,35 @@ router.get('/movies/stream/:ticket', async (req, res) => {
   const timer = setTimeout(abort, 30000);
   let upstream;
   try {
-    try { requireCatalogAccess(await readMovieSettings(record.device), record.section); }
+    try {
+      requireCatalogAccess(await readMovieSettings(record.device), record.section);
+      if (record.section === 'adult') {
+        const pin = await readAdultPin(record.device);
+        if (!pin || pin.fingerprint !== record.adultPinFingerprint) return res.sendStatus(403);
+      }
+    }
     catch (error) { if (error.status === 403) return res.sendStatus(403); throw error; }
     upstream = await openStream(record.url, req.method === 'HEAD' ? 'HEAD' : 'GET', range ? { Range: range } : {}, controller.signal);
     clearTimeout(timer);
     if (![200, 206, 416].includes(upstream.statusCode)) { upstream.destroy(); return res.sendStatus(502); }
+    const isAdultHls = record.section === 'adult' && (/(?:mpegurl|m3u8)/i.test(upstream.headers['content-type'] || '') ||
+      /\.m3u8$/i.test(new URL(upstream.streaminUrl || record.url).pathname));
+    if (isAdultHls) {
+      if (req.method === 'HEAD') { upstream.resume(); return res.status(200).set('Content-Type', 'application/vnd.apple.mpegurl').end(); }
+      const chunks = []; let length = 0;
+      for await (const chunk of upstream) {
+        length += Buffer.byteLength(chunk);
+        if (length > 1024 * 1024) throw new Error('HLS playlist exceeded its limit');
+        chunks.push(Buffer.from(chunk));
+      }
+      const base = new URL(process.env.MOVIE_PLAYBACK_BASE_URL || 'https://api.758streamin.com');
+      if (base.protocol !== 'https:' || base.username || base.password) throw new Error('Invalid playback base URL');
+      const rewritten = rewriteAdultHls(Buffer.concat(chunks).toString('utf8'), upstream.streaminUrl || record.url, (url) => {
+        const ticket = createPlaybackTickets(process.env.JWT_SECRET).issue(url, record.device, 'adult', record.adultPinFingerprint);
+        return new URL(`/v1/movies/stream/${ticket}`, base).href;
+      });
+      return res.status(200).set('Content-Type', 'application/vnd.apple.mpegurl').end(rewritten);
+    }
     res.status(upstream.statusCode);
     for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
       if (upstream.headers[header]) res.set(header, upstream.headers[header]);

@@ -20,7 +20,7 @@ function createMovieSourcesRouter({ auth = authJwt, readSettings = readMovieSett
       let metadata = validateSearch(req.body);
       const settings = await readSettings(req.device.device_id);
       requireCatalogAccess(settings, metadata.section);
-      if ((!settings.scraper_url || metadata.kitsu_id) && !settings.stremio_addons?.some((a) => a.enabled && a.scopes.includes(metadata.section === 'anime' ? 'anime' : metadata.type))) {
+      if ((!(settings.scraper_url || settings.secondary_scraper_url) || metadata.kitsu_id) && !settings.stremio_addons?.some((a) => a.enabled && a.scopes.includes(metadata.section === 'anime' ? 'anime' : metadata.type))) {
         return res.status(409).json({ error: metadata.kitsu_id ? 'Enable a Kitsu-compatible Stremio source add-on for Anime in Media Settings' : 'Configure a Scraper URL or enable a Stremio add-on for this section' });
       }
       const now = Date.now();

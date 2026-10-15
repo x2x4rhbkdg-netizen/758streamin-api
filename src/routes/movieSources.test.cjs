@@ -36,6 +36,15 @@ test('disabled devices cannot invoke scraper work', async () => {
   assert.equal(calls, 0);
 });
 
+test('second scraper URL alone permits source discovery', async () => {
+  let calls = 0;
+  const router = factory()({ readSettings: async () => ({ enabled: true, secondary_scraper_url: 'https://second.example/manifest' }),
+    discover: async (settings) => { calls++; assert.equal(settings.secondary_scraper_url, 'https://second.example/manifest'); return { sources: [] }; } });
+  const result = await invoke(router);
+  assert.equal(result.statusCode, 200);
+  assert.equal(calls, 1);
+});
+
 test('add-on-only configurations pass access checks and retain signed source capabilities', async () => {
   const hash = 'b'.repeat(40);
   const router = factory()({ readSettings: async () => ({ enabled: true, stremio_addons: [{ enabled: true, scopes: ['movie'] }] }),

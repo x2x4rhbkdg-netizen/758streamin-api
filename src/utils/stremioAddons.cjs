@@ -21,7 +21,6 @@ function normalizeAddons(input, previous = []) {
     if (typeof item.enabled !== 'boolean' || !Array.isArray(item.scopes) || !item.scopes.length ||
       item.scopes.some((s) => !['movie', 'series', 'anime', 'adult'].includes(s))) invalid('Invalid add-on enabled state or scopes');
     if (item.scopes.includes('adult') && item.scopes.some((scope) => scope !== 'adult')) invalid('Adult add-ons must be separate from other media');
-    if (item.scopes.includes('adult') && item.enabled) invalid('Adult add-ons must remain disabled until Adult playback support is available');
     return { id, name, manifest_url: url.href, enabled: item.enabled, scopes: [...new Set(item.scopes)] };
   });
 }
@@ -56,7 +55,11 @@ async function testAddon(addon, { fetchText = readText } = {}) {
       if (!manifest || typeof manifest.id !== 'string' || !Array.isArray(manifest.resources) || !Array.isArray(manifest.types)) {
         return { status: 'unsupported', message: 'Invalid add-on manifest' };
       }
-      return { status: 'pending', message: 'Manifest reachable; Adult catalog and playback integration pending' };
+      const names = manifest.resources.map((entry) => typeof entry === 'string' ? entry : entry?.name);
+      return names.includes('catalog') && names.includes('stream') && manifest.catalogs?.some((catalog) =>
+        ['movie', 'series'].includes(catalog?.type) && typeof catalog.id === 'string' && manifest.types.includes(catalog.type))
+        ? { status: 'connected', message: 'Adult catalog and stream resources available' }
+        : { status: 'unsupported', message: 'Adult add-on requires catalog and stream resources' };
     }
     const supported = ['tt1254207', 'kitsu:1:1'].filter((id) => ['movie', 'series', ...(id.startsWith('kitsu:') ? ['anime'] : [])].some((type) => supports(manifest, type, id)));
     if (!supported.length) {
