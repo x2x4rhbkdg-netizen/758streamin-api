@@ -5,6 +5,27 @@ const { discoverSources } = require('./Scraper.cjs');
 const hash = 'a'.repeat(40), other = 'b'.repeat(40);
 const addon = (id, scopes = ['movie', 'series', 'anime']) => ({ id, name: id, enabled: true, scopes, manifest_url: `https://${id}.example/secret/manifest.json` });
 const manifest = { id: 'org.fixture', types: ['movie', 'series'], resources: ['stream'], idPrefixes: ['tt'] };
+test('Adult preset can be saved disabled and cannot mix with general media or be enabled prematurely', () => {
+  const pending = { ...addon('adult-rd', ['adult']), enabled: false,
+    manifest_url: 'https://adult-rd-bov3.vercel.app/manifest.json' };
+  assert.deepEqual(normalizeAddons([pending]), [pending]);
+  assert.throws(() => normalizeAddons([{ ...pending, enabled: true }]), { status: 400 });
+  assert.throws(() => normalizeAddons([{ ...pending, scopes: ['adult', 'movie'] }]), { status: 400 });
+  assert.equal(normalizeAddons(publicAddons([pending]), [pending])[0].manifest_url, pending.manifest_url);
+});
+test('Adult entries never participate in general discovery even with malformed stored scopes', async () => {
+  let calls = 0;
+  const result = await discoverAddons({ stremio_addons: [addon('adult', ['adult', 'movie'])] },
+    { type: 'movie', imdb_id: 'tt1234567' }, { fetchText: async () => { calls++; return JSON.stringify(manifest); } });
+  assert.equal(calls, 0);
+  assert.deepEqual(result, { sources: [], diagnostics: [] });
+});
+test('Adult connection tests distinguish reachability from implemented playback', async () => {
+  const pending = addon('adult', ['adult']);
+  assert.equal((await testAddon(pending, { fetchText: async () => JSON.stringify(manifest) })).status, 'pending');
+  assert.equal((await testAddon(pending, { fetchText: async () => '{}' })).status, 'unsupported');
+  assert.equal((await testAddon(pending, { fetchText: async () => { throw new Error('404'); } })).status, 'unavailable');
+});
 test('validates bounds, identifiers, scopes and HTTPS manifest URLs', () => {
   const good = addon('one');
   assert.equal(normalizeAddons([good])[0].manifest_url, good.manifest_url);

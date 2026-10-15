@@ -19,7 +19,9 @@ function normalizeAddons(input, previous = []) {
     if (urls.has(url.href)) invalid('Duplicate add-on manifest URL');
     urls.add(url.href);
     if (typeof item.enabled !== 'boolean' || !Array.isArray(item.scopes) || !item.scopes.length ||
-      item.scopes.some((s) => !['movie', 'series', 'anime'].includes(s))) invalid('Invalid add-on enabled state or scopes');
+      item.scopes.some((s) => !['movie', 'series', 'anime', 'adult'].includes(s))) invalid('Invalid add-on enabled state or scopes');
+    if (item.scopes.includes('adult') && item.scopes.some((scope) => scope !== 'adult')) invalid('Adult add-ons must be separate from other media');
+    if (item.scopes.includes('adult') && item.enabled) invalid('Adult add-ons must remain disabled until Adult playback support is available');
     return { id, name, manifest_url: url.href, enabled: item.enabled, scopes: [...new Set(item.scopes)] };
   });
 }
@@ -50,6 +52,12 @@ async function testAddon(addon, { fetchText = readText } = {}) {
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const manifest = await json(addon.manifest_url, fetchText, controller.signal);
+    if (addon.scopes?.includes('adult')) {
+      if (!manifest || typeof manifest.id !== 'string' || !Array.isArray(manifest.resources) || !Array.isArray(manifest.types)) {
+        return { status: 'unsupported', message: 'Invalid add-on manifest' };
+      }
+      return { status: 'pending', message: 'Manifest reachable; Adult catalog and playback integration pending' };
+    }
     const supported = ['tt1254207', 'kitsu:1:1'].filter((id) => ['movie', 'series', ...(id.startsWith('kitsu:') ? ['anime'] : [])].some((type) => supports(manifest, type, id)));
     if (!supported.length) {
       return { status: 'unsupported', message: 'No supported IMDb or Kitsu stream resource' };
@@ -59,7 +67,7 @@ async function testAddon(addon, { fetchText = readText } = {}) {
   finally { clearTimeout(timer); }
 }
 async function discoverAddons(settings, query, { fetchText = readText } = {}) {
-  const addons = (settings.stremio_addons || []).filter((a) => a.enabled && a.scopes.includes(query.section === 'anime' ? 'anime' : query.type));
+  const addons = (settings.stremio_addons || []).filter((a) => a.enabled && !a.scopes.includes('adult') && a.scopes.includes(query.section === 'anime' ? 'anime' : query.type));
   const results = new Array(addons.length);
   let cursor = 0;
   await Promise.all(Array.from({ length: Math.min(4, addons.length) }, async () => {
