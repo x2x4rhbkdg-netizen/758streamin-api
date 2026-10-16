@@ -20,8 +20,13 @@ function fixture(overrides = {}) {
   const tokens = createAdultTokens('test-secret', () => time);
   const tickets = createPlaybackTickets('test-secret');
   const calls = [];
+  const historyRecords = new Map();
+  const historyOwners = { 1: 'account-a', 2: 'account-a', 3: 'account-b' };
   const router = module.exports.createAdultRouter({ readSettings: async () => settings, readPin: async () => pin,
     tokens: () => tokens, tickets: () => tickets, now: () => time,
+    history: { owner: async device => historyOwners[device],
+      list: async owner => [...historyRecords.values()].filter(record => record.owner === owner).map(record => record.entry),
+      put: async (owner, section, key, entry) => { historyRecords.set(`${owner}:${key}`, { owner, entry }); } },
     client: { catalogs: async () => ({ catalogs: [{ id: 'fixture' }] }),
       catalog: async () => ({ items: [{ id: 'custom:1', addon_id: 'adult', addon_version: addonVersion(settings.stremio_addons[0]), type: 'movie', title: 'Fixture', poster: 'https://cdn.example/poster.jpg?key=private' }] }),
       details: async (_settings, item) => ({ ...item, videos: [] }),
@@ -36,9 +41,41 @@ function fixture(overrides = {}) {
     await route.stack.at(-1).handle({ body, device: { device_id: device } }, res);
     return res;
   }
-  const unlock = async () => (await invoke('unlock', { pin: '1234' })).body.unlock_token;
-  return { invoke, unlock, settings, tokens, tickets, calls, setPin: (value) => { pin = value; }, advance: (ms) => { time += ms; } };
+  const unlock = async (device = 1) => (await invoke('unlock', { pin: '1234' }, device)).body.unlock_token;
+  return { invoke, unlock, settings, tokens, tickets, calls, historyOwners, historyRecords, setPin: (value) => { pin = value; }, advance: (ms) => { time += ms; } };
 }
+test('Adult history restores only after PIN unlock on another linked device', async () => {
+  const f = fixture();
+  const unlock_token = await f.unlock();
+  const catalog = await f.invoke('catalog', { unlock_token });
+  const sources = await f.invoke('sources', { unlock_token, item_token: catalog.body.items[0].item_token });
+  const playback = await f.invoke('resolve', { unlock_token, source_token: sources.body.sources[0].source_token });
+  assert.equal(playback.code, 200);
+  const history_progress_token = playback.body.history_progress_token;
+  assert.ok(history_progress_token);
+  assert.equal((await f.invoke('progress', { history_progress_token, position: 60, duration: 1000, updatedAt: 1000 })).code, 200);
+  const request = { addon_id: '__history', catalog_id: '__history' };
+  assert.equal((await f.invoke('catalog', request, 2)).code, 403);
+  const second = await f.unlock(2);
+  const restored = await f.invoke('catalog', { ...request, unlock_token: second }, 2);
+  assert.equal(restored.body.items[0].resume_position, 60);
+  assert.ok(restored.body.items[0].item_token);
+  assert.equal((await f.invoke('catalog', { ...request, unlock_token: await f.unlock(3) }, 3)).body.items.length, 0);
+  assert.equal((await f.invoke('progress', { history_progress_token, position: 80, duration: 1000, updatedAt: 1000 }, 2)).code, 403);
+});
+test('selected-title progress grant cannot browse and is revoked by account/PIN changes', async () => {
+  const f = fixture();
+  const unlock_token = await f.unlock();
+  const catalog = await f.invoke('catalog', { unlock_token });
+  const sources = await f.invoke('sources', { unlock_token, item_token: catalog.body.items[0].item_token });
+  const playback = await f.invoke('resolve', { unlock_token, source_token: sources.body.sources[0].source_token });
+  const history_progress_token = playback.body.history_progress_token;
+  assert.equal((await f.invoke('catalogs', { unlock_token: history_progress_token })).code, 403);
+  f.historyOwners[1] = 'account-b';
+  assert.equal((await f.invoke('progress', { history_progress_token, position: 60, duration: 1000, updatedAt: 1000 })).code, 409);
+  f.setPin({ pin: '5678', fingerprint: 'changed' });
+  assert.equal((await f.invoke('progress', { history_progress_token, position: 60, duration: 1000, updatedAt: 1000 })).code, 403);
+});
 test('Adult is disabled independently of Movies and PIN unlock is rate limited', async () => {
   const f = fixture();
   f.settings.adult_enabled = false; f.settings.enabled = true;

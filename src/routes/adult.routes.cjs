@@ -6,11 +6,13 @@ const { createAdultTokens, readAdultPin } = require('../utils/adultAccess.cjs');
 const { createAdultAddonClient, adultAddons, addonVersion } = require('../utils/adultAddons.cjs');
 const { lookupProviders, resolveMovieSource } = require('../utils/movieResolver.cjs');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
+const { createMediaHistoryStore, normalizeProgress, hash } = require('../utils/mediaHistory.cjs');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
 function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, readPin = readAdultPin,
   client = createAdultAddonClient(), lookup = lookupProviders, resolve = resolveMovieSource,
-  tokens = () => createAdultTokens(process.env.JWT_SECRET), tickets = () => createPlaybackTickets(process.env.JWT_SECRET), now = Date.now } = {}) {
+  tokens = () => createAdultTokens(process.env.JWT_SECRET), tickets = () => createPlaybackTickets(process.env.JWT_SECRET),
+  history = createMediaHistoryStore(), now = Date.now } = {}) {
   const router = Router();
   const attempts = new Map(), requests = new Map(), active = new Set();
   function rate(map, device, max, window) {
@@ -25,8 +27,18 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
     if (value.fingerprint !== req.adultPin.fingerprint) throw fail('Unlock Adult Content again', 403);
     return value;
   }
-  function issue(req, purpose, data) {
-    return tokens().issue(purpose, req.device.device_id, { ...data, fingerprint: req.adultPin.fingerprint });
+  function issue(req, purpose, data, ttl) {
+    return tokens().issue(purpose, req.device.device_id, { ...data, fingerprint: req.adultPin.fingerprint }, ttl);
+  }
+  const historyKey = item => hash(`${item.addon_id}:${item.type}:${item.id}:${item.season ?? ''}:${item.episode ?? ''}`);
+  const historyItem = item => ({ addon_id: item.addon_id, addon_version: item.addon_version, id: item.id,
+    type: item.type, title: item.title, poster: item.poster, season: item.season, episode: item.episode });
+  async function historyItems(req) {
+    const owner = await history.owner(req.device.device_id);
+    const records = await history.list(owner, ['adult']);
+    return records.filter(record => record.position >= 10 && record.position < record.duration - 30 &&
+      adultAddons(req.adultSettings).some(addon => addon.id === record.item?.addon_id && addonVersion(addon) === record.item.addon_version))
+      .map(record => ({ ...record.item, resume_position: record.position }));
   }
   function protectedUrl(req, url) {
     const base = new URL(process.env.MOVIE_PLAYBACK_BASE_URL || 'https://api.758streamin.com');
@@ -45,7 +57,7 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
         if (active.has(device) || active.size >= 8) throw fail('Adult requests are busy. Try again shortly.', 429);
         active.add(device); reserved = true;
         rate(requests, device, 60, 60000);
-        if (!unlock) rate(attempts, device, 5, 5 * 60000);
+        if (path === 'unlock') rate(attempts, device, 5, 5 * 60000);
         req.adultPin = await readPin(device);
         if (!req.adultPin) throw fail('Set a parental PIN before opening Adult Content', 409);
         if (unlock) capability(req, 'unlock', req.body?.unlock_token);
@@ -62,11 +74,16 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
       !crypto.timingSafeEqual(Buffer.from(pin), Buffer.from(stored))) throw fail('Invalid parental PIN', 403);
     return { unlock_token: issue(req, 'unlock', {}) };
   }, false);
-  route('catalogs', (req) => client.catalogs(req.adultSettings));
+  route('catalogs', async (req) => {
+    const result = await client.catalogs(req.adultSettings);
+    return { ...result, catalogs: [{ addon_id: '__history', id: '__history', type: 'history', name: 'Continue Watching', addon_name: 'Account history' }, ...(result.catalogs || [])] };
+  });
   route('catalog', async (req) => {
-    const result = await client.catalog(req.adultSettings, req.body || {});
+    const result = req.body?.addon_id === '__history' && req.body?.catalog_id === '__history'
+      ? { items: await historyItems(req), has_more: false } : await client.catalog(req.adultSettings, req.body || {});
     return { ...result, items: result.items.map((item) => ({ title: item.title, type: item.type,
-      item_token: issue(req, 'item', item), ...(item.poster ? { poster_url: protectedUrl(req, item.poster) } : {}) })) };
+      item_token: issue(req, 'item', item), ...(Number.isFinite(item.resume_position) ? { resume_position: item.resume_position } : {}),
+      ...(item.poster ? { poster_url: protectedUrl(req, item.poster) } : {}) })) };
   });
   route('details', async (req) => {
     const item = capability(req, 'item', req.body?.item_token);
@@ -81,8 +98,7 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
     return { sources: sources.map((source) => ({ title: source.title, direct: !!source.url,
       providers: source.hash ? available.available?.[source.hash] || [] : [],
       on_demand_providers: source.hash ? available.on_demand?.[source.hash] || [] : [],
-      source_token: issue(req, 'source', { item: { addon_id: item.addon_id, addon_version: item.addon_version,
-        type: item.type, season: item.season, episode: item.episode }, source }) })) };
+      source_token: issue(req, 'source', { item: historyItem(item), source }) })) };
   });
   route('resolve', async (req) => {
     const { item, source } = capability(req, 'source', req.body?.source_token);
@@ -98,8 +114,27 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
         provider: req.body?.provider || 'auto', allow_uncached_rd: req.body?.allow_uncached_rd === true });
       url = result.protectedPlaybackUrl || result.playbackUrl; provider = result.provider;
     }
-    return { playbackUrl: protectedUrl(req, url), provider };
+    let progress = {};
+    if (item.id) {
+      try {
+        const owner = await history.owner(req.device.device_id);
+        const key = historyKey(item);
+        const previous = (await history.list(owner, ['adult'])).find(record => record.id === key);
+        // Write-only capability for this selected title; it grants no catalog/history reads.
+        progress = { history_progress_token: issue(req, 'progress', { owner, key, item }, 6 * 60 * 60 * 1000),
+          resume_position: previous?.position >= 10 && previous.position < previous.duration - 30 ? previous.position : 0 };
+      } catch { /* Playback remains available before the history migration is deployed. */ }
+    }
+    return { playbackUrl: protectedUrl(req, url), provider, ...progress };
   });
+  route('progress', async (req) => {
+    const grant = capability(req, 'progress', req.body?.history_progress_token);
+    const owner = await history.owner(req.device.device_id);
+    if (grant.owner !== owner) throw fail('History account changed', 409);
+    const progress = normalizeProgress(req.body, now());
+    await history.put(owner, 'adult', grant.key, { id: grant.key, item: grant.item, ...progress });
+    return { ok: true };
+  }, false);
   return router;
 }
 module.exports = createAdultRouter();
