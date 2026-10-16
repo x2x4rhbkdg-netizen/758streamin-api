@@ -974,6 +974,17 @@ router.patch("/admins/:id", adminAuth, async (req, res) => {
       return res.status(400).json({ error: "cannot change own role/status" });
     }
 
+    const password = req.body?.password;
+    if (typeof password !== "undefined" && typeof password !== "string") {
+      return res.status(400).json({ error: "password must be a string" });
+    }
+    if (password && password.length < 8) {
+      return res.status(400).json({ error: "password must be at least 8 characters" });
+    }
+    if (password && Buffer.byteLength(password, "utf8") > 72) {
+      return res.status(400).json({ error: "password must be at most 72 UTF-8 bytes" });
+    }
+
     const updates = [];
     const params = [];
 
@@ -996,6 +1007,10 @@ router.patch("/admins/:id", adminAuth, async (req, res) => {
     if (status) {
       updates.push("status=?");
       params.push(status);
+    }
+    if (password) {
+      updates.push("password_hash=?");
+      params.push(await bcrypt.hash(password, 12));
     }
 
     if (!updates.length) {
