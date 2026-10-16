@@ -21,6 +21,7 @@ const createWhmcsReminderIfNeeded = whmcsReminderRoutes.createReminderIfNeeded;
 const createWhmcsPaymentConfirmationIfNeeded = whmcsReminderRoutes.createPaymentConfirmationIfNeeded;
 const createWhmcsTrialReminderIfNeeded = whmcsReminderRoutes.createTrialReminderIfNeeded;
 const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
+const { syncWhmcsPlanAccess } = require('../utils/whmcsPlanAccess.cjs');
 
 const router = Router();
 
@@ -1668,7 +1669,9 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
     const service = await fetchWhmcsServiceById(resolvedServiceId);
     if (!service) return res.status(404).json({ error: "WHMCS service not found" });
 
-    const planName = extractWhmcsPlanName(service.raw) || dev.plan_name || null;
+    const syncedPlanName = extractWhmcsPlanName(service.raw);
+    const planName = syncedPlanName || dev.plan_name || null;
+    await syncWhmcsPlanAccess(dev.id, syncedPlanName);
     const whmcsUpstream = extractWhmcsUpstreamCredentials(service.raw);
     const whmcsClient = (await fetchWhmcsClientProfileById(service.client_id)) || null;
     const whmcsCustomerName = whmcsClient?.name || dev.customer_name || null;

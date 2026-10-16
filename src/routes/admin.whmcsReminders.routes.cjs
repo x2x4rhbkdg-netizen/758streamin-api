@@ -3,6 +3,7 @@ const { adminAuth } = require("../middleware/adminAuth.cjs");
 const { pool } = require("../db/pool.cjs");
 const { env } = require("../config/env.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
+const { syncWhmcsPlanAccess } = require('../utils/whmcsPlanAccess.cjs');
 
 const router = Router();
 
@@ -676,7 +677,9 @@ router.post("/whmcs/payments/auto", async (req, res) => {
       return res.status(404).json({ error: "WHMCS service not found" });
     }
 
-    const planName = extractWhmcsPlanName(service.raw) || dev.plan_name || null;
+    const syncedPlanName = extractWhmcsPlanName(service.raw);
+    const planName = syncedPlanName || dev.plan_name || null;
+    await syncWhmcsPlanAccess(dev.id, syncedPlanName);
 
     await pool.execute(
       `
