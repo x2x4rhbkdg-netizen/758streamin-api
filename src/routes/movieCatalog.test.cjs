@@ -11,7 +11,7 @@ function factory() {
       if (name === 'express') return require('express');
       if (name.includes('authJwt')) return { authJwt: (_req, _res, next) => next() };
       if (name.includes('movieSettings')) return { readMovieSettings: async () => ({ enabled: false }) };
-      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('kitsuCatalog') || name.includes('stremioCatalogs')) return require(name);
+      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('kitsuCatalog') || name.includes('stremioCatalogs') || name.includes('streamingServices')) return require(name);
       throw new Error('Unexpected dependency');
     },
   });
@@ -30,6 +30,30 @@ async function invoke(options, route, query = {}, params = {}) {
   return res;
 }
 const configured = async () => ({ enabled: true, tmdb_read_access_token: 'private-token' });
+
+test('streaming services require device access and metadata credentials and exclude Anime', async () => {
+  const request = async () => { throw new Error('must not request'); };
+  assert.equal((await invoke({ readSettings: async () => ({ enabled: false }), request }, '/movies/streaming-services')).statusCode, 403);
+  assert.equal((await invoke({ readSettings: async () => ({ enabled: true }), request }, '/movies/streaming-services')).statusCode, 409);
+  assert.equal((await invoke({ readSettings: async () => ({ anime_enabled: true }), request }, '/movies/streaming-services', { section: 'anime' })).statusCode, 400);
+  assert.equal((await invoke({ readSettings: configured, request }, '/movies/catalog', { streaming_service: '8', addon_catalog: 'anything' })).statusCode, 400);
+});
+
+test('service routes return normalized titles and keep region internals and credentials private', async () => {
+  const readSettings = async () => ({ enabled: true, tmdb_read_access_token: 'route-service-token' });
+  const request = async (_settings, path) => {
+    if (path === 'watch/providers/movie') return { results: [{ provider_id: 8, provider_name: 'Netflix', display_priorities: { LC: 1 } }] };
+    if (path === 'watch/providers/regions') return { results: [{ iso_3166_1: 'LC' }] };
+    return { total_pages: 1, results: [{ id: 10, title: 'Example', poster_path: '/poster.jpg' }] };
+  };
+  const list = await invoke({ readSettings, request }, '/movies/streaming-services');
+  assert.equal(list.body.services[0].name, 'Netflix');
+  assert.equal(list.body.services[0].regions, undefined);
+  const catalog = await invoke({ readSettings, request }, '/movies/catalog', { streaming_service: '8' });
+  assert.equal(catalog.body.items[0].poster, 'https://image.tmdb.org/t/p/w342/poster.jpg');
+  assert.equal(JSON.stringify(catalog.body).includes('route-service-token'), false);
+  assert.equal((await invoke({ readSettings, request }, '/movies/catalog', { streaming_service: '-1' })).statusCode, 400);
+});
 
 test('disabled devices and missing metadata credentials never call TMDB', async () => {
   let calls = 0;

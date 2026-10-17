@@ -5,6 +5,7 @@ const { tmdb } = require('../utils/tmdbCatalog.cjs');
 const { catalogSection, requireCatalogAccess, requireAnime } = require('../utils/animeCatalog.cjs');
 const { kitsuCatalog, kitsuDetails } = require('../utils/kitsuCatalog.cjs');
 const { listAddonCatalogs, browseAddonCatalog } = require('../utils/stremioCatalogs.cjs');
+const streamingServices = require('../utils/streamingServices.cjs');
 
 function bad(message, status = 400) { return Object.assign(new Error(message), { status }); }
 function contentType(value) {
@@ -49,12 +50,19 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
     contentType(type);
     return addonCatalogs(req.movieSettings, { type, section: req.catalogSection });
   }));
+  router.get('/movies/streaming-services', handle(async (req) => {
+    if (req.catalogSection === 'anime') throw bad('Streaming services are for Movies and Series');
+    requireTmdb(req);
+    const list = await streamingServices.services(req.movieSettings, contentType(req.query.type || 'movie'), request);
+    return { services: list.map(({ regions, ...value }) => value) };
+  }));
   router.get('/movies/catalog', handle(async (req) => {
     const type = req.query.type || 'movie';
     const endpoint = contentType(type);
     const page = integer(req.query.page || 1, 1, 500);
     const query = String(req.query.q || '').trim();
     if (query.length > 200) throw bad('Search query is too long');
+    if (req.query.streaming_service && (req.catalogSection === 'anime' || req.query.addon_catalog)) throw bad('Invalid streaming service scope');
     if (req.query.addon_catalog) return addonBrowse(req.movieSettings, { type, section: req.catalogSection,
       key: req.query.addon_catalog, page, query, genre: req.query.genre || '' });
     const category = req.query.category || 'popular';
@@ -62,6 +70,12 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
     const anime = req.catalogSection === 'anime';
     if (anime) return animeCatalog({ type, category, query, page });
     requireTmdb(req);
+    if (req.query.streaming_service) {
+      const data = await streamingServices.browse(req.movieSettings, endpoint, request, {
+        service: integer(req.query.streaming_service), page, category, query,
+      });
+      return { page, total_pages: data.total_pages, items: data.results.map(value => item(value, type)), ...(data.notice ? { notice: data.notice } : {}) };
+    }
     const data = await request(req.movieSettings, query ? `search/${endpoint}` : `${endpoint}/${category}`, {
       page, include_adult: false, ...(query ? { query } : {}),
     });
