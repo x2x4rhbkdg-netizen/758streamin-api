@@ -6,6 +6,25 @@ const SUPPORTED_PROVIDERS = ['Real-Debrid', 'Premiumize', 'Torbox', 'EasyDebrid'
 const transfers = new Map();
 function failure(message, status = 409) { return Object.assign(new Error(message), { status, publicMessage: message }); }
 
+function premiumizeFailure(data) {
+  const reasons = {
+    authentication_failed: 'Premiumize rejected access. Check its token in Media Settings.',
+    permission_denied: 'Premiumize denied this request. Check the account status.',
+    account_limit_reached: 'Premiumize account usage limit reached. Check fair-use points and active transfers.',
+    service_limit_reached: 'Premiumize service usage limit reached. Retry later or choose another provider.',
+    rate_limit_reached: 'Premiumize request limit reached. Wait before retrying.',
+    service_down: 'Premiumize reports that this source service is unavailable. Try another source or provider.',
+    service_unsupported: 'Premiumize does not support this source.',
+    not_found: 'Premiumize could not find this source. Choose another source.',
+    link_generation_failed: 'Premiumize could not generate a playback link. Retry or choose another source.',
+  };
+  const code = typeof data?.code === 'string' ? data.code : '';
+  return Object.assign(failure(reasons[code] || 'Premiumize could not prepare this source. Retry or choose another source.', 502), {
+    credentialRejected: ['authentication_failed', 'permission_denied'].includes(code),
+    rateLimited: code === 'rate_limit_reached',
+  });
+}
+
 function waitForProvider(milliseconds, signal) {
   return new Promise((resolve, reject) => {
     const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(new Error('Provider preparation cancelled')); };
@@ -80,7 +99,7 @@ async function providerRequest(provider, token, path, form, signal) {
   if (!response.ok) {
     const rejected = response.status === 401 || response.status === 403;
     throw Object.assign(failure(rejected ? `${provider} rejected access. Check its token and account status in Media Settings.` : `${provider} could not resolve this source`, 502),
-      { credentialRejected: rejected });
+      { credentialRejected: rejected, rateLimited: response.status === 429 });
   }
   let text = '';
   if (response.status !== 204) {
@@ -95,7 +114,8 @@ async function providerRequest(provider, token, path, form, signal) {
   }
   const data = text ? JSON.parse(text) : {};
   if (provider === 'Torbox' && data.success !== true) throw failure('Torbox could not prepare this source', 502);
-  if ((provider === 'OffCloud' && (data.error || data.not_available)) || (provider === 'Premiumize' && data.status !== 'success')) throw failure(`${provider} could not prepare this source`, 502);
+  if (provider === 'Premiumize' && data.status !== 'success') throw premiumizeFailure(data);
+  if (provider === 'OffCloud' && (data.error || data.not_available)) throw failure(`${provider} could not prepare this source`, 502);
   return data;
 }
 
@@ -132,8 +152,10 @@ async function lookupProviders(settings, sources, { request = providerRequest, s
         }
       }
     }));
-    if (cursor < sources.length || controller.signal.aborted) {
+    if (cursor < sources.length) {
       for (const provider of configuredProviders(settings)) provider_status[provider] = 'partial';
+    } else if (controller.signal.aborted) {
+      for (const provider of configuredProviders(settings)) provider_status[provider] ||= 'timed_out';
     }
     return { available, on_demand, provider_status };
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
@@ -158,8 +180,11 @@ async function lookupProviderBatch(settings, sources, { request = providerReques
         let cached;
         if (!missing.length) cached = [];
         else if (provider === 'Torbox') {
-          const data = await call(`torrents/checkcached?hash=${missing.map((s) => s.hash).join(',')}&format=object&list_files=true`);
-          cached = missing.map((s) => Boolean(data.data?.[s.hash]));
+          // Availability needs only hash presence, not potentially huge season-pack file lists.
+          const data = await call(`torrents/checkcached?hash=${missing.map((s) => s.hash).join(',')}&format=object&list_files=false`);
+          if (!data.data || typeof data.data !== 'object' || Array.isArray(data.data) && data.data.length) throw failure('Unexpected Torbox cache response');
+          const hashes = new Map(Object.entries(data.data).map(([key, value]) => [key.toLowerCase(), value]));
+          cached = missing.map((s) => Boolean(hashes.get(s.hash.toLowerCase())));
         } else if (provider === 'Premiumize') {
           cached = (await call('cache/check', { items: missing.map((s) => s.hash) })).response;
         } else if (provider === 'EasyDebrid') {
@@ -184,7 +209,8 @@ async function lookupProviderBatch(settings, sources, { request = providerReques
         });
         statuses[provider] = provider === 'Real-Debrid' ? 'on_demand' : 'checked';
       } catch (error) {
-        statuses[provider] = error.credentialRejected ? 'credential_rejected' : 'unavailable';
+        statuses[provider] = error.credentialRejected ? 'credential_rejected' : error.rateLimited ? 'rate_limited' :
+          controller.signal.aborted || error.name === 'AbortError' ? 'timed_out' : 'unavailable';
         if (!signal?.aborted) availability?.failed(provider, token, statuses[provider]);
       }
     }));
@@ -217,7 +243,7 @@ async function resolveSingle(settings, input, { request = providerRequest, signa
     let download;
     if (provider === 'Premiumize') {
       const data = await call('transfer/directdl', { src: magnet });
-      if (data.status !== 'success') throw failure('Premiumize has no ready stream for this source');
+      if (data.status !== 'success') throw premiumizeFailure(data);
       download = chooseVideo(Array.isArray(data.content) ? data.content : [], input).link;
     } else if (provider === 'Torbox') {
       let id = request === providerRequest ? transfers.get(key)?.id : null;
@@ -342,11 +368,12 @@ async function resolveMovieSource(settings, input, options = {}) {
         availability?.invalidate(provider, settings.provider_accounts[provider].token, input.hash);
         // Only messages created by our adapter are safe to expose, never raw network errors.
         const reason = error.publicMessage || 'Provider request failed or timed out';
-        if (providers.length === 1) throw failure(`${provider}: ${reason}`, error.status || 502);
-        failures.push(`${provider}: ${reason}`);
+        const message = reason.startsWith(`${provider} `) ? reason : `${provider}: ${reason}`;
+        if (providers.length === 1) throw failure(message, error.status || 502);
+        failures.push(message);
       }
     }
     throw failure(failures.length ? failures.join(' | ') : 'Provider preparation timed out. Choose another source.', 502);
   } finally { clearTimeout(timer); }
 }
-module.exports = { SUPPORTED_PROVIDERS, chooseVideo, resolveMovieSource, lookupProviders, configuredProviders };
+module.exports = { SUPPORTED_PROVIDERS, chooseVideo, resolveMovieSource, lookupProviders, configuredProviders, premiumizeFailure };

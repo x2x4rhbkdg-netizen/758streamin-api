@@ -5,6 +5,42 @@ const { createSourceCapabilities } = require('./movieSourceSessions.cjs');
 const hash = 'a'.repeat(40);
 const settings = (provider) => ({ default_provider: provider, provider_accounts: { [provider]: { enabled: true, token: 'private-key' } } });
 
+test('PM TB and RD all receive availability checks and preserve their ready matches', async () => {
+  const calls = [];
+  const configuration = { provider_accounts: Object.fromEntries(['Premiumize', 'Torbox', 'Real-Debrid'].map((name) => [name, { enabled: true, token: 'test-key' }])) };
+  const result = await lookupProviders(configuration, [{ hash }], { request: async (provider, _token, path) => {
+    calls.push(provider);
+    if (provider === 'Premiumize') return { response: [true] };
+    if (provider === 'Torbox') {
+      assert.match(path, /list_files=false/);
+      return { data: { [hash.toUpperCase()]: { hash } } };
+    }
+    return [{ hash, status: 'downloaded' }];
+  } });
+  assert.deepEqual(new Set(calls), new Set(['Premiumize', 'Torbox', 'Real-Debrid']));
+  assert.deepEqual(new Set(result.available[hash]), new Set(calls));
+});
+
+test('invalid TB response is a failed check, not a false zero-cached result', async () => {
+  const result = await lookupProviders(settings('Torbox'), [{ hash }], { request: async () => ({ success: true, data: null }) });
+  assert.equal(result.provider_status.Torbox, 'unavailable');
+  assert.deepEqual(result.available, {});
+});
+
+test('provider throttling is distinguishable from network failure', async () => {
+  const result = await lookupProviders(settings('Torbox'), [{ hash }], { request: async () => { throw Object.assign(new Error('hidden'), { rateLimited: true }); } });
+  assert.equal(result.provider_status.Torbox, 'rate_limited');
+});
+
+test('Premiumize errors use documented safe codes, never raw credential-bearing messages', () => {
+  const { premiumizeFailure } = require('./movieResolver.cjs');
+  assert.match(premiumizeFailure({ code: 'account_limit_reached' }).message, /usage limit/);
+  assert.equal(premiumizeFailure({ code: 'authentication_failed' }).credentialRejected, true);
+  const unknown = premiumizeFailure({ code: 'https://secret.example', message: 'token=private-key' });
+  assert.equal(unknown.message.includes('private-key'), false);
+  assert.equal(unknown.message.includes('secret.example'), false);
+});
+
 test('cache checks retain lower resolutions beyond the first bounded batch', async () => {
   const sources = Array.from({ length: 225 }, (_, index) => ({ hash: (index + 1).toString(16).padStart(40, '0') }));
   const batches = [];
@@ -113,6 +149,22 @@ test('Premiumize resolves a cached movie and excludes samples', async () => {
   }) });
   assert.equal(result.playbackUrl, 'https://cdn.example/movie.mkv');
   assert.equal(JSON.stringify(result).includes('private-key'), false);
+});
+
+test('balanced playback falls back to TB when PM fails preparing a source cached on both', async () => {
+  const prepared = [];
+  const config = { default_provider: 'auto', provider_accounts: {
+    Premiumize: { enabled: true, token: 'pm-test-key' }, Torbox: { enabled: true, token: 'tb-test-key' },
+  } };
+  const result = await resolveMovieSource(config, { hash, type: 'movie', provider: 'auto' }, { request: cachedRequest(async (provider, _token, path) => {
+    if (provider === 'Premiumize') { prepared.push(provider); return { status: 'error', code: 'link_generation_failed', message: 'secret upstream message' }; }
+    if (path === 'torrents/createtorrent') { prepared.push(provider); return { data: { torrent_id: 12 } }; }
+    if (path.startsWith('torrents/mylist')) return { data: [{ id: 12, download_present: true, download_finished: true, files: [{ id: 4, name: 'Movie.mkv' }] }] };
+    return { data: 'https://cdn.example/tb-video.mkv' };
+  }) });
+  assert.deepEqual(prepared, ['Premiumize', 'Torbox']);
+  assert.equal(result.provider, 'Torbox');
+  assert.equal(result.playbackUrl, 'https://cdn.example/tb-video.mkv');
 });
 test('Real-Debrid selects a ready account episode without starting a download', async () => {
   const calls = [];
