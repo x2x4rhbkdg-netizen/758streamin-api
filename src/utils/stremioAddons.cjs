@@ -1,6 +1,7 @@
 const { readText, validateUrl } = require('./scraperHttp.cjs');
 const { createHash } = require('node:crypto');
 const { adultCatalogs } = require('./adultAddons.cjs');
+const { catalogDefinitions } = require('./stremioCatalogManifest.cjs');
 const cache = new Map();
 function invalid(message) { throw Object.assign(new Error(message), { status: 400 }); }
 function normalizeAddons(input, previous = []) {
@@ -63,10 +64,13 @@ async function testAddon(addon, { fetchText = readText } = {}) {
       return { status: 'connected', message: 'Adult catalog and stream resources available' };
     }
     const supported = ['tt1254207', 'kitsu:1:1'].filter((id) => ['movie', 'series', ...(id.startsWith('kitsu:') ? ['anime'] : [])].some((type) => supports(manifest, type, id)));
-    if (!supported.length) {
+    const catalogs = catalogDefinitions(manifest);
+    if (!supported.length && !catalogs.length) {
       return { status: 'unsupported', message: 'No supported IMDb or Kitsu stream resource' };
     }
-    return { status: 'connected', message: `${supported.map((id) => id.startsWith('kitsu:') ? 'Kitsu' : 'IMDb').join(' / ')} stream resource available` };
+    return { status: 'connected', capabilities: { catalogs: catalogs.length, streams: supported.length > 0 },
+      message: [catalogs.length ? `${catalogs.length} browsing catalogs available` : '',
+        supported.length ? `${supported.map((id) => id.startsWith('kitsu:') ? 'Kitsu' : 'IMDb').join(' / ')} stream resource available` : 'Catalog only; playback needs a separate source add-on or scraper'].filter(Boolean).join('. ') };
   } catch { return { status: 'unavailable', message: 'Manifest could not be loaded or validated' }; }
   finally { clearTimeout(timer); }
 }
@@ -107,4 +111,4 @@ async function discoverAddons(settings, query, { fetchText = readText } = {}) {
   }));
   return { sources: results.flatMap((r) => r.sources), diagnostics: results.map((r) => r.diagnostic) };
 }
-module.exports = { normalizeAddons, publicAddons, supports, testAddon, discoverAddons };
+module.exports = { normalizeAddons, publicAddons, supports, testAddon, discoverAddons, readAddonJson: json };

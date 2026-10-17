@@ -11,7 +11,7 @@ function factory() {
       if (name === 'express') return require('express');
       if (name.includes('authJwt')) return { authJwt: (_req, _res, next) => next() };
       if (name.includes('movieSettings')) return { readMovieSettings: async () => ({ enabled: false }) };
-      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('kitsuCatalog')) return require(name);
+      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('kitsuCatalog') || name.includes('stremioCatalogs')) return require(name);
       throw new Error('Unexpected dependency');
     },
   });
@@ -107,4 +107,20 @@ test('anime-only devices cannot request non-anime details or seasons', async () 
   const options = { readSettings: animeSettings, request: async () => ({ id: 10, genres: [{ id: 16 }], origin_country: ['US'] }) };
   assert.equal((await invoke(options, '/movies/details/:id', { section: 'anime', type: 'series' }, { id: 10 })).statusCode, 404);
   assert.equal((await invoke(options, '/movies/season/:id/:season', { section: 'anime' }, { id: 10, season: 1 })).statusCode, 404);
+});
+
+test('configured catalog choices are accessible without TMDB but still require section access', async () => {
+  const addonCatalogs = async (_settings, options) => ({ catalogs: [{ key: 'safe', name: options.section }] });
+  const options = { readSettings: async () => ({ anime_enabled: true }), addonCatalogs };
+  const response = await invoke(options, '/movies/addon-catalogs', { section: 'anime', type: 'series' });
+  assert.equal(response.body.catalogs[0].name, 'anime');
+  assert.equal((await invoke(options, '/movies/addon-catalogs', { type: 'series' })).statusCode, 403);
+});
+test('selected addon catalogs pass canonical scope and filters to isolated browsing', async () => {
+  const response = await invoke({ readSettings: configured, addonBrowse: async (_settings, options) => {
+    assert.equal(options.key, 'a'.repeat(64)); assert.equal(options.type, 'series');
+    assert.equal(options.genre, 'Action'); assert.equal(options.page, 2);
+    return { items: [{ id: 10 }], page: 2, total_pages: 2 };
+  } }, '/movies/catalog', { type: 'series', addon_catalog: 'a'.repeat(64), genre: 'Action', page: '2' });
+  assert.equal(response.body.items[0].id, 10);
 });

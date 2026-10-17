@@ -81,4 +81,4 @@ async function canonicalKitsuSearch(input, options) {
       mapped_season: video.mapped_season, mapped_episode: video.mapped_episode } : {}),
     duration_seconds: (video?.runtime || detail.runtime || 24) * 60 };
 }
-module.exports = { kitsuId, kitsuCatalog, kitsuDetails, canonicalKitsuSearch };
+module.exports = { kitsuId, kitsuCatalog, kitsuDetails, canonicalKitsuSearch, safeIds, kitsuItem: item };

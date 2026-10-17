@@ -4,6 +4,7 @@ const { readMovieSettings } = require('../utils/movieSettings.cjs');
 const { tmdb } = require('../utils/tmdbCatalog.cjs');
 const { catalogSection, requireCatalogAccess, requireAnime } = require('../utils/animeCatalog.cjs');
 const { kitsuCatalog, kitsuDetails } = require('../utils/kitsuCatalog.cjs');
+const { listAddonCatalogs, browseAddonCatalog } = require('../utils/stremioCatalogs.cjs');
 
 function bad(message, status = 400) { return Object.assign(new Error(message), { status }); }
 function contentType(value) {
@@ -24,7 +25,8 @@ function item(data, type) {
     year: String(data.release_date || data.first_air_date || '').slice(0, 4),
     overview: data.overview || '', poster: artwork(data.poster_path), rating: data.vote_average || 0 };
 }
-function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSettings, request = tmdb, animeCatalog = kitsuCatalog, animeDetails = kitsuDetails } = {}) {
+function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSettings, request = tmdb, animeCatalog = kitsuCatalog, animeDetails = kitsuDetails,
+  addonCatalogs = listAddonCatalogs, addonBrowse = browseAddonCatalog } = {}) {
   const router = Router();
   router.use('/movies', auth, async (req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -32,8 +34,6 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
       req.movieSettings = await readSettings(req.device.device_id);
       req.catalogSection = catalogSection(req.query.section);
       requireCatalogAccess(req.movieSettings, req.catalogSection);
-      const kitsu = req.catalogSection === 'anime' && (!req.params.id || String(req.params.id).startsWith('kitsu:'));
-      if (!kitsu && !req.movieSettings.tmdb_read_access_token) return res.status(409).json({ error: 'Configure the TMDB Read Access Token in Media Settings first' });
       next();
     } catch (error) { return res.status(error.status || 502).json({ error: error.status ? error.message : 'Movie settings unavailable' }); }
   });
@@ -41,16 +41,27 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
     try { return res.json(await run(req)); }
     catch (error) { return res.status(error.status || 502).json({ error: error.status ? error.message : 'Movie catalog temporarily unavailable' }); }
   };
+  const requireTmdb = (req) => {
+    if (!req.movieSettings.tmdb_read_access_token) throw bad('Configure the TMDB Read Access Token in Media Settings first', 409);
+  };
+  router.get('/movies/addon-catalogs', handle(async (req) => {
+    const type = req.query.type || 'movie';
+    contentType(type);
+    return addonCatalogs(req.movieSettings, { type, section: req.catalogSection });
+  }));
   router.get('/movies/catalog', handle(async (req) => {
     const type = req.query.type || 'movie';
     const endpoint = contentType(type);
     const page = integer(req.query.page || 1, 1, 500);
     const query = String(req.query.q || '').trim();
     if (query.length > 200) throw bad('Search query is too long');
+    if (req.query.addon_catalog) return addonBrowse(req.movieSettings, { type, section: req.catalogSection,
+      key: req.query.addon_catalog, page, query, genre: req.query.genre || '' });
     const category = req.query.category || 'popular';
     if (!['popular', 'top_rated'].includes(category)) throw bad('Invalid movie category');
     const anime = req.catalogSection === 'anime';
     if (anime) return animeCatalog({ type, category, query, page });
+    requireTmdb(req);
     const data = await request(req.movieSettings, query ? `search/${endpoint}` : `${endpoint}/${category}`, {
       page, include_adult: false, ...(query ? { query } : {}),
     });
@@ -61,6 +72,7 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
   router.get('/movies/details/:id', handle(async (req) => {
     const type = req.query.type || 'movie';
     if (req.catalogSection === 'anime' && String(req.params.id).startsWith('kitsu:')) return animeDetails(req.params.id, type);
+    requireTmdb(req);
     const data = await request(req.movieSettings, `${contentType(type)}/${integer(req.params.id)}`, { append_to_response: 'external_ids' });
     if (data.adult) throw bad('Title unavailable', 404);
     if (req.catalogSection === 'anime') requireAnime(data);
@@ -73,6 +85,7 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
       if (integer(req.params.season, 0, 1000) !== 1) throw bad('Anime episode group unavailable', 404);
       return { episodes: (await animeDetails(req.params.id, 'series')).episodes };
     }
+    requireTmdb(req);
     const id = integer(req.params.id);
     const season = integer(req.params.season, 0, 1000);
     const series = await request(req.movieSettings, `tv/${id}`);
