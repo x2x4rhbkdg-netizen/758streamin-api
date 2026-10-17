@@ -15,8 +15,21 @@ test('no XXX takes precedence even when another XXX marker exists', () => {
   }
 });
 
+test('Premium plans from WHMCS enable Adult unless explicitly No XXX', () => {
+  for (const days of [30, 90, 365]) {
+    for (let devices = 1; devices <= 6; devices += 1) {
+      const plan = `758 StreamIN Premium ${days} days ${devices} Devices (Hidden)`;
+      assert.equal(adultAccessForPlan(plan), true, plan);
+      const excluded = `Premium No XXX ${days} days ${devices} Devices (Hidden)`;
+      assert.equal(adultAccessForPlan(excluded), false, excluded);
+    }
+  }
+  assert.equal(adultAccessForPlan('premium'), true);
+  assert.equal(adultAccessForPlan('PREMIUM 30 days 1 Device'), true);
+});
+
 test('missing or unrelated plan names do not change manual access', async () => {
-  for (const name of [null, undefined, '', 'Premium', 'xxxx', 'xxxtra', 'annoxxx']) {
+  for (const name of [null, undefined, '', 'Basic', 'PremiumExtra', 'xxxx', 'xxxtra', 'annoxxx']) {
     assert.equal(adultAccessForPlan(name), null);
     await syncWhmcsPlanAccess(42, name, () => assert.fail('Unexpected settings write'));
   }
@@ -27,7 +40,9 @@ test('sync changes only the Adult flag for the selected device', async () => {
   const save = async (...args) => calls.push(args);
   await syncWhmcsPlanAccess(42, 'Premium XXX', save);
   await syncWhmcsPlanAccess(43, 'Premium no XXX', save);
-  assert.deepEqual(calls, [[42, { adult_enabled: true }], [43, { adult_enabled: false }]]);
+  await syncWhmcsPlanAccess(44, 'Premium 30 days 1 Device', save);
+  assert.deepEqual(calls, [[42, { adult_enabled: true }], [43, { adult_enabled: false }],
+    [44, { adult_enabled: true }]]);
 });
 
 test('persistence errors propagate instead of reporting successful sync', async () => {
@@ -48,7 +63,7 @@ test('both WHMCS sync routes apply access from the fetched plan, not a stale dev
     const start = source.indexOf(`router.post("${route}"`);
     const end = source.indexOf('\nrouter.', start + 1);
     assert.ok(start >= 0 && end > start);
-    for (const plan of ['Premium XXX', 'Premium no XXX', null]) {
+    for (const plan of ['Premium XXX', 'Premium 30 days 1 Device', 'Premium no XXX', null]) {
       let handler;
       const calls = [];
       vm.runInNewContext(source.slice(start, end), {

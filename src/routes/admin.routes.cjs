@@ -24,6 +24,9 @@ const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
 const { syncWhmcsPlanAccess } = require('../utils/whmcsPlanAccess.cjs');
 
 const router = Router();
+router.use(require('./adminPassword.routes.cjs').createAdminPasswordRouter({
+  db: pool, authenticate: adminAuth, onError: sendInternalError,
+}));
 
 const addonTests = new Map();
 router.post('/movie-settings/addons/test', adminAuth, async (req, res) => {

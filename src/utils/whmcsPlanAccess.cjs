@@ -1,7 +1,7 @@
 function adultAccessForPlan(planName) {
   if (typeof planName !== 'string') return null;
   if (/\bno[\s_-]+xxx\b/i.test(planName)) return false;
-  return /\bxxx\b/i.test(planName) ? true : null;
+  return /\b(?:xxx|premium)\b/i.test(planName) ? true : null;
 }
 
 async function syncWhmcsPlanAccess(deviceId, planName, save) {

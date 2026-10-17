@@ -304,6 +304,25 @@ Errors:
 - 400: `token + password required` or `password too short` or `invalid token` or `token expired`
 - 500: `internal error`
 
+### POST /v1/admin/auth/password
+Changes the signed-in admin or reseller's own password. Requires `x-admin-key` and
+`x-admin-id` for an active account; API-key-only access is rejected. The dashboard
+proxy derives the ID from its verified session, not the request body.
+
+Body:
+```json
+{ "current_password": "current password", "new_password": "a different new password" }
+```
+
+The current password must match. New passwords require at least 8 characters and
+at most 72 UTF-8 bytes; passwords are stored using bcrypt with cost 12. Returns
+`{ "ok": true }`, never the password or hash. No account ID or role can be changed.
+
+Errors: 400 for invalid input or an incorrect current password, 401 for missing
+account identity, 403 for an unavailable account, 409 for a concurrent account
+change, and 429 after five validly shaped attempts per account in 15 minutes.
+The rate limit is process-local. Existing sessions are not globally revoked.
+
 ### GET /v1/admin/admins
 Lists admin users (super admin only).
 
