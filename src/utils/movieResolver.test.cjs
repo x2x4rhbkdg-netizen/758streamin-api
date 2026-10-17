@@ -267,6 +267,9 @@ test('source capability is device/episode bound, tamper protected, and portable 
   assert.equal(second.requireDiscoveredSource(1, input).allow_uncached_rd, false);
   assert.equal(second.requireDiscoveredSource(1, { ...input, allow_uncached_rd: true }).allow_uncached_rd, true);
   assert.equal(second.requireDiscoveredSource(1, { ...input, allow_uncached_rd: 'true' }).allow_uncached_rd, false);
+  assert.equal(second.requireDiscoveredSource(1, input).allow_uncached_ad, false);
+  assert.equal(second.requireDiscoveredSource(1, { ...input, allow_uncached_ad: true }).allow_uncached_ad, true);
+  assert.equal(second.requireDiscoveredSource(1, { ...input, allow_uncached_ad: 'true' }).allow_uncached_ad, false);
   assert.throws(() => second.requireDiscoveredSource(2, input), { status: 409 });
   assert.throws(() => second.requireDiscoveredSource(1, { ...input, episode_int: 4 }), { status: 409 });
   assert.throws(() => second.requireDiscoveredSource(1, { ...input, source_token: token + 'bad' }), { status: 409 });

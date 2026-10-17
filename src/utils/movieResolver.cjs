@@ -1,8 +1,9 @@
 const crypto = require('node:crypto');
 const { createProviderScheduler, createAvailabilityCache } = require('./movieProviderScheduling.cjs');
+const { allDebridFailure, readyHashes: allDebridReadyHashes, resolveAllDebrid } = require('./allDebrid.cjs');
 const providerScheduler = createProviderScheduler();
 const providerAvailability = createAvailabilityCache();
-const SUPPORTED_PROVIDERS = ['Real-Debrid', 'Premiumize', 'Torbox', 'EasyDebrid', 'OffCloud'];
+const SUPPORTED_PROVIDERS = ['Real-Debrid', 'AllDebrid', 'Premiumize', 'Torbox', 'EasyDebrid', 'OffCloud'];
 const transfers = new Map();
 function failure(message, status = 409) { return Object.assign(new Error(message), { status, publicMessage: message }); }
 
@@ -72,7 +73,7 @@ function chooseVideo(files, input) {
 
 async function providerRequest(provider, token, path, form, signal) {
   const bases = { 'Real-Debrid': 'https://api.real-debrid.com/rest/1.0/', Premiumize: 'https://www.premiumize.me/api/', Torbox: 'https://api.torbox.app/v1/api/',
-    EasyDebrid: 'https://easydebrid.com/api/v1/', OffCloud: 'https://offcloud.com/api/' };
+    EasyDebrid: 'https://easydebrid.com/api/v1/', OffCloud: 'https://offcloud.com/api/', AllDebrid: 'https://api.alldebrid.com/v4/' };
   const url = new URL(path, bases[provider]);
   if (url.origin !== new URL(bases[provider]).origin) throw failure('Invalid provider endpoint', 400);
   const headers = { Authorization: `Bearer ${token}` };
@@ -115,6 +116,7 @@ async function providerRequest(provider, token, path, form, signal) {
   const data = text ? JSON.parse(text) : {};
   if (provider === 'Torbox' && data.success !== true) throw failure('Torbox could not prepare this source', 502);
   if (provider === 'Premiumize' && data.status !== 'success') throw premiumizeFailure(data);
+  if (provider === 'AllDebrid' && data.status !== 'success') throw allDebridFailure(data);
   if (provider === 'OffCloud' && (data.error || data.not_available)) throw failure(`${provider} could not prepare this source`, 502);
   return data;
 }
@@ -132,9 +134,10 @@ async function lookupProviders(settings, sources, { request = providerRequest, s
   const timer = setTimeout(abort, 8000);
   const available = {}, on_demand = {}, provider_status = {};
   // RD's account list is independent of the hash batch; fetch it only once per search.
-  let rdList;
+  let rdList, adList;
   const batchRequest = (...args) => {
     if (args[0] === 'Real-Debrid' && args[2] === 'torrents?limit=5000') return rdList ||= request(...args);
+    if (args[0] === 'AllDebrid' && args[2] === '../v4.1/magnet/status') return adList ||= request(...args);
     return request(...args);
   };
   let cursor = 0;
@@ -187,6 +190,8 @@ async function lookupProviderBatch(settings, sources, { request = providerReques
           cached = missing.map((s) => Boolean(hashes.get(s.hash.toLowerCase())));
         } else if (provider === 'Premiumize') {
           cached = (await call('cache/check', { items: missing.map((s) => s.hash) })).response;
+        } else if (provider === 'AllDebrid') {
+          cached = allDebridReadyHashes(token, missing.map(source => source.hash), await call('../v4.1/magnet/status', {}));
         } else if (provider === 'EasyDebrid') {
           cached = (await call('link/lookup', { urls: missing.map((s) => `magnet:?xt=urn:btih:${s.hash}`) })).cached;
         } else if (provider === 'OffCloud') {
@@ -205,9 +210,9 @@ async function lookupProviderBatch(settings, sources, { request = providerReques
         const combined = known.map((value) => value === undefined ? cached[missingIndex++] : value);
         sources.forEach((source, index) => {
           if (combined[index] === true) (available[source.hash] ||= []).push(provider);
-          else if (provider === 'Real-Debrid') on_demand[source.hash] = ['Real-Debrid'];
+          else if (['Real-Debrid', 'AllDebrid'].includes(provider)) (on_demand[source.hash] ||= []).push(provider);
         });
-        statuses[provider] = provider === 'Real-Debrid' ? 'on_demand' : 'checked';
+        statuses[provider] = ['Real-Debrid', 'AllDebrid'].includes(provider) ? 'on_demand' : 'checked';
       } catch (error) {
         statuses[provider] = error.credentialRejected ? 'credential_rejected' : error.rateLimited ? 'rate_limited' :
           controller.signal.aborted || error.name === 'AbortError' ? 'timed_out' : 'unavailable';
@@ -245,6 +250,8 @@ async function resolveSingle(settings, input, { request = providerRequest, signa
       const data = await call('transfer/directdl', { src: magnet });
       if (data.status !== 'success') throw premiumizeFailure(data);
       download = chooseVideo(Array.isArray(data.content) ? data.content : [], input).link;
+    } else if (provider === 'AllDebrid') {
+      download = await resolveAllDebrid({ token: account.token, input, call, signal: controller.signal, sleep, chooseVideo });
     } else if (provider === 'Torbox') {
       let id = request === providerRequest ? transfers.get(key)?.id : null;
       if (id == null) {
@@ -345,11 +352,14 @@ async function resolveMovieSource(settings, input, options = {}) {
     const ready = available[input.hash.toLowerCase()] || [];
     const candidates = configured.filter((provider) => ready.includes(provider));
     const providers = automatic ? scheduler.order(candidates, settings) : candidates.filter((provider) => provider === choice);
-    // Unknown RD remains a last resort and never competes with ready copies.
-    if (input.allow_uncached_rd === true && on_demand[input.hash.toLowerCase()]?.includes('Real-Debrid') &&
-      (automatic || choice === 'Real-Debrid') && !providers.includes('Real-Debrid')) providers.push('Real-Debrid');
+    // Unverified sources are prepared only after a manual selection, after ready copies.
+    const unverified = [['Real-Debrid', input.allow_uncached_rd], ['AllDebrid', input.allow_uncached_ad]]
+      .filter(([provider, allowed]) => allowed === true && on_demand[input.hash.toLowerCase()]?.includes(provider) &&
+        (automatic || choice === provider) && !providers.includes(provider)).map(([provider]) => provider);
+    providers.push(...(automatic ? scheduler.order(unverified, settings) : unverified));
     if (!providers.length) {
       if (choice === 'Real-Debrid' && provider_status['Real-Debrid'] === 'credential_rejected') throw failure('Real-Debrid rejected access. Check its token and account status in Media Settings.', 502);
+      if (choice === 'AllDebrid' && provider_status.AllDebrid === 'credential_rejected') throw failure('AllDebrid rejected access. Check its API key and account/IP verification.', 502);
       throw failure('No enabled provider has a ready copy of this source. Choose another source.');
     }
     const failures = [];

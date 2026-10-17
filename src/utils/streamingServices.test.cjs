@@ -2,6 +2,29 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { services, browse } = require('./streamingServices.cjs');
 
+test('same-name regional IDs share one icon and retain both discovery and search availability', async () => {
+  const settings = { tmdb_read_access_token: 'duplicate-prime-test' };
+  const request = async (_settings, path, params) => {
+    if (path === 'watch/providers/movie') return { results: [
+      { provider_id: 119, provider_name: 'Amazon Prime Video' },
+      { provider_id: 9, provider_name: 'Amazon Prime Video' },
+      { provider_id: 2100, provider_name: 'Amazon Prime Video with Ads' },
+    ] };
+    if (path === 'watch/providers/regions') return { results: [{ iso_3166_1: 'US' }] };
+    if (path === 'discover/movie') {
+      assert.equal(params.with_watch_providers, '9|119');
+      return { results: [{ id: 10 }] };
+    }
+    if (path === 'search/movie') return { results: [{ id: 10 }] };
+    return { results: { US: { flatrate: [{ provider_id: 119 }] } } };
+  };
+  const list = await services(settings, 'movie', request);
+  assert.equal(list.length, 2);
+  assert.deepEqual(list[0].ids, [9, 119]);
+  assert.equal((await browse(settings, 'movie', request, { service: 9, page: 1, category: 'popular', query: '' })).results.length, 1);
+  assert.equal((await browse(settings, 'movie', request, { service: 119, page: 1, category: 'popular', query: 'example' })).results.length, 1);
+});
+
 test('global service pages merge every supported region, deduplicate and share cached requests', async () => {
   const settings = { tmdb_read_access_token: 'global-test' };
   const calls = [];

@@ -32,17 +32,30 @@ async function workers(values, run) {
 function services(settings, endpoint, request) {
   return cached(`${scope(settings)}:services:${endpoint}`, async () => {
     const data = await request(settings, `watch/providers/${endpoint}`);
-    return (Array.isArray(data.results) ? data.results : []).filter(value => Number.isInteger(value.provider_id))
+    const providers = (Array.isArray(data.results) ? data.results : []).filter(value => Number.isInteger(value.provider_id))
       .map(value => ({ id: value.provider_id, name: value.provider_name || '',
         logo: typeof value.logo_path === 'string' && /^\/[a-zA-Z0-9_.-]+$/.test(value.logo_path)
           ? `https://image.tmdb.org/t/p/w92${value.logo_path}` : null,
         regions: Object.keys(value.display_priorities || {}).filter(region => /^[A-Z]{2}$/.test(region)),
-      })).sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
+      }));
+    const groups = new Map();
+    for (const provider of providers) {
+      const key = provider.name.trim().replace(/\s+/g, ' ').toLowerCase();
+      const previous = groups.get(key);
+      if (!previous) groups.set(key, { ...provider, ids: [provider.id] });
+      else {
+        previous.ids = [...new Set([...previous.ids, provider.id])].sort((a, b) => a - b);
+        previous.id = previous.ids[0];
+        previous.regions = [...new Set([...previous.regions, ...provider.regions])];
+        if (!previous.logo) previous.logo = provider.logo;
+      }
+    }
+    return [...groups.values()].sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
   });
 }
 async function browse(settings, endpoint, request, { service, page, category, query }) {
   const list = await services(settings, endpoint, request);
-  const selected = list.find(value => value.id === service);
+  const selected = list.find(value => value.ids.includes(service));
   if (!selected) throw Object.assign(new Error('Streaming service unavailable'), { status: 400 });
   const regions = await cached(`${scope(settings)}:regions`, async () => {
     const data = await request(settings, 'watch/providers/regions');
@@ -55,14 +68,14 @@ async function browse(settings, endpoint, request, { service, page, category, qu
         const availability = await cached(`${scope(settings)}:availability:${endpoint}:${title.id}`,
           () => request(settings, `${endpoint}/${title.id}/watch/providers`));
         const matches = Object.values(availability.results || {}).some(country =>
-          ['flatrate', 'free', 'ads', 'rent', 'buy'].some(kind => (country[kind] || []).some(provider => provider.provider_id === service)));
+          ['flatrate', 'free', 'ads', 'rent', 'buy'].some(kind => (country[kind] || []).some(provider => selected.ids.includes(provider.provider_id))));
         return matches ? title : null;
       });
       if (checked.some(result => result.failed)) throw new Error('Streaming service search temporarily unavailable');
       return { results: checked.map(result => result.value).filter(Boolean), total_pages: Math.min(500, Number(data.total_pages) || 1) };
     }
     const pages = await workers(regions, region => request(settings, `discover/${endpoint}`, {
-      page, include_adult: false, watch_region: region, with_watch_providers: service,
+      page, include_adult: false, watch_region: region, with_watch_providers: selected.ids.join('|'),
       sort_by: category === 'top_rated' ? 'vote_average.desc' : 'popularity.desc',
       ...(category === 'top_rated' ? { 'vote_count.gte': 200 } : {}),
     }));

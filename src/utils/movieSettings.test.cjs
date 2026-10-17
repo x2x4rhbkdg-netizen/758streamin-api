@@ -4,6 +4,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+test('AllDebrid saves with the existing encrypted account settings and redacts its API key', async () => {
+  const { api } = fixture();
+  await api.saveGlobalMovieSettings({ default_provider: 'AllDebrid', provider_accounts: { AllDebrid: { enabled: true, token: 'ad-secret-key' } } });
+  const saved = await api.readGlobalMovieSettings();
+  assert.equal(saved.provider_accounts.AllDebrid.token, 'ad-secret-key');
+  assert.equal(api.publicSettings(saved).provider_accounts.AllDebrid.token_configured, true);
+  assert.equal(JSON.stringify(api.publicSettings(saved)).includes('ad-secret-key'), false);
+  await api.saveGlobalMovieSettings({ default_provider: 'auto', provider_accounts: { AllDebrid: { enabled: false } } });
+  assert.equal((await api.readGlobalMovieSettings()).provider_accounts.AllDebrid.token, 'ad-secret-key');
+});
+
 function fixture() {
   const devices = new Map();
   let globalSettings;

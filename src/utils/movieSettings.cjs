@@ -2,7 +2,7 @@ const { pool } = require('../db/pool.cjs');
 const { encryptString, decryptString } = require('./cryptoVault.cjs');
 const { normalizeAddons, publicAddons } = require('./stremioAddons.cjs');
 
-const PROVIDERS = ['none', 'Real-Debrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
+const PROVIDERS = ['none', 'Real-Debrid', 'AllDebrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token'];
 const ACCESS_KEYS = ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled'];
 const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, adult_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', secondary_scraper_url: '', provider: 'none', default_provider: 'none',

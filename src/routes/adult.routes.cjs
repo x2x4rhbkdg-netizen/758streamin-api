@@ -111,7 +111,7 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
       const customType = !['movie', 'series'].includes(item.type);
       const result = await resolve(req.adultSettings, { section: 'adult', type: item.type === 'series' ? 'series' : 'movie', adult_custom_type: customType,
         hash: source.hash, file_name: source.file_name, season_int: item.season, episode_int: item.episode,
-        provider: req.body?.provider || 'auto', allow_uncached_rd: req.body?.allow_uncached_rd === true });
+        provider: req.body?.provider || 'auto', allow_uncached_rd: req.body?.allow_uncached_rd === true, allow_uncached_ad: req.body?.allow_uncached_ad === true });
       url = result.protectedPlaybackUrl || result.playbackUrl; provider = result.provider;
     }
     let progress = {};
