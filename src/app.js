@@ -97,6 +97,10 @@ app.use("/v1", appUpdateRoutes);
 app.use("/v1", notificationsRoutes);
 app.use("/v1", homeAdsRoutes);
 app.use("/v1/admin", adminRoutes);
+app.use("/v1/admin", require("./routes/admin.serviceUrls.routes.cjs").createServiceUrlsRouter({
+  db: require("./db/pool.cjs").pool, authenticate: require("./middleware/adminAuth.cjs").adminAuth,
+  defaultUrl: env.XUI_BASE_URL, onError: require("./utils/errorResponse.cjs").sendInternalError,
+}));
 app.use("/v1/admin", adminAppUpdateRoutes);
 app.use("/v1/admin", adminNotificationsRoutes);
 app.use("/v1/admin", adminWhmcsReminderRoutes);
