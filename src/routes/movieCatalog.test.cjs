@@ -11,7 +11,7 @@ function factory() {
       if (name === 'express') return require('express');
       if (name.includes('authJwt')) return { authJwt: (_req, _res, next) => next() };
       if (name.includes('movieSettings')) return { readMovieSettings: async () => ({ enabled: false }) };
-      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('kitsuCatalog') || name.includes('stremioCatalogs') || name.includes('streamingServices')) return require(name);
+      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('anilistCatalog') || name.includes('kitsuCatalog') || name.includes('stremioCatalogs') || name.includes('streamingServices')) return require(name);
       throw new Error('Unexpected dependency');
     },
   });
@@ -115,6 +115,19 @@ test('Anime search passes paging, type and query to the isolated Kitsu catalog',
   assert.equal(response.body.total_pages, 2);
 });
 
+test('expanded categories and genre filters are Anime-only and keep device permissions', async () => {
+  for (const category of ['trending', 'airing', 'new_releases', 'completed', 'upcoming']) {
+    let calls = 0;
+    const options = { readSettings: animeSettings, animeCatalog: async input => {
+      calls++; assert.equal(input.category, category); assert.equal(input.genre, 'Fantasy');
+      return { items: [] };
+    } };
+    assert.equal((await invoke(options, '/movies/catalog', { section: 'anime', category, genre: 'Fantasy' })).statusCode, 200);
+    assert.equal(calls, 1);
+    assert.equal((await invoke({ ...options, readSettings: configured }, '/movies/catalog', { category })).statusCode, 400);
+  }
+});
+
 test('Kitsu details and episode routes preserve IDs without numeric coercion', async () => {
   const options = { readSettings: async () => ({ anime_enabled: true }), animeDetails: async (id, type) => {
     assert.equal(id, 'kitsu:1'); assert.equal(type, 'series');
@@ -125,6 +138,20 @@ test('Kitsu details and episode routes preserve IDs without numeric coercion', a
   const episodes = await invoke(options, '/movies/season/:id/:season', { section: 'anime' }, { id: 'kitsu:1', season: '1' });
   assert.equal(episodes.body.episodes[0].video_id, 'kitsu:1:12');
   assert.equal((await invoke(options, '/movies/season/:id/:season', { section: 'anime' }, { id: 'kitsu:1', season: '2' })).statusCode, 404);
+});
+
+test('AniList details and seasons use the primary adapter without changing Kitsu history routes', async () => {
+  let primaryCalls = 0;
+  const options = { readSettings: animeSettings, primaryAnimeDetails: async (id, type) => {
+    primaryCalls++; assert.equal(id, 'anilist:16498'); assert.equal(type, 'series');
+    return { id: 'kitsu:7442', metadata_provider: 'anilist', episodes: [{ number: 12, video_id: 'kitsu:7442:12' }] };
+  }, animeDetails: async id => ({ id, metadata_provider: 'kitsu', episodes: [] }) };
+  const detail = await invoke(options, '/movies/details/:id', { section: 'anime', type: 'series' }, { id: 'anilist:16498' });
+  assert.equal(detail.body.id, 'kitsu:7442'); assert.equal(detail.body.metadata_provider, 'anilist');
+  const season = await invoke(options, '/movies/season/:id/:season', { section: 'anime' }, { id: 'anilist:16498', season: '1' });
+  assert.equal(season.body.episodes[0].video_id, 'kitsu:7442:12'); assert.equal(primaryCalls, 2);
+  const history = await invoke(options, '/movies/details/:id', { section: 'anime', type: 'series' }, { id: 'kitsu:7442' });
+  assert.equal(history.body.metadata_provider, 'kitsu'); assert.equal(primaryCalls, 2);
 });
 
 test('anime-only devices cannot request non-anime details or seasons', async () => {

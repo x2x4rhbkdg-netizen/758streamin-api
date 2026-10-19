@@ -35,17 +35,50 @@ function acceptable(meta) {
   return meta && kitsuId(meta.id) && ['movie', 'series'].includes(meta.type) && meta.name &&
     !meta.genres?.some((g) => /^(hentai|erotica)$/i.test(g));
 }
-async function kitsuCatalog({ type, category, query, page }, { fetchText = readText } = {}) {
-  const catalog = query ? 'kitsu-anime-list' : category === 'top_rated' ? 'kitsu-anime-rating' : 'kitsu-anime-popular';
-  const extra = new URLSearchParams({ ...(query ? { search: query } : {}), skip: String(query ? 0 : (page - 1) * 20) });
+const ANIME_GENRES = ['Action', 'Adventure', 'Comedy', 'Drama', 'Fantasy', 'Horror', 'Mystery', 'Romance', 'Sci-Fi', 'Slice of Life', 'Sports', 'Supernatural', 'Thriller'];
+function edgeItem(entry) {
+  const a = entry.attributes || {};
+  const title = a.titles?.en || a.titles?.en_us || a.canonicalTitle || a.titles?.en_jp;
+  const result = item({ id: `kitsu:${entry.id}`, type: a.subtype === 'movie' ? 'movie' : 'series', name: title,
+    releaseInfo: a.startDate, description: a.synopsis || a.description,
+    poster: a.posterImage?.large || a.posterImage?.original, background: a.coverImage?.large || a.coverImage?.original,
+    imdbRating: Number(a.averageRating) / 10, runtime: a.episodeLength });
+  return { ...result, original_title: String(a.canonicalTitle || title || '').slice(0, 200), status: a.status };
+}
+async function edgeCatalog({ type, category, query, page, genre }, fetchText) {
+  const url = new URL('https://kitsu.io/api/edge/anime');
+  url.searchParams.set('page[limit]', '20');
+  url.searchParams.set('page[offset]', String((page - 1) * 20));
+  url.searchParams.set('filter[subtype]', type === 'movie' ? 'movie' : 'TV,OVA,ONA,special,music');
+  if (query) url.searchParams.set('filter[text]', query);
+  else {
+    const status = { airing: 'current', new_releases: 'current', completed: 'finished', upcoming: 'upcoming' }[category];
+    if (status) url.searchParams.set('filter[status]', status);
+    url.searchParams.set('sort', category === 'upcoming' ? 'startDate' : category === 'new_releases' ? '-startDate' : category === 'top_rated' ? '-averageRating' : '-userCount');
+    if (genre) url.searchParams.set('filter[genres]', genre);
+  }
+  const data = await json(url.href, fetchText);
+  if (!Array.isArray(data.data)) throw new Error('Invalid Anime catalog');
+  const items = data.data.filter(entry => /^[1-9]\d{0,8}$/.test(String(entry.id)) && entry.type === 'anime' &&
+    entry.attributes?.nsfw === false && ['G', 'PG', 'R'].includes(entry.attributes?.ageRating))
+    .map(edgeItem).filter(entry => entry.type === type && entry.title);
+  const count = Number(data.meta?.count);
+  return { page, total_pages: Number.isFinite(count) ? Math.max(1, Math.min(500, Math.ceil(count / 20))) : data.links?.next ? Math.min(page + 1, 500) : page,
+    items, ...(category === 'upcoming' && !query ? { notice: 'Upcoming titles may not have released episodes or playback sources yet.' } : {}) };
+}
+async function kitsuCatalog({ type, category, query, page, genre = '' }, { fetchText = readText } = {}) {
+  if (genre && !ANIME_GENRES.includes(genre)) throw fail('Invalid Anime genre');
+  if (query || genre || ['airing', 'new_releases', 'completed', 'upcoming'].includes(category)) {
+    return edgeCatalog({ type, category, query, page, genre }, fetchText);
+  }
+  const catalog = category === 'trending' ? 'kitsu-anime-trending' : category === 'top_rated' ? 'kitsu-anime-rating' : 'kitsu-anime-popular';
+  const extra = new URLSearchParams({ skip: String((page - 1) * 20) });
   const data = await json(`${BASE}catalog/anime/${catalog}/${extra}.json`, fetchText);
   if (!Array.isArray(data.metas)) throw new Error('Invalid Anime catalog');
-  // Kitsu search returns its ranked matches together, rather than honoring skip.
-  const ranked = query ? data.metas.slice(0, 200) : data.metas;
-  const pageMetas = query ? ranked.slice((page - 1) * 20, page * 20) : ranked.slice(0, 20);
+  const pageMetas = category === 'trending' ? data.metas.filter(m => m.type === type).slice((page - 1) * 20, page * 20) : data.metas.slice(0, 20);
   const candidates = [...new Map(pageMetas.filter(acceptable).map((m) => [m.id, m])).values()];
   const allowed = await safeIds(candidates.map((m) => m.id), fetchText);
-  return { page, total_pages: query ? Math.max(1, Math.ceil(ranked.length / 20)) : data.metas.length >= 20 ? Math.min(page + 1, 500) : page,
+  return { page, total_pages: category === 'trending' ? Math.max(1, Math.ceil(data.metas.filter(m => m.type === type).length / 20)) : data.metas.length >= 20 ? Math.min(page + 1, 500) : page,
     items: candidates.filter((m) => m.type === type && allowed.has(m.id)).map(item) };
 }
 async function kitsuDetails(id, type, { fetchText = readText } = {}) {

@@ -19,7 +19,8 @@ test('Kitsu catalog keeps namespaced identity and routes search/category/paging'
   assert.match(urls[0], /kitsu-anime-rating\/skip=20.json$/);
   urls.length = 0;
   await kitsuCatalog({ type: 'movie', category: 'popular', query: 'Name & other', page: 1 }, options);
-  assert.match(urls[0], /search=Name\+%26\+other/);
+  assert.equal(new URL(urls[0]).searchParams.get('filter[text]'), 'Name & other');
+  assert.equal(new URL(urls[0]).searchParams.get('filter[subtype]'), 'movie');
 });
 test('adult, unknown-rating and invalid namespace entries are excluded', async () => {
   for (const attributes of [{ ageRating: 'R18', nsfw: true }, { ageRating: 'PG', nsfw: true }, { ageRating: null, nsfw: false }]) {
@@ -31,22 +32,60 @@ test('adult, unknown-rating and invalid namespace entries are excluded', async (
   await assert.rejects(kitsuDetails('1', 'series', { fetchText }), { status: 400 });
 });
 
-test('search pagination slices ranked results locally and keeps rating lookups bounded', async () => {
-  const metas = Array.from({ length: 25 }, (_, index) => ({ ...meta, id: `kitsu:${index + 1}` }));
-  let safetyCalls = 0;
+const edgeMeta = (id, overrides = {}) => ({ id: String(id), type: 'anime', attributes: {
+  canonicalTitle: 'Fixture Romanized', titles: { en: 'Fixture English' }, nsfw: false, ageRating: 'PG',
+  subtype: 'TV', averageRating: '80', startDate: '2026-01-01', ...overrides,
+} });
+
+test('search uses paginated full-catalog search instead of truncating addon matches', async () => {
+  let calls = 0;
   const fetchText = async (url, options) => {
-    if (url.startsWith('https://kitsu.io/')) {
-      safetyCalls++; assert.equal(options.accept, 'application/vnd.api+json');
-      const ids = new URL(url).searchParams.get('filter[id]').split(',');
-      assert.equal(ids.length, 5);
-      return JSON.stringify({ data: ids.map((id) => ({ id, attributes: { nsfw: false, ageRating: 'PG' } })) });
-    }
-    assert.match(url, /skip=0/);
-    return JSON.stringify({ metas });
+    calls++; assert.equal(options.accept, 'application/vnd.api+json');
+    const params = new URL(url).searchParams;
+    assert.equal(params.get('page[offset]'), '200');
+    assert.equal(params.get('filter[text]'), 'Fixture');
+    assert.equal(params.get('filter[subtype]'), 'TV,OVA,ONA,special,music');
+    return JSON.stringify({ data: [edgeMeta(201)], meta: { count: 241 } });
   };
-  const catalog = await kitsuCatalog({ type: 'series', category: 'popular', query: 'Fixture', page: 2 }, { fetchText });
-  assert.equal(catalog.total_pages, 2); assert.equal(catalog.items.length, 5);
-  assert.equal(catalog.items[0].id, 'kitsu:21'); assert.equal(safetyCalls, 1);
+  const catalog = await kitsuCatalog({ type: 'series', category: 'popular', query: 'Fixture', page: 11 }, { fetchText });
+  assert.equal(catalog.total_pages, 13); assert.equal(catalog.items.length, 1);
+  assert.equal(catalog.items[0].id, 'kitsu:201'); assert.equal(calls, 1);
+  assert.equal(catalog.items[0].title, 'Fixture English');
+  assert.equal(catalog.items[0].original_title, 'Fixture Romanized');
+  assert.equal(catalog.items[0].rating, 8);
+});
+
+test('new Anime categories pass verified status, sorting and genre filters', async () => {
+  for (const [category, status, sort] of [['airing', 'current', '-userCount'], ['new_releases', 'current', '-startDate'], ['completed', 'finished', '-userCount'], ['upcoming', 'upcoming', 'startDate']]) {
+    const result = await kitsuCatalog({ type: 'series', category, genre: 'Fantasy', page: 2 }, {
+      fetchText: async url => {
+        const p = new URL(url).searchParams;
+        assert.equal(p.get('filter[status]'), status); assert.equal(p.get('sort'), sort);
+        assert.equal(p.get('filter[genres]'), 'Fantasy'); assert.equal(p.get('page[offset]'), '20');
+        return JSON.stringify({ data: [edgeMeta(1)], meta: { count: 50 } });
+      },
+    });
+    assert.equal(result.items[0].id, 'kitsu:1'); assert.equal(result.total_pages, 3);
+    if (category === 'upcoming') assert.match(result.notice, /not have released/);
+  }
+});
+
+test('direct catalog search retains rating safety and type boundaries', async () => {
+  const result = await kitsuCatalog({ type: 'series', query: 'Fixture', page: 1 }, { fetchText: async () => JSON.stringify({ data: [
+    edgeMeta(1), edgeMeta(2, { nsfw: true }), edgeMeta(3, { ageRating: 'R18' }),
+    edgeMeta(4, { ageRating: null }), edgeMeta(5, { subtype: 'movie' }), { ...edgeMeta(6), id: 'bad-id' },
+  ], meta: { count: 6 } }) });
+  assert.deepEqual(result.items.map(value => value.id), ['kitsu:1']);
+  await assert.rejects(kitsuCatalog({ type: 'series', page: 1, genre: 'Hentai' }), { status: 400 });
+});
+
+test('trending is bounded to the upstream feed and retains Kitsu IDs', async () => {
+  const result = await kitsuCatalog({ type: 'series', category: 'trending', page: 1 }, { fetchText: async url => {
+    if (url.startsWith('https://kitsu.io/')) return JSON.stringify(safe);
+    assert.match(url, /kitsu-anime-trending/);
+    return JSON.stringify({ metas: [meta] });
+  } });
+  assert.equal(result.total_pages, 1); assert.equal(result.items[0].id, 'kitsu:1');
 });
 test('episode number and video ID come from Kitsu, not enriched IMDb seasons', async () => {
   const detail = await kitsuDetails('kitsu:1', 'series', { fetchText });
