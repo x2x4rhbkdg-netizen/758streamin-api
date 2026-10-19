@@ -32,6 +32,20 @@ test('catalog drops adult, unknown classification, invalid IDs and mismatched fo
   await assert.rejects(anilistCatalog({ type: 'series', page: 1, genre: 'Hentai' }), { status: 400 });
 });
 
+test('poster and overview metadata retain episode counts, native titles and synopsis paragraphs', async () => {
+  const result = await anilistCatalog({ type: 'series' }, { request: async query => {
+    assert.match(query, /genres popularity favourites/);
+    return { Page: { media: [{ ...media, title: { ...media.title, native: 'Native title' }, episodes: 25,
+      season: 'SPRING', seasonYear: 2013, genres: ['Action'], popularity: 1000, favourites: 200,
+      description: 'First paragraph.<br><br>Second paragraph.' }], pageInfo: {} } };
+  } });
+  const value = result.items[0];
+  assert.equal(value.episode_count, 25); assert.equal(value.native_title, 'Native title');
+  assert.equal(value.anime_season, 'SPRING 2013'); assert.deepEqual(value.genres, ['Action']);
+  assert.equal(value.popularity, 1000); assert.equal(value.favourites, 200);
+  assert.match(value.overview, /First paragraph\.\n+Second paragraph\./);
+});
+
 test('Latest Episodes uses aired schedules, preserves episode labels and deduplicates titles', async () => {
   const seconds = 1792368000;
   const result = await anilistCatalog({ type: 'series', category: 'latest_episodes', page: 1 }, {
@@ -74,6 +88,40 @@ test('missing, ambiguous or failed mappings remain browsable but never guess a p
   assert.match(unavailable.notice, /temporarily unavailable/); assert.ok(!unavailable.notice.includes('private'));
   await assert.rejects(anilistDetails('anilist:16498', 'series', { request: async () => ({ Media: { ...media, isAdult: true } }) }), { status: 404 });
   await assert.rejects(anilistDetails('https://private', 'series'), { status: 400 });
+});
+
+test('season relationships follow only verified Anime prequels and sequels, deduplicate cycles, and retain distinct identities', async () => {
+  const second = { ...media, id: 20958, idMal: 25777, title: { english: 'Attack on Titan Season 2' }, startDate: { year: 2017 } };
+  const third = { ...media, id: 99147, title: { english: 'Attack on Titan Season 3' }, startDate: { year: 2018 } };
+  const first = { ...media, relations: { edges: [
+    { relationType: 'SEQUEL', node: second },
+    { relationType: 'SIDE_STORY', node: { ...media, id: 55 } },
+    { relationType: 'SEQUEL', node: { ...media, id: 56, isAdult: true } },
+    { relationType: 'SOURCE', node: { ...media, id: 57, type: 'MANGA' } },
+  ] } };
+  const calls = [];
+  const result = await anilistDetails('anilist:16498', 'series', {
+    request: async (_query, { id }) => {
+      calls.push(id);
+      return { Media: id === first.id ? first : id === second.id ? { ...second, relations: { edges: [
+        { relationType: 'PREQUEL', node: first }, { relationType: 'SEQUEL', node: third },
+      ] } } : { ...third, relations: { edges: [{ relationType: 'PREQUEL', node: second }] } } };
+    },
+    fetchText: async () => JSON.stringify({ data: [] }),
+  });
+  assert.deepEqual(result.related_parts.map(value => value.id), ['anilist:16498', 'anilist:20958', 'anilist:99147']);
+  assert.deepEqual(calls, [16498, 20958, 99147]);
+  assert.equal(result.related_parts[1].title, 'Attack on Titan Season 2');
+});
+
+test('relationship lookup failure keeps current-title metadata and directly linked seasons', async () => {
+  const first = { ...media, relations: { edges: [{ relationType: 'SEQUEL', node: { ...media, id: 20958 } }] } };
+  const result = await anilistDetails('anilist:16498', 'series', { request: async (_query, { id }) => {
+    if (id !== media.id) throw new Error('Rate limited');
+    return { Media: first };
+  }, fetchText: async () => JSON.stringify({ data: [] }) });
+  assert.equal(result.title, 'Attack on Titan');
+  assert.equal(result.related_parts[1].id, 'anilist:20958');
 });
 
 test('public metadata client coalesces requests, caches briefly and honors rate-limit backoff', async () => {

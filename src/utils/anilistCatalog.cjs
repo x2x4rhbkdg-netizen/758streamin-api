@@ -6,7 +6,7 @@ const GENRES = ['Action', 'Adventure', 'Comedy', 'Drama', 'Fantasy', 'Horror', '
 const FORMATS = ['TV', 'TV_SHORT', 'OVA', 'ONA', 'SPECIAL', 'MUSIC'];
 const FIELDS = `id idMal type format status isAdult title { english romaji native }
   description(asHtml: false) coverImage { large extraLarge } bannerImage
-  startDate { year month day } averageScore duration episodes`;
+  startDate { year month day } endDate { year month day } season seasonYear genres popularity favourites averageScore duration episodes`;
 const CATALOG = `query StreamINAnimeCatalog($page: Int!, $search: String, $formats: [MediaFormat], $sort: [MediaSort], $status: MediaStatus, $genre: String, $before: FuzzyDateInt) {
   Page(page: $page, perPage: 20) { pageInfo { currentPage hasNextPage }
     media(type: ANIME, isAdult: false, search: $search, format_in: $formats, sort: $sort, status: $status, genre: $genre, startDate_lesser: $before) { ${FIELDS} }
@@ -19,7 +19,10 @@ const LATEST = `query StreamINAnimeEpisodes($page: Int!, $now: Int!, $since: Int
     }
   }
 }`;
-const DETAIL = `query StreamINAnimeDetails($id: Int!) { Media(id: $id, type: ANIME, isAdult: false) { ${FIELDS} } }`;
+const RELATIONS = `relations { edges { relationType(version: 2) node {
+  id type format isAdult title { english romaji native } coverImage { large } startDate { year month day }
+} } }`;
+const DETAIL = `query StreamINAnimeDetails($id: Int!) { Media(id: $id, type: ANIME, isAdult: false) { ${FIELDS} ${RELATIONS} } }`;
 
 // Public metadata only. Bounded short-lived caching is not a local catalog mirror.
 function createAniListClient({ fetcher = fetch, now = Date.now } = {}) {
@@ -70,8 +73,12 @@ function item(media) {
   return { id: `anilist:${media.id}`, anilist_id: media.id, type: media.format === 'MOVIE' ? 'movie' : 'series',
     section: 'anime', metadata_provider: 'anilist', title: String(media.title?.english || media.title?.romaji || media.title?.native || '').slice(0, 200),
     original_title: String(media.title?.romaji || media.title?.english || '').slice(0, 200),
-    year: String(media.startDate?.year || ''), overview: String(media.description || '').replace(/<[^>]*>/g, '').slice(0, 10000),
+    year: String(media.startDate?.year || ''), overview: String(media.description || '').replace(/<br\s*\/?\s*>|<\/p>/gi, '\n\n').replace(/<[^>]*>/g, '').slice(0, 10000),
+    native_title: String(media.title?.native || '').slice(0, 200), genres: Array.isArray(media.genres) ? media.genres.filter(value => typeof value === 'string') : [],
+    popularity: Number(media.popularity) || null, favourites: Number(media.favourites) || null,
+    anime_season: [media.season, media.seasonYear].filter(Boolean).join(' '), start_date: media.startDate, end_date: media.endDate,
     poster: image(media.coverImage?.extraLarge || media.coverImage?.large), backdrop: image(media.bannerImage),
+    format: media.format, episode_count: Number.isInteger(media.episodes) && media.episodes > 0 ? media.episodes : null,
     rating: (Number(media.averageScore) || 0) / 10, runtime: Math.min(600, Math.max(0, Number(media.duration) || 0)),
     status: media.status };
 }
@@ -120,12 +127,43 @@ async function mappedKitsuId(media, fetchText) {
   return ids.length === 1 ? ids[0] : null;
 }
 const mappings = new Map();
+async function relatedParts(root, run) {
+  const parts = new Map([[root.id, root]]), visited = new Set();
+  const queue = [root];
+  const deadline = Date.now() + 4000;
+  let calls = 0;
+  while (queue.length && visited.size < 12) {
+    const candidate = queue.shift();
+    if (visited.has(candidate.id)) continue;
+    visited.add(candidate.id);
+    let media = candidate;
+    if (candidate.id !== root.id) {
+      if (calls >= 8 || Date.now() > deadline) break;
+      calls++;
+      try {
+        media = (await run(DETAIL, { id: candidate.id })).Media;
+        if (!safe(media) || media.id !== candidate.id) continue;
+      } catch { break; }
+    }
+    for (const edge of media.relations?.edges || []) {
+      if (!['PREQUEL', 'SEQUEL'].includes(edge.relationType) || !safe(edge.node)) continue;
+      if (!parts.has(edge.node.id) && parts.size < 20) {
+        parts.set(edge.node.id, edge.node);
+        queue.push(edge.node);
+      }
+    }
+  }
+  const date = value => (value.startDate?.year || 9999) * 10000 + (value.startDate?.month || 1) * 100 + (value.startDate?.day || 1);
+  return [...parts.values()].sort((a, b) => date(a) - date(b) || a.id - b.id).map(item).filter(value => value.title);
+}
 async function anilistDetails(id, type, options = {}) {
   if (!/^anilist:[1-9]\d{0,8}$/.test(String(id)) || !['movie', 'series'].includes(type)) throw fail('Invalid AniList identifier', 400);
-  const data = await (options.request || request)(DETAIL, { id: Number(id.split(':')[1]) });
+  const run = options.request || request;
+  const data = await run(DETAIL, { id: Number(id.split(':')[1]) });
   if (!safe(data.Media)) throw fail('Anime title unavailable', 404);
   const detail = item(data.Media);
   if (detail.type !== type) throw fail('Anime title unavailable', 404);
+  detail.related_parts = await relatedParts(data.Media, run);
   const unavailable = notice => ({ ...detail, episodes: [], seasons: [], playback_available: false, notice });
   const fetchText = options.fetchText || readText;
   let kitsu;
