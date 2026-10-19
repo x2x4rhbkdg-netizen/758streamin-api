@@ -79,7 +79,7 @@ test('both WHMCS sync routes apply access from the fetched plan, not a stale dev
         isSchemaMismatch: () => false, isWhmcsConfigError: () => false,
         sendInternalError() {},
       });
-      await handler({ params: { code: 'ABC123' }, body: { device_code: 'ABC123' }, query: {} }, {});
+      await handler({ admin: { id: 1, role: 'super_admin' }, params: { code: 'ABC123' }, body: { device_code: 'ABC123' }, query: {} }, {});
       assert.deepEqual(calls, [[42, plan]], `${file}: ${plan}`);
     }
   }

@@ -1416,12 +1416,11 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
     const hasTrial = typeof trial_expires_at !== "undefined";
     const canEditWhmcs = req.admin?.role === "super_admin";
     const hasWhmcs =
-      canEditWhmcs &&
+      typeof whmcs_service_id !== "undefined" || (canEditWhmcs &&
       (typeof whmcs_client_id !== "undefined" ||
-        typeof whmcs_service_id !== "undefined" ||
         typeof whmcs_billing_status !== "undefined" ||
         typeof whmcs_next_due_date !== "undefined" ||
-        typeof whmcs_last_sync_at !== "undefined");
+        typeof whmcs_last_sync_at !== "undefined"));
 
     const [devRows] = await pool.execute(
       `SELECT id, reseller_admin_id, status FROM devices WHERE device_code=? LIMIT 1`,
@@ -1507,7 +1506,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       }
 
       if (hasWhmcs) {
-        if (typeof whmcs_client_id !== "undefined") {
+        if (canEditWhmcs && typeof whmcs_client_id !== "undefined") {
           const clientId =
             whmcs_client_id === null || whmcs_client_id === ""
               ? null
@@ -1524,24 +1523,24 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
             whmcs_service_id === null || whmcs_service_id === ""
               ? null
               : Number(whmcs_service_id);
-          if (serviceId !== null && (!Number.isFinite(serviceId) || serviceId <= 0)) {
+          if (serviceId !== null && ((!['string', 'number'].includes(typeof whmcs_service_id)) || !Number.isSafeInteger(serviceId) || serviceId <= 0)) {
             return res.status(400).json({ error: "invalid whmcs_service_id" });
           }
           updates.push("whmcs_service_id=?");
           params.push(serviceId);
         }
 
-        if (typeof whmcs_billing_status !== "undefined") {
+        if (canEditWhmcs && typeof whmcs_billing_status !== "undefined") {
           updates.push("whmcs_billing_status=?");
           params.push(normalizeWhmcsStatus(whmcs_billing_status));
         }
 
-        if (typeof whmcs_next_due_date !== "undefined") {
+        if (canEditWhmcs && typeof whmcs_next_due_date !== "undefined") {
           updates.push("whmcs_next_due_date=?");
           params.push(toMysqlDateOnly(whmcs_next_due_date));
         }
 
-        if (typeof whmcs_last_sync_at !== "undefined") {
+        if (canEditWhmcs && typeof whmcs_last_sync_at !== "undefined") {
           updates.push("whmcs_last_sync_at=?");
           params.push(toMysqlDatetime(whmcs_last_sync_at));
         }
@@ -1629,12 +1628,14 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
 /** =========================================
  *  POST /v1/admin/devices/:code/whmcs-sync
  *  body: { whmcs_service_id? }
- *  - super admin only
+ *  - super admin, or owning reseller (pending unassigned devices can be claimed)
  *  - fetches WHMCS service details and updates due date/status on device
  *  ========================================= */
 router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
   try {
-    if (!requireSuperAdmin(req, res)) return;
+    const isSuperAdmin = req.admin?.role === "super_admin";
+    const isReseller = req.admin?.role === "reseller" && Number.isSafeInteger(req.admin.id) && req.admin.id > 0;
+    if (!isSuperAdmin && !isReseller) return res.status(403).json({ error: "forbidden" });
 
     const code = String(req.params.code || "").trim();
     if (!code) return res.status(400).json({ error: "device code required" });
@@ -1644,6 +1645,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       SELECT
         id,
         device_code,
+        reseller_admin_id,
         customer_name,
         customer_phone,
         plan_name,
@@ -1662,15 +1664,26 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
 
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
+    const canClaim = isReseller && !dev.reseller_admin_id && String(dev.status || '').toLowerCase() === 'pending';
+    if (!isSuperAdmin && Number(dev.reseller_admin_id) !== req.admin.id && !canClaim) {
+      return res.status(403).json({ error: "forbidden" });
+    }
 
     const serviceIdInput = req.body?.whmcs_service_id;
+    if (serviceIdInput != null && serviceIdInput !== '' && !['string', 'number'].includes(typeof serviceIdInput)) {
+      return res.status(400).json({ error: "invalid whmcs_service_id" });
+    }
     const resolvedServiceId = serviceIdInput ? Number(serviceIdInput) : Number(dev.whmcs_service_id || 0);
-    if (!Number.isFinite(resolvedServiceId) || resolvedServiceId <= 0) {
+    if (!Number.isSafeInteger(resolvedServiceId) || resolvedServiceId <= 0) {
       return res.status(400).json({ error: "whmcs_service_id required" });
     }
 
     const service = await fetchWhmcsServiceById(resolvedServiceId);
     if (!service) return res.status(404).json({ error: "WHMCS service not found" });
+    if (canClaim) {
+      const [claim] = await pool.execute("UPDATE devices SET reseller_admin_id=?, updated_at=NOW() WHERE id=? AND reseller_admin_id IS NULL AND status='pending'", [req.admin.id, dev.id]);
+      if (!claim.affectedRows) return res.status(409).json({ error: "Device ownership changed. Reload the device before syncing." });
+    }
 
     const syncedPlanName = extractWhmcsPlanName(service.raw);
     const planName = syncedPlanName || dev.plan_name || null;
@@ -1746,6 +1759,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
       SELECT
         d.id,
         d.device_code,
+        d.reseller_admin_id,
         d.customer_name,
         d.customer_phone,
         d.plan_name,
