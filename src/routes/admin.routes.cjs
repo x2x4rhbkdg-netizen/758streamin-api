@@ -1108,7 +1108,8 @@ router.get("/devices", adminAuth, async (req, res) => {
         d.created_at,
         d.updated_at,
         a.expires_at,
-        a.max_streams
+        a.max_streams,
+        a.notes
       FROM devices d
       LEFT JOIN admins r ON r.id = d.reseller_admin_id
       LEFT JOIN device_access a ON a.device_id = d.id
@@ -1387,6 +1388,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
     const {
       customer_name,
       customer_phone,
+      notes,
       status,
       max_streams,
       expires_at,
@@ -1407,6 +1409,10 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
 
     const hasCustomer = typeof customer_name !== "undefined";
     const hasPhone = typeof customer_phone !== "undefined";
+    const hasNotes = typeof notes !== "undefined";
+    if (hasNotes && notes !== null && (typeof notes !== 'string' || notes.length > 4000)) {
+      return res.status(400).json({ error: 'Notes must be text, up to 4000 characters.' });
+    }
     const hasStatus = typeof nextStatus === "string" && nextStatus.length > 0;
     const hasAccess =
       typeof max_streams !== "undefined" || typeof expires_at !== "undefined";
@@ -1445,6 +1451,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
     if (
       !hasCustomer &&
       !hasPhone &&
+      !hasNotes &&
       !hasStatus &&
       !hasAccess &&
       !hasReseller &&
@@ -1570,6 +1577,11 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
       );
     }
 
+    if (hasNotes) {
+      await pool.execute(`INSERT INTO device_access (device_id, notes, updated_at) VALUES (?, ?, NOW())
+        ON DUPLICATE KEY UPDATE notes=VALUES(notes), updated_at=NOW()`, [dev.id, notes === '' ? null : notes]);
+    }
+
     const [rows] = await pool.execute(
       `
       SELECT
@@ -1595,7 +1607,8 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
         d.created_at,
         d.updated_at,
         a.expires_at,
-        a.max_streams
+        a.max_streams,
+        a.notes
       FROM devices d
       LEFT JOIN admins r ON r.id = d.reseller_admin_id
       LEFT JOIN device_access a ON a.device_id = d.id
