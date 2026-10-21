@@ -6,6 +6,7 @@ const PROVIDERS = ['none', 'Real-Debrid', 'AllDebrid', 'Premiumize', 'EasyDebrid
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token'];
 const ACCESS_KEYS = ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled'];
 const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, adult_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', secondary_scraper_url: '', provider: 'none', default_provider: 'none',
+  anime_primary_catalog: 'anilist',
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
   auto_select_min_links: 10, auto_select_delay: false, auto_select_delay_seconds: 15,
@@ -52,6 +53,10 @@ function invalid(message) {
 function normalizeSettings(input, previous = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Movie settings must be an object');
   const next = { ...DEFAULTS, ...previous };
+  if (Object.hasOwn(input, 'anime_primary_catalog')) {
+    if (!['anilist', 'jikan', 'kitsu'].includes(input.anime_primary_catalog)) invalid('Unsupported Anime primary catalog');
+    next.anime_primary_catalog = input.anime_primary_catalog;
+  }
   if (Object.hasOwn(input, 'stremio_addons')) next.stremio_addons = normalizeAddons(input.stremio_addons, previous.stremio_addons);
   if (Object.hasOwn(input, 'default_provider')) {
     if (input.default_provider !== 'auto' && !PROVIDERS.includes(input.default_provider)) invalid('Unsupported default movie provider');

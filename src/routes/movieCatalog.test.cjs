@@ -11,7 +11,7 @@ function factory() {
       if (name === 'express') return require('express');
       if (name.includes('authJwt')) return { authJwt: (_req, _res, next) => next() };
       if (name.includes('movieSettings')) return { readMovieSettings: async () => ({ enabled: false }) };
-      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('anilistCatalog') || name.includes('kitsuCatalog') || name.includes('stremioCatalogs') || name.includes('streamingServices')) return require(name);
+      if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('anilistCatalog') || name.includes('jikanCatalog') || name.includes('kitsuCatalog') || name.includes('stremioCatalogs') || name.includes('streamingServices')) return require(name);
       throw new Error('Unexpected dependency');
     },
   });
@@ -30,6 +30,34 @@ async function invoke(options, route, query = {}, params = {}) {
   return res;
 }
 const configured = async () => ({ enabled: true, tmdb_read_access_token: 'private-token' });
+
+test('Anime outages fall back to Kitsu without changing title identities or silently claiming latest episodes', async () => {
+  for (const category of ['popular', 'latest_episodes']) {
+    const result = await invoke({ readSettings: async () => ({ anime_enabled: true }),
+      animeCatalog: async () => { throw Object.assign(new Error('AniList unavailable'), { status: 503 }); },
+      fallbackAnimeCatalog: async filters => {
+        assert.equal(filters.category, category === 'latest_episodes' ? 'airing' : category);
+        assert.equal(filters.type, 'series'); assert.equal(filters.page, 2);
+        return { items: [{ id: 'kitsu:7442', metadata_provider: 'kitsu' }], page: 2, total_pages: 3 };
+      },
+    }, '/movies/catalog', { section: 'anime', type: 'series', category, page: '2' });
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.items[0].id, 'kitsu:7442');
+    assert.equal(result.body.metadata_provider, 'kitsu');
+    assert.match(result.body.notice, /Showing Kitsu/);
+    if (category === 'latest_episodes') assert.match(result.body.notice, /instead of the latest-episode feed/);
+  }
+});
+
+test('invalid Anime filters and disabled access do not trigger fallback', async () => {
+  let calls = 0;
+  const options = { readSettings: async () => ({ anime_enabled: true }),
+    animeCatalog: async () => { throw Object.assign(new Error('Invalid filter'), { status: 400 }); },
+    fallbackAnimeCatalog: async () => { calls++; return {}; } };
+  assert.equal((await invoke(options, '/movies/catalog', { section: 'anime', type: 'series' })).statusCode, 400);
+  assert.equal((await invoke({ ...options, readSettings: async () => ({ anime_enabled: false }) }, '/movies/catalog', { section: 'anime', type: 'series' })).statusCode, 403);
+  assert.equal(calls, 0);
+});
 
 test('streaming services require device access and metadata credentials and exclude Anime', async () => {
   const request = async () => { throw new Error('must not request'); };

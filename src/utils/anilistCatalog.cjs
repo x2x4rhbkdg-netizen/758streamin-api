@@ -49,6 +49,11 @@ function createAniListClient({ fetcher = fetch, now = Date.now } = {}) {
           retryAt = now() + Math.min(300, Math.max(1, Number(response.headers.get('retry-after')) || 60)) * 1000;
           throw fail('Anime catalog is busy. Try again shortly.', 503);
         }
+        if (response.status === 403 || response.status >= 500) {
+          // Avoid hammering AniList when its public API is disabled or unhealthy.
+          retryAt = now() + 60000;
+          throw fail('AniList catalog temporarily unavailable.', 503);
+        }
         if (!response.ok) throw fail('AniList catalog temporarily unavailable.');
         const data = await response.json();
         if (data.errors?.length || !data.data) throw fail('AniList catalog temporarily unavailable.');
@@ -182,4 +187,4 @@ async function anilistDetails(id, type, options = {}) {
     return unavailable('Anime playback mapping is temporarily unavailable. Try again shortly.');
   }
 }
-module.exports = { anilistCatalog, anilistDetails, createAniListClient };
+module.exports = { anilistCatalog, anilistDetails, createAniListClient, mappedKitsuId };

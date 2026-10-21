@@ -141,3 +141,18 @@ test('public metadata client coalesces requests, caches briefly and honors rate-
   await assert.rejects(limited('query', {}), { status: 503 });
   await assert.rejects(limited('query', {}), { status: 503 }); assert.equal(rejectedCalls, 1);
 });
+
+test('upstream disabled and server-error responses open a short outage backoff', async () => {
+  for (const status of [403, 500, 503]) {
+    let clock = 1000000, calls = 0;
+    const client = createAniListClient({ now: () => clock, fetcher: async () => {
+      calls++; return { status, ok: false };
+    } });
+    await assert.rejects(client('catalog', {}), { status: 503 });
+    await assert.rejects(client('details', {}), { status: 503 });
+    assert.equal(calls, 1);
+    clock += 60001;
+    await assert.rejects(client('catalog', {}), { status: 503 });
+    assert.equal(calls, 2);
+  }
+});

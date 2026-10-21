@@ -3,8 +3,9 @@ const { authJwt } = require('../middleware/authJwt.cjs');
 const { readMovieSettings } = require('../utils/movieSettings.cjs');
 const { tmdb } = require('../utils/tmdbCatalog.cjs');
 const { catalogSection, requireCatalogAccess, requireAnime } = require('../utils/animeCatalog.cjs');
-const { kitsuDetails } = require('../utils/kitsuCatalog.cjs');
+const { kitsuCatalog, kitsuDetails } = require('../utils/kitsuCatalog.cjs');
 const { anilistCatalog, anilistDetails } = require('../utils/anilistCatalog.cjs');
+const { jikanCatalog, jikanDetails } = require('../utils/jikanCatalog.cjs');
 const { listAddonCatalogs, browseAddonCatalog } = require('../utils/stremioCatalogs.cjs');
 const streamingServices = require('../utils/streamingServices.cjs');
 
@@ -27,7 +28,7 @@ function item(data, type) {
     year: String(data.release_date || data.first_air_date || '').slice(0, 4),
     overview: data.overview || '', poster: artwork(data.poster_path), rating: data.vote_average || 0 };
 }
-function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSettings, request = tmdb, animeCatalog = anilistCatalog, animeDetails = kitsuDetails, primaryAnimeDetails = anilistDetails,
+function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSettings, request = tmdb, animeCatalog = anilistCatalog, fallbackAnimeCatalog = kitsuCatalog, jikanAnimeCatalog = jikanCatalog, jikanAnimeDetails = jikanDetails, animeDetails = kitsuDetails, primaryAnimeDetails = anilistDetails,
   addonCatalogs = listAddonCatalogs, addonBrowse = browseAddonCatalog } = {}) {
   const router = Router();
   router.use('/movies', auth, async (req, res, next) => {
@@ -70,7 +71,27 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
     const anime = req.catalogSection === 'anime';
     const categories = anime ? ['popular', 'top_rated', 'trending', 'airing', 'latest_episodes', 'new_releases', 'completed', 'upcoming'] : ['popular', 'top_rated'];
     if (!categories.includes(category)) throw bad('Invalid movie category');
-    if (anime) return animeCatalog({ type, category, query, page, genre: String(req.query.genre || '') });
+    if (anime) {
+      const filters = { type, category, query, page, genre: String(req.query.genre || '') };
+      const adapters = { anilist: animeCatalog, kitsu: fallbackAnimeCatalog, jikan: jikanAnimeCatalog };
+      const names = { anilist: 'AniList', kitsu: 'Kitsu', jikan: 'Jikan' };
+      const primary = Object.hasOwn(adapters, req.movieSettings.anime_primary_catalog) ? req.movieSettings.anime_primary_catalog : 'anilist';
+      let failure;
+      for (const provider of new Set([primary, 'kitsu', 'anilist', 'jikan'])) {
+        try {
+          const result = await adapters[provider]({ ...filters, category: provider === 'kitsu' && category === 'latest_episodes' ? 'airing' : category });
+          return { ...result, metadata_provider: provider, notice: [
+            provider !== primary ? `${names[primary]} is temporarily unavailable. Showing ${names[provider]} titles.` : '',
+            provider === 'kitsu' && category === 'latest_episodes' ? 'Showing currently airing titles instead of the latest-episode feed.' : '',
+            result.notice || '',
+          ].filter(Boolean).join(' ') };
+        } catch (error) {
+          if (error.status && ![502, 503, 504].includes(error.status)) throw error;
+          failure = error;
+        }
+      }
+      throw failure;
+    }
     requireTmdb(req);
     if (req.query.streaming_service) {
       const data = await streamingServices.browse(req.movieSettings, endpoint, request, {
@@ -87,6 +108,7 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
   }));
   router.get('/movies/details/:id', handle(async (req) => {
     const type = req.query.type || 'movie';
+    if (req.catalogSection === 'anime' && String(req.params.id).startsWith('mal:')) return jikanAnimeDetails(req.params.id, type);
     if (req.catalogSection === 'anime' && String(req.params.id).startsWith('anilist:')) return primaryAnimeDetails(req.params.id, type);
     if (req.catalogSection === 'anime' && String(req.params.id).startsWith('kitsu:')) return animeDetails(req.params.id, type);
     requireTmdb(req);
@@ -98,6 +120,11 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
       seasons: (Array.isArray(data.seasons) ? data.seasons : []).map((season) => ({ number: season.season_number, name: season.name, episode_count: season.episode_count })) };
   }));
   router.get('/movies/season/:id/:season', handle(async (req) => {
+    if (req.catalogSection === 'anime' && String(req.params.id).startsWith('mal:')) {
+      if (integer(req.params.season, 0, 1000) !== 1) throw bad('Anime episode group unavailable', 404);
+      const detail = await jikanAnimeDetails(req.params.id, 'series');
+      return { episodes: detail.episodes, ...(detail.notice ? { notice: detail.notice } : {}) };
+    }
     if (req.catalogSection === 'anime' && String(req.params.id).startsWith('anilist:')) {
       if (integer(req.params.season, 0, 1000) !== 1) throw bad('Anime episode group unavailable', 404);
       const detail = await primaryAnimeDetails(req.params.id, 'series');
