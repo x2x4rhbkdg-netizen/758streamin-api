@@ -4,6 +4,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+test('Anime primary catalog persists globally, defaults to AniList and rejects unknown providers or device overrides', async () => {
+  const { api } = fixture();
+  assert.equal((await api.readGlobalMovieSettings()).anime_primary_catalog, 'anilist');
+  for (const provider of ['jikan', 'kitsu', 'anilist']) {
+    await api.saveGlobalMovieSettings({ anime_primary_catalog: provider });
+    assert.equal((await api.readGlobalMovieSettings()).anime_primary_catalog, provider);
+    assert.equal(api.adminGlobalSettings(await api.readGlobalMovieSettings()).anime_primary_catalog, provider);
+    assert.equal(api.publicSettings(await api.readMovieSettings(1)).anime_primary_catalog, provider);
+  }
+  await assert.rejects(api.saveGlobalMovieSettings({ anime_primary_catalog: 'https://untrusted' }), { status: 400 });
+  await assert.rejects(api.saveMovieSettings(1, { anime_primary_catalog: 'jikan' }), { status: 400 });
+});
+
 test('AllDebrid saves with the existing encrypted account settings and redacts its API key', async () => {
   const { api } = fixture();
   await api.saveGlobalMovieSettings({ default_provider: 'AllDebrid', provider_accounts: { AllDebrid: { enabled: true, token: 'ad-secret-key' } } });

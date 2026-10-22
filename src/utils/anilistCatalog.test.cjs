@@ -19,8 +19,9 @@ test('catalog queries use AniList categories, safe formats, search, genre and pa
     assert.equal(result.items[0].id, 'anilist:16498'); assert.equal(result.items[0].rating, 8.4);
     assert.equal(result.items[0].metadata_provider, 'anilist'); assert.equal(result.total_pages, 3);
   }
-  await anilistCatalog({ type: 'movie', category: 'airing', query: 'A & B', page: 1 }, { request: async (_query, v) => {
+  await anilistCatalog({ type: 'movie', category: 'airing', query: 'A & B', genre: 'Fantasy', page: 1 }, { request: async (_query, v) => {
     assert.deepEqual(v.formats, ['MOVIE']); assert.equal(v.search, 'A & B'); assert.equal(v.status, undefined);
+    assert.equal(v.genre, 'Fantasy');
     assert.deepEqual(v.sort, ['SEARCH_MATCH']); return { Page: { media: [], pageInfo: {} } };
   } });
 });

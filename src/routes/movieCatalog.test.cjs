@@ -11,6 +11,7 @@ function factory() {
       if (name === 'express') return require('express');
       if (name.includes('authJwt')) return { authJwt: (_req, _res, next) => next() };
       if (name.includes('movieSettings')) return { readMovieSettings: async () => ({ enabled: false }) };
+      if (name.includes('animeSearch')) return require(name);
       if (name.includes('tmdbCatalog') || name.includes('animeCatalog') || name.includes('anilistCatalog') || name.includes('jikanCatalog') || name.includes('kitsuCatalog') || name.includes('stremioCatalogs') || name.includes('streamingServices')) return require(name);
       throw new Error('Unexpected dependency');
     },
@@ -30,6 +31,51 @@ async function invoke(options, route, query = {}, params = {}) {
   return res;
 }
 const configured = async () => ({ enabled: true, tmdb_read_access_token: 'private-token' });
+
+test('advanced anime filters are validated, scoped and never dropped by catalog failover', async () => {
+  let received;
+  const options = { readSettings: async () => ({ enabled: true, anime_enabled: true }), animeSearch: async filters => { received = filters; return { items: [], page: 2, total_pages: 3 }; } };
+  const query = { section: 'anime', type: 'series', page: '2', q: 'Titan', anime_filters: JSON.stringify({ genres: ['Action'], tags: ['Military'], year: 2013, minEpisodes: 12 }) };
+  assert.equal((await invoke(options, '/movies/catalog', query)).statusCode, 200);
+  assert.equal(received.query, 'Titan'); assert.equal(received.page, 2); assert.equal(received.filters.year, 2013);
+  assert.equal((await invoke(options, '/movies/catalog', { ...query, section: undefined })).statusCode, 400);
+  assert.equal((await invoke(options, '/movies/catalog', { ...query, anime_filters: '{' })).statusCode, 400);
+  let fallback = false;
+  const failure = await invoke({ readSettings: options.readSettings, animeSearch: async () => { throw Object.assign(new Error('Search unavailable'), { status: 503 }); }, fallbackAnimeCatalog: async () => { fallback = true; return {}; } }, '/movies/catalog', query);
+  assert.equal(failure.statusCode, 503); assert.equal(fallback, false);
+});
+
+test('anime filter options retain device access controls and bounded studio searches', async () => {
+  let received;
+  const options = { readSettings: async () => ({ anime_enabled: true }), animeOptions: async query => { received = query; return { genres: ['Action'], tags: [], studios: [] }; } };
+  assert.equal((await invoke(options, '/movies/anime-filters', { section: 'anime', q: 'Mappa', page: '2' })).statusCode, 200);
+  assert.equal(received.search, 'Mappa'); assert.equal(received.page, 2);
+  assert.equal((await invoke(options, '/movies/anime-filters', { section: 'anime', page: '101' })).statusCode, 400);
+  assert.equal((await invoke({ ...options, readSettings: async () => ({ enabled: false }) }, '/movies/anime-filters', { section: 'anime' })).statusCode, 403);
+});
+
+test('dashboard Anime primary is tried first, with outage failover and identity-specific details independent of the current primary', async () => {
+  for (const primary of ['anilist', 'jikan', 'kitsu']) {
+    const calls = [];
+    const adapter = name => async () => { calls.push(name); return { items: [{ id: `${name}:1` }], page: 1 }; };
+    const result = await invoke({ readSettings: async () => ({ anime_enabled: true, anime_primary_catalog: primary }),
+      animeCatalog: adapter('anilist'), jikanAnimeCatalog: adapter('jikan'), fallbackAnimeCatalog: adapter('kitsu'),
+    }, '/movies/catalog', { section: 'anime', type: 'series' });
+    assert.deepEqual(calls, [primary]); assert.equal(result.body.metadata_provider, primary);
+  }
+  const result = await invoke({ readSettings: async () => ({ anime_enabled: true, anime_primary_catalog: 'jikan' }),
+    jikanAnimeCatalog: async () => { throw Object.assign(new Error('Outage'), { status: 503 }); },
+    fallbackAnimeCatalog: async () => ({ items: [{ id: 'kitsu:7442' }] }),
+  }, '/movies/catalog', { section: 'anime', type: 'series' });
+  assert.match(result.body.notice, /Jikan.*Showing Kitsu/);
+  const options = { readSettings: async () => ({ anime_enabled: true, anime_primary_catalog: 'kitsu' }),
+    jikanAnimeDetails: async (id, type) => { assert.equal(id, 'mal:16498'); assert.equal(type, 'series');
+      return { id: 'kitsu:7442', metadata_provider: 'jikan', episodes: [{ video_id: 'kitsu:7442:1' }] }; } };
+  const detail = await invoke(options, '/movies/details/:id', { section: 'anime', type: 'series' }, { id: 'mal:16498' });
+  assert.equal(detail.body.id, 'kitsu:7442');
+  const season = await invoke(options, '/movies/season/:id/:season', { section: 'anime' }, { id: 'mal:16498', season: '1' });
+  assert.equal(season.body.episodes[0].video_id, 'kitsu:7442:1');
+});
 
 test('Anime outages fall back to Kitsu without changing title identities or silently claiming latest episodes', async () => {
   for (const category of ['popular', 'latest_episodes']) {

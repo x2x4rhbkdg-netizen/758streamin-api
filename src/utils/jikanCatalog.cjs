@@ -41,6 +41,7 @@ function createJikanClient({ fetcher = fetch, now = Date.now, sleep = ms => new 
         return data;
       } catch (error) {
         if (error.status) throw error;
+        retryAt = now() + 30000;
         throw fail('Jikan catalog temporarily unavailable.', 503);
       } finally { clearTimeout(timer); }
     });

@@ -8,6 +8,7 @@ const { anilistCatalog, anilistDetails } = require('../utils/anilistCatalog.cjs'
 const { jikanCatalog, jikanDetails } = require('../utils/jikanCatalog.cjs');
 const { listAddonCatalogs, browseAddonCatalog } = require('../utils/stremioCatalogs.cjs');
 const streamingServices = require('../utils/streamingServices.cjs');
+const { parseAnimeFilters, animeFilterOptions, searchAnime } = require('../utils/animeSearch.cjs');
 
 function bad(message, status = 400) { return Object.assign(new Error(message), { status }); }
 function contentType(value) {
@@ -29,7 +30,7 @@ function item(data, type) {
     overview: data.overview || '', poster: artwork(data.poster_path), rating: data.vote_average || 0 };
 }
 function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSettings, request = tmdb, animeCatalog = anilistCatalog, fallbackAnimeCatalog = kitsuCatalog, jikanAnimeCatalog = jikanCatalog, jikanAnimeDetails = jikanDetails, animeDetails = kitsuDetails, primaryAnimeDetails = anilistDetails,
-  addonCatalogs = listAddonCatalogs, addonBrowse = browseAddonCatalog } = {}) {
+  addonCatalogs = listAddonCatalogs, addonBrowse = browseAddonCatalog, animeSearch = searchAnime, animeOptions = animeFilterOptions } = {}) {
   const router = Router();
   router.use('/movies', auth, async (req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -58,12 +59,20 @@ function createMovieCatalogRouter({ auth = authJwt, readSettings = readMovieSett
     const list = await streamingServices.services(req.movieSettings, contentType(req.query.type || 'movie'), request);
     return { services: list.map(({ regions, ...value }) => value) };
   }));
+  router.get('/movies/anime-filters', handle(async (req) => {
+    if (req.catalogSection !== 'anime') throw bad('Anime section required');
+    return animeOptions({ search: String(req.query.q || ''), page: integer(req.query.page || 1, 1, 100) });
+  }));
   router.get('/movies/catalog', handle(async (req) => {
     const type = req.query.type || 'movie';
     const endpoint = contentType(type);
     const page = integer(req.query.page || 1, 1, 500);
     const query = String(req.query.q || '').trim();
     if (query.length > 200) throw bad('Search query is too long');
+    if (req.query.anime_filters !== undefined) {
+      if (req.catalogSection !== 'anime' || req.query.addon_catalog || req.query.streaming_service) throw bad('Invalid anime filter scope');
+      return { ...await animeSearch({ type, query, page, filters: parseAnimeFilters(req.query.anime_filters) }), anime_filters_applied: true };
+    }
     if (req.query.streaming_service && (req.catalogSection === 'anime' || req.query.addon_catalog)) throw bad('Invalid streaming service scope');
     if (req.query.addon_catalog) return addonBrowse(req.movieSettings, { type, section: req.catalogSection,
       key: req.query.addon_catalog, page, query, genre: req.query.genre || '' });

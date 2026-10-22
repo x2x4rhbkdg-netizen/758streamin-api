@@ -105,8 +105,9 @@ async function anilistCatalog({ type, category = 'popular', query = '', page = 1
     const before = Number(`${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, '0')}${String(date.getUTCDate()).padStart(2, '0')}`);
     const status = { airing: 'RELEASING', completed: 'FINISHED', upcoming: 'NOT_YET_RELEASED' }[category];
     response = await run(CATALOG, { page, formats: type === 'movie' ? ['MOVIE'] : FORMATS,
+      ...(genre ? { genre } : {}),
       ...(query ? { search: query, sort: ['SEARCH_MATCH'] } : { sort: [sorts[category] || 'POPULARITY_DESC'],
-        ...(status ? { status } : {}), ...(genre ? { genre } : {}), ...(category === 'new_releases' ? { before } : {}) }) });
+        ...(status ? { status } : {}), ...(category === 'new_releases' ? { before } : {}) }) });
     if (!Array.isArray(response.Page?.media)) throw fail('Invalid AniList catalog response');
     records = response.Page.media;
   }
@@ -187,4 +188,4 @@ async function anilistDetails(id, type, options = {}) {
     return unavailable('Anime playback mapping is temporarily unavailable. Try again shortly.');
   }
 }
-module.exports = { anilistCatalog, anilistDetails, createAniListClient, mappedKitsuId };
+module.exports = { anilistCatalog, anilistDetails, createAniListClient, mappedKitsuId, request, safe, item, FIELDS };
