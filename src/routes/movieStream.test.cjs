@@ -75,6 +75,16 @@ test('Adult HLS playlists hide upstream URLs and issue PIN-scoped segment ticket
   assert.equal(record.url, 'https://cdn.example/path/segment.ts?key=private');
   assert.equal(record.section, 'adult');
   assert.equal(record.adultPinFingerprint, 'pin-one');
+  assert.equal(record.adultAgeConfirmed, true);
+});
+test('legacy Adult playback tickets without the 18+ marker fail before any upstream request', async () => {
+  const crypto = require('node:crypto');
+  const key = crypto.createHmac('sha256', 'test-secret').update('streamin-movie-playback-v1').digest();
+  const iv = crypto.randomBytes(12), cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify({ url: 'https://cdn.example/movie.mp4', device: '1', section: 'adult', adultPinFingerprint: 'pin-one', expires: Date.now() + 60000 })), cipher.final()]);
+  const ticket = Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
+  const f = fixture({ adult_enabled: true });
+  assert.equal((await f.run(null, undefined, ticket)).code, 403); assert.equal(f.calls.length, 0);
 });
 test('protected stream blocks invalid tickets, revoked access, private destinations, unsafe redirects and multiranges', async () => {
   assert.equal((await fixture().run('https://cdn.example/movie', undefined, 'tampered')).code, 403);

@@ -58,6 +58,32 @@ function fixture() {
   return { api: module.exports, devices, vault, setMissing: () => { missingTables = true; } };
 }
 
+test('ThePornDB token is encrypted, masked, preserved on unrelated saves and cannot be device-overridden', async () => {
+  const { api } = fixture();
+  assert.equal((await api.readGlobalMovieSettings()).theporndb_enabled, false);
+  await assert.rejects(api.saveGlobalMovieSettings({ theporndb_enabled: true }), { status: 400 });
+  await api.saveGlobalMovieSettings({ theporndb_enabled: true, theporndb_token: 'private-tpdb-key' });
+  let settings = await api.readGlobalMovieSettings();
+  assert.equal(settings.theporndb_token, 'private-tpdb-key');
+  for (const result of [api.adminGlobalSettings(settings), api.publicSettings(settings)]) {
+    assert.equal(result.theporndb_enabled, true);
+    assert.equal(result.theporndb_token_configured, true);
+    assert.equal(JSON.stringify(result).includes('private-tpdb-key'), false);
+    assert.equal(Object.hasOwn(result, 'theporndb_token'), false);
+  }
+  await api.saveGlobalMovieSettings({ anime_primary_catalog: 'jikan' });
+  assert.equal((await api.readGlobalMovieSettings()).theporndb_token, 'private-tpdb-key');
+  await assert.rejects(api.saveGlobalMovieSettings({ theporndb_token: '' }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ theporndb_token: 'bad\nheader' }), { status: 400 });
+  await assert.rejects(api.saveMovieSettings(1, { theporndb_enabled: true }), { status: 400 });
+  await assert.rejects(api.saveMovieSettings(1, { theporndb_token: 'device' }), { status: 400 });
+  await api.saveGlobalMovieSettings({ theporndb_enabled: false });
+  assert.equal((await api.readGlobalMovieSettings()).theporndb_token, 'private-tpdb-key');
+  await api.saveGlobalMovieSettings({ theporndb_token: '' });
+  settings = await api.readGlobalMovieSettings();
+  assert.equal(api.adminGlobalSettings(settings).theporndb_token_configured, false);
+});
+
 test('device access defaults disabled and saves independently from global settings', async () => {
   const { api } = fixture();
   assert.equal((await api.readDeviceMovieAccess(1)).enabled, false);

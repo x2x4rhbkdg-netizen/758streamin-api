@@ -6,6 +6,7 @@
  *  ========================================= */
 const { Router } = require("express");
 const jwt = require("jsonwebtoken");
+const { timingSafeEqual } = require('node:crypto');
 const { pool } = require("../db/pool.cjs");
 const { makeDeviceCode } = require("../utils/deviceCode.cjs");
 const { authJwt } = require("../middleware/authJwt.cjs");
@@ -41,6 +42,28 @@ function isUuidLike(v) {
 function normalizePin(pin) {
   const s = String(pin || "").trim();
   return /^\d{4}$/.test(s) ? s : null;
+}
+
+const pinAttempts = new Map();
+function limitPinAttempts(req, res, next) {
+  const now = Date.now();
+  for (const [key, value] of pinAttempts) if (value.until <= now) pinAttempts.delete(key);
+  const key = req.device.device_id;
+  const entry = pinAttempts.get(key) || { count: 0, until: now + 300000 };
+  if (entry.count >= 5 || (!pinAttempts.has(key) && pinAttempts.size >= 10000)) {
+    res.set('Retry-After', '300');
+    return res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
+  }
+  entry.count++;
+  pinAttempts.set(key, entry);
+  next();
+}
+function matchesPin(encrypted, candidate) {
+  const pin = normalizePin(candidate);
+  if (!encrypted || !pin) return false;
+  const stored = Buffer.from(decryptString(encrypted));
+  const supplied = Buffer.from(pin);
+  return stored.length === supplied.length && timingSafeEqual(stored, supplied);
 }
 
 function normalizeVersionCode(value) {
@@ -698,7 +721,7 @@ router.post("/device/heartbeat", authJwt, async (req, res) => {
  *  body: { pin }
  *  - verifies per-device adult PIN (encrypted in device_access)
  *  ========================================= */
-router.post("/device/adult/verify", authJwt, async (req, res) => {
+router.post("/device/adult/verify", authJwt, limitPinAttempts, async (req, res) => {
   try {
     const pin = normalizePin(req.body?.pin);
     if (!pin) {
@@ -714,8 +737,7 @@ router.post("/device/adult/verify", authJwt, async (req, res) => {
     const encPin = rows[0]?.adult_pin_enc;
     if (!encPin) return res.status(404).json({ error: "pin not set" });
 
-    const stored = decryptString(encPin);
-    if (stored !== pin) {
+    if (!matchesPin(encPin, pin)) {
       return res.status(403).json({ error: "invalid pin" });
     }
 
@@ -727,10 +749,10 @@ router.post("/device/adult/verify", authJwt, async (req, res) => {
 
 /** =========================================
  *  POST /v1/device/adult/set
- *  body: { pin }
+ *  body: { pin, current_pin? } (current_pin required when replacing a PIN)
  *  - sets adult PIN for this device
  *  ========================================= */
-router.post("/device/adult/set", authJwt, async (req, res) => {
+router.post("/device/adult/set", authJwt, limitPinAttempts, async (req, res) => {
   try {
     const pin = normalizePin(req.body?.pin);
     if (!pin) {
@@ -738,18 +760,25 @@ router.post("/device/adult/set", authJwt, async (req, res) => {
     }
 
     const deviceId = req.device.device_id;
+    await pool.execute(
+      `INSERT INTO device_access (device_id, updated_at) VALUES (?, NOW())
+       ON DUPLICATE KEY UPDATE device_id=VALUES(device_id)`, [deviceId]
+    );
+    const [rows] = await pool.execute(
+      `SELECT adult_pin_enc FROM device_access WHERE device_id=? LIMIT 1`, [deviceId]
+    );
+    const previous = rows[0]?.adult_pin_enc || null;
+    if (previous && !matchesPin(previous, req.body?.current_pin)) {
+      return res.status(403).json({ error: 'invalid pin: current PIN required' });
+    }
     const encPin = encryptString(pin);
 
-    await pool.execute(
-      `
-      INSERT INTO device_access (device_id, adult_pin_enc, updated_at)
-      VALUES (?, ?, NOW())
-      ON DUPLICATE KEY UPDATE
-        adult_pin_enc=VALUES(adult_pin_enc),
-        updated_at=NOW()
-      `,
-      [deviceId, encPin]
+    const [result] = await pool.execute(
+      `UPDATE device_access SET adult_pin_enc=?, updated_at=NOW()
+       WHERE device_id=? AND adult_pin_enc <=> ?`,
+      [encPin, deviceId, previous]
     );
+    if (!result.affectedRows) return res.status(409).json({ error: 'PIN changed. Try again.' });
 
     return res.json({ ok: true });
   } catch (err) {
@@ -759,15 +788,24 @@ router.post("/device/adult/set", authJwt, async (req, res) => {
 
 /** =========================================
  *  DELETE /v1/device/adult/reset
+ *  body: { current_pin }
  *  - clears adult PIN for this device
  *  ========================================= */
-router.delete("/device/adult/reset", authJwt, async (req, res) => {
+router.delete("/device/adult/reset", authJwt, limitPinAttempts, async (req, res) => {
   try {
     const deviceId = req.device.device_id;
-    await pool.execute(
-      `UPDATE device_access SET adult_pin_enc=NULL, updated_at=NOW() WHERE device_id=?`,
-      [deviceId]
+    const [rows] = await pool.execute(
+      `SELECT adult_pin_enc FROM device_access WHERE device_id=? LIMIT 1`, [deviceId]
     );
+    const previous = rows[0]?.adult_pin_enc;
+    if (!matchesPin(previous, req.body?.current_pin)) {
+      return res.status(403).json({ error: 'invalid pin: current PIN required' });
+    }
+    const [result] = await pool.execute(
+      `UPDATE device_access SET adult_pin_enc=NULL, updated_at=NOW()
+       WHERE device_id=? AND adult_pin_enc=?`, [deviceId, previous]
+    );
+    if (!result.affectedRows) return res.status(409).json({ error: 'PIN changed. Try again.' });
     return res.json({ ok: true });
   } catch (err) {
     return sendInternalError(req, res, "device/adult/reset", err);

@@ -3,14 +3,15 @@ const crypto = require('node:crypto');
 const { authJwt } = require('../middleware/authJwt.cjs');
 const { readMovieSettings } = require('../utils/movieSettings.cjs');
 const { createAdultTokens, readAdultPin } = require('../utils/adultAccess.cjs');
-const { createAdultAddonClient, adultAddons, addonVersion } = require('../utils/adultAddons.cjs');
+const { addonVersion } = require('../utils/adultAddons.cjs');
+const { createAdultCatalogClient, adultCatalogProviders, validateAdultSelection } = require('../utils/adultCatalogClient.cjs');
 const { lookupProviders, resolveMovieSource } = require('../utils/movieResolver.cjs');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { createMediaHistoryStore, normalizeProgress, hash } = require('../utils/mediaHistory.cjs');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
 function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, readPin = readAdultPin,
-  client = createAdultAddonClient(), lookup = lookupProviders, resolve = resolveMovieSource,
+  client = createAdultCatalogClient(), lookup = lookupProviders, resolve = resolveMovieSource,
   tokens = () => createAdultTokens(process.env.JWT_SECRET), tickets = () => createPlaybackTickets(process.env.JWT_SECRET),
   history = createMediaHistoryStore(), now = Date.now } = {}) {
   const router = Router();
@@ -24,20 +25,21 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
   }
   function capability(req, purpose, token) {
     const value = tokens().read(token, purpose, req.device.device_id);
-    if (value.fingerprint !== req.adultPin.fingerprint) throw fail('Unlock Adult Content again', 403);
+    if (value.fingerprint !== req.adultPin.fingerprint || value.age_confirmed !== true) throw fail('Confirm you are 18 or older and unlock Adult Content again', 403);
     return value;
   }
   function issue(req, purpose, data, ttl) {
-    return tokens().issue(purpose, req.device.device_id, { ...data, fingerprint: req.adultPin.fingerprint }, ttl);
+    return tokens().issue(purpose, req.device.device_id, { ...data, fingerprint: req.adultPin.fingerprint, age_confirmed: true }, ttl);
   }
   const historyKey = item => hash(`${item.addon_id}:${item.type}:${item.id}:${item.season ?? ''}:${item.episode ?? ''}`);
   const historyItem = item => ({ addon_id: item.addon_id, addon_version: item.addon_version, id: item.id,
-    type: item.type, title: item.title, poster: item.poster, season: item.season, episode: item.episode });
+    type: item.type, title: item.title, poster: item.poster, season: item.season, episode: item.episode,
+    ...(item.addon_id === '__tpdb' ? { tpdb_kind: item.tpdb_kind, tpdb_id: item.tpdb_id } : {}) });
   async function historyItems(req) {
     const owner = await history.owner(req.device.device_id);
     const records = await history.list(owner, ['adult']);
     return records.filter(record => record.position >= 10 && record.position < record.duration - 30 &&
-      adultAddons(req.adultSettings).some(addon => addon.id === record.item?.addon_id && addonVersion(addon) === record.item.addon_version))
+      adultCatalogProviders(req.adultSettings).some(addon => addon.id === record.item?.addon_id && addonVersion(addon) === record.item.addon_version))
       .map(record => ({ ...record.item, resume_position: record.position }));
   }
   function protectedUrl(req, url) {
@@ -68,6 +70,7 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
     });
   }
   route('unlock', async (req) => {
+    if (req.body?.age_confirmed !== true) throw fail('Confirm you are 18 or older before opening Adult Content', 403);
     const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
     const stored = String(req.adultPin.pin);
     if (!/^\d{4}$/.test(pin) || Buffer.byteLength(stored) !== 4 ||
@@ -102,9 +105,7 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
   });
   route('resolve', async (req) => {
     const { item, source } = capability(req, 'source', req.body?.source_token);
-    const addon = adultAddons(req.adultSettings).find((addon) => addon.id === item.addon_id);
-    if (!addon) throw fail('Adult add-on is not enabled', 409);
-    if (item.addon_version !== addonVersion(addon)) throw fail('Adult add-on changed. Open its catalog again.', 409);
+    validateAdultSelection(req.adultSettings, item, source);
     let url = source.url, provider = '';
     if (!url) {
       if (item.type === 'series' && (!Number.isInteger(item.season) || !Number.isInteger(item.episode))) throw fail('This add-on did not identify the episode for provider playback', 409);

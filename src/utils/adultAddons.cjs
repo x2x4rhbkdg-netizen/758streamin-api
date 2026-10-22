@@ -36,13 +36,13 @@ function poster(value) {
   catch { return undefined; }
 }
 function createAdultAddonClient({ fetchText = readText } = {}) {
-  const json = async (addon, path = 'manifest.json') => {
+  const json = async (addon, path = 'manifest.json', signal) => {
     const base = addon.manifest_url.slice(0, -'manifest.json'.length);
-    try { return JSON.parse(await fetchText(`${base}${path}`)); }
+    try { return JSON.parse(await fetchText(`${base}${path}`, { signal })); }
     catch { throw fail('Adult add-on unavailable. Check its manifest URL in Media Settings.', 502); }
   };
-  const manifest = async (addon) => {
-    const result = await json(addon);
+  const manifest = async (addon, signal) => {
+    const result = await json(addon, 'manifest.json', signal);
     if (typeof result?.id !== 'string' || !Array.isArray(result.types) || !Array.isArray(result.resources)) throw fail('Invalid Adult add-on manifest', 502);
     return result;
   };
@@ -50,6 +50,25 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
     if (!value || typeof value.id !== 'string' || !value.id || value.id.length > 500) return null;
     return { id: value.id, type, title: bounded(value.name || value.id), overview: bounded(value.description, 2000), poster: poster(value.poster) };
   };
+  async function streamSources(addon, type, id, signal) {
+    const response = await json(addon, `stream/${type}/${encodeURIComponent(id)}.json`, signal);
+    if (!Array.isArray(response.streams)) throw fail('Invalid Adult stream response', 502);
+    const sources = [];
+    for (const stream of response.streams.slice(0, 100)) {
+      if (stream?.behaviorHints?.proxyHeaders || stream?.externalUrl) continue;
+      const title = bounded(stream?.name || stream?.title || 'Source');
+      const file_name = bounded(stream?.behaviorHints?.filename, 500);
+      const hash = String(stream?.infoHash || '').toLowerCase();
+      if (/^[a-f0-9]{40}$/.test(hash)) sources.push({ hash, title, ...(file_name ? { file_name } : {}) });
+      else if (typeof stream?.url === 'string') {
+        try {
+          const url = validateUrl(stream.url);
+          if (url.protocol === 'https:' && !url.hash && !/\.mpd$/i.test(url.pathname)) sources.push({ url: url.href, title });
+        } catch { /* Unsupported streams cannot become playback capabilities. */ }
+      }
+    }
+    return sources;
+  }
   return {
     async catalogs(settings) {
       const addons = adultAddons(settings);
@@ -110,23 +129,32 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
       const addon = selectedItemAddon(settings, item);
       const data = await manifest(addon);
       if (!resource(data, 'stream', item.type, item.id)) throw fail('No supported stream resource for this title', 409);
-      const response = await json(addon, `stream/${item.type}/${encodeURIComponent(item.id)}.json`);
-      if (!Array.isArray(response.streams)) throw fail('Invalid Adult stream response', 502);
+      return streamSources(addon, item.type, item.id);
+    },
+    async metadataSources(settings, item) {
       const sources = [];
-      for (const stream of response.streams.slice(0, 100)) {
-        if (stream?.behaviorHints?.proxyHeaders || stream?.externalUrl) continue;
-        const title = bounded(stream?.name || stream?.title || 'Source');
-        const file_name = bounded(stream?.behaviorHints?.filename, 500);
-        const hash = String(stream?.infoHash || '').toLowerCase();
-        if (/^[a-f0-9]{40}$/.test(hash)) sources.push({ hash, title, ...(file_name ? { file_name } : {}) });
-        else if (typeof stream?.url === 'string') {
+      const addons = adultAddons(settings).slice(0, 10);
+      const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
+      let cursor = 0;
+      // An explicit prefix is required; an unrestricted manifest does not prove ID compatibility.
+      try { await Promise.all(Array.from({ length: Math.min(3, addons.length) }, async () => {
+        while (cursor < addons.length && !controller.signal.aborted) {
+          const addon = addons[cursor++];
           try {
-            const url = validateUrl(stream.url);
-            if (url.protocol === 'https:' && !url.hash && !/\.mpd$/i.test(url.pathname)) sources.push({ url: url.href, title });
-          } catch { /* Unsupported streams cannot become playback capabilities. */ }
+            const data = await manifest(addon, controller.signal);
+            const compatible = data.resources.some(entry => {
+              const r = typeof entry === 'string' ? { name: entry } : entry;
+              const prefixes = r?.idPrefixes || data.idPrefixes;
+              return r?.name === 'stream' && (r.types || data.types).includes('movie') &&
+                Array.isArray(prefixes) && prefixes.some(prefix => typeof prefix === 'string' && /^tpdb:(scenes:|movies:|jav:)?$/.test(prefix) && item.id.startsWith(prefix));
+            });
+            if (!compatible) continue;
+            sources.push(...(await streamSources(addon, 'movie', item.id, controller.signal)).map(source => ({ ...source,
+              source_addon_id: addon.id, source_addon_version: addonVersion(addon) })));
+          } catch { /* One unavailable source adapter must not prevent other configured adapters. */ }
         }
-      }
-      return sources;
+      })); } finally { clearTimeout(timer); }
+      return sources.slice(0, 100);
     },
   };
 }

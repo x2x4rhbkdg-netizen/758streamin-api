@@ -5,6 +5,8 @@ const vm = require('node:vm');
 const { createAdultTokens } = require('../utils/adultAccess.cjs');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { addonVersion } = require('../utils/adultAddons.cjs');
+const { createAdultCatalogClient } = require('../utils/adultCatalogClient.cjs');
+const { createThePornDbClient } = require('../utils/thePornDb.cjs');
 
 function fixture(overrides = {}) {
   const module = { exports: {} };
@@ -41,9 +43,62 @@ function fixture(overrides = {}) {
     await route.stack.at(-1).handle({ body, device: { device_id: device } }, res);
     return res;
   }
-  const unlock = async (device = 1) => (await invoke('unlock', { pin: '1234' }, device)).body.unlock_token;
+  const unlock = async (device = 1) => (await invoke('unlock', { pin: '1234', age_confirmed: true }, device)).body.unlock_token;
   return { invoke, unlock, settings, tokens, tickets, calls, historyOwners, historyRecords, setPin: (value) => { pin = value; }, advance: (ms) => { time += ms; } };
 }
+test('Adult unlock requires explicit 18+ confirmation and the mandatory correct PIN', async () => {
+  for (const age_confirmed of [undefined, false, 'true', 1]) {
+    const f = fixture();
+    assert.equal((await f.invoke('unlock', { pin: '1234', age_confirmed })).code, 403);
+    assert.equal((await f.invoke('catalogs')).code, 403);
+  }
+  const f = fixture();
+  assert.equal((await f.invoke('unlock', { pin: '9999', age_confirmed: true })).code, 403);
+  const token = await f.unlock();
+  assert.equal(f.tokens.read(token, 'unlock', 1).age_confirmed, true);
+  assert.equal((await f.invoke('catalogs', { unlock_token: token })).code, 200);
+  const old = f.tokens.issue('unlock', 1, { fingerprint: 'pin-one' });
+  assert.equal((await f.invoke('catalogs', { unlock_token: old })).code, 403);
+});
+
+test('ThePornDB catalog integrates with protected sources and account history without weakening PIN/age checks', async () => {
+  const version = addonVersion({ manifest_url: '' });
+  const client = createAdultCatalogClient({
+    tpdb: createThePornDbClient({ fetcher: async url => new Response(JSON.stringify({
+      data: new URL(url).pathname === '/scenes' ? [{ id: 'fixture-1', title: 'Fixture title' }] : { id: 'fixture-1', title: 'Fixture title', description: 'Fixture overview' },
+      meta: { last: 1 },
+    }), { headers: { 'content-type': 'application/json' } }) }),
+    addons: { catalogs: async () => ({ catalogs: [] }), metadataSources: async () => [{
+      url: 'https://cdn.example/full-video.mp4', title: 'Fixture source', source_addon_id: 'adult', source_addon_version: version,
+    }] },
+  });
+  const f = fixture({ client });
+  Object.assign(f.settings, { theporndb_enabled: true, theporndb_token: 'server-only-token' });
+  assert.equal((await f.invoke('catalogs')).code, 403);
+  const unlock_token = await f.unlock();
+  assert.equal((await f.invoke('catalogs', { unlock_token })).body.catalogs.length, 4);
+  const catalog = await f.invoke('catalog', { unlock_token, addon_id: '__tpdb', catalog_id: 'scenes', type: 'movie' });
+  assert.equal(catalog.code, 200);
+  assert.equal(JSON.stringify(catalog.body).includes('server-only-token'), false);
+  const item_token = catalog.body.items[0].item_token;
+  assert.equal((await f.invoke('details', { unlock_token, item_token })).body.overview, 'Fixture overview');
+  const sources = await f.invoke('sources', { unlock_token, item_token });
+  assert.equal(sources.code, 200);
+  assert.equal(JSON.stringify(sources.body).includes('cdn.example'), false);
+  const source_token = sources.body.sources[0].source_token;
+  const playback = await f.invoke('resolve', { unlock_token, source_token });
+  assert.equal(playback.code, 200);
+  const ticket = f.tickets.read(playback.body.playbackUrl.split('/').at(-1));
+  assert.equal(ticket.section, 'adult'); assert.equal(ticket.adultAgeConfirmed, true);
+  assert.equal((await f.invoke('progress', { history_progress_token: playback.body.history_progress_token, position: 60, duration: 1000, updatedAt: 1000 })).code, 200);
+  const restored = await f.invoke('catalog', { unlock_token, addon_id: '__history', catalog_id: '__history' });
+  assert.equal(restored.body.items.length, 1);
+  f.settings.stremio_addons[0].enabled = false;
+  assert.equal((await f.invoke('resolve', { unlock_token, source_token })).code, 409);
+  f.settings.theporndb_enabled = false;
+  assert.equal((await f.invoke('sources', { unlock_token, item_token })).code, 409);
+  assert.equal((await f.invoke('catalog', { unlock_token, addon_id: '__history', catalog_id: '__history' })).body.items.length, 0);
+});
 test('Adult history restores only after PIN unlock on another linked device', async () => {
   const f = fixture();
   const unlock_token = await f.unlock();
@@ -81,10 +136,10 @@ test('Adult is disabled independently of Movies and PIN unlock is rate limited',
   f.settings.adult_enabled = false; f.settings.enabled = true;
   assert.equal((await f.invoke('unlock', { pin: '1234' })).code, 403);
   f.settings.adult_enabled = true;
-  for (let attempt = 0; attempt < 5; attempt++) assert.equal((await f.invoke('unlock', { pin: '9999' })).code, 403);
-  assert.equal((await f.invoke('unlock', { pin: '1234' })).code, 429);
+  for (let attempt = 0; attempt < 5; attempt++) assert.equal((await f.invoke('unlock', { pin: '9999', age_confirmed: true })).code, 403);
+  assert.equal((await f.invoke('unlock', { pin: '1234', age_confirmed: true })).code, 429);
   f.advance(5 * 60000);
-  assert.equal((await f.invoke('unlock', { pin: '1234' })).code, 200);
+  assert.equal((await f.invoke('unlock', { pin: '1234', age_confirmed: true })).code, 200);
 });
 test('catalog requests require server unlock, correct device and unchanged PIN', async () => {
   const f = fixture();
@@ -134,7 +189,7 @@ test('catalog to source to direct playback hides upstream secrets and binds the 
 test('only the selected signed hash is resolved; manual Real-Debrid preparation is opt-in', async () => {
   const f = fixture();
   const unlock_token = await f.unlock();
-  const source_token = f.tokens.issue('source', 1, { fingerprint: 'pin-one', item: { addon_id: 'adult', addon_version: addonVersion(f.settings.stremio_addons[0]), type: 'movie' },
+  const source_token = f.tokens.issue('source', 1, { fingerprint: 'pin-one', age_confirmed: true, item: { addon_id: 'adult', addon_version: addonVersion(f.settings.stremio_addons[0]), type: 'movie' },
     source: { hash: 'a'.repeat(40), file_name: 'movie.mp4' } });
   const result = await f.invoke('resolve', { unlock_token, source_token, hash: 'b'.repeat(40) });
   assert.equal(result.code, 200);
@@ -148,7 +203,7 @@ test('only the selected signed hash is resolved; manual Real-Debrid preparation 
 test('unmapped series sources fail instead of choosing an arbitrary episode', async () => {
   const f = fixture();
   const unlock_token = await f.unlock();
-  const source_token = f.tokens.issue('source', 1, { fingerprint: 'pin-one', item: { addon_id: 'adult', addon_version: addonVersion(f.settings.stremio_addons[0]), type: 'series' }, source: { hash: 'a'.repeat(40) } });
+  const source_token = f.tokens.issue('source', 1, { fingerprint: 'pin-one', age_confirmed: true, item: { addon_id: 'adult', addon_version: addonVersion(f.settings.stremio_addons[0]), type: 'series' }, source: { hash: 'a'.repeat(40) } });
   assert.equal((await f.invoke('resolve', { unlock_token, source_token })).code, 409);
   assert.equal(f.calls.length, 0);
 });

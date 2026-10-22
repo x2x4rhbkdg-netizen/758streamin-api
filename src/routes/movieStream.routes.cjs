@@ -51,6 +51,7 @@ router.get('/movies/stream/:ticket', async (req, res) => {
     try {
       requireCatalogAccess(await readMovieSettings(record.device), record.section);
       if (record.section === 'adult') {
+        if (record.adultAgeConfirmed !== true) return res.sendStatus(403);
         const pin = await readAdultPin(record.device);
         if (!pin || pin.fingerprint !== record.adultPinFingerprint) return res.sendStatus(403);
       }

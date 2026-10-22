@@ -8,7 +8,7 @@ function createPlaybackTickets(secret) {
       const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
       if (section === 'adult' && !adultPinFingerprint) throw new Error('Missing Adult PIN scope');
       const body = Buffer.from(JSON.stringify({ url, device: String(device), ...(['anime', 'adult'].includes(section) ? { section } : {}),
-        ...(section === 'adult' ? { adultPinFingerprint } : {}), expires: Date.now() + 6 * 60 * 60 * 1000 }));
+        ...(section === 'adult' ? { adultPinFingerprint, adultAgeConfirmed: true } : {}), expires: Date.now() + 6 * 60 * 60 * 1000 }));
       const encrypted = Buffer.concat([cipher.update(body), cipher.final()]);
       return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
     },

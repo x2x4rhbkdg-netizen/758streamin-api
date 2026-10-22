@@ -10,7 +10,7 @@ function normalizeAddons(input, previous = []) {
   return input.map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) invalid('Invalid add-on');
     const id = String(item.id || '');
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id) || ids.has(id)) invalid('Invalid or duplicate add-on ID');
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id) || ['__tpdb', '__history'].includes(id) || ids.has(id)) invalid('Invalid or duplicate add-on ID');
     ids.add(id);
     const name = typeof item.name === 'string' ? item.name.trim() : '';
     if (!name || name.length > 80) invalid('Add-on name must be 1 to 80 characters');

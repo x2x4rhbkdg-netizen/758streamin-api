@@ -24,6 +24,9 @@ const extractWhmcsPlanName = whmcsReminderRoutes.extractWhmcsPlanName;
 const { syncWhmcsPlanAccess } = require('../utils/whmcsPlanAccess.cjs');
 
 const router = Router();
+router.use(require('./adminThePornDb.routes.cjs').createThePornDbAdminRouter({
+  authenticate: adminAuth, authorize: requireSuperAdmin, readSettings: readGlobalMovieSettings,
+}));
 router.use(require('./adminPassword.routes.cjs').createAdminPasswordRouter({
   db: pool, authenticate: adminAuth, onError: sendInternalError,
 }));

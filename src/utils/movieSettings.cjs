@@ -3,10 +3,10 @@ const { encryptString, decryptString } = require('./cryptoVault.cjs');
 const { normalizeAddons, publicAddons } = require('./stremioAddons.cjs');
 
 const PROVIDERS = ['none', 'Real-Debrid', 'AllDebrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
-const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token'];
+const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token', 'theporndb_token'];
 const ACCESS_KEYS = ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled'];
 const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, adult_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', secondary_scraper_url: '', provider: 'none', default_provider: 'none',
-  anime_primary_catalog: 'anilist',
+  anime_primary_catalog: 'anilist', theporndb_enabled: false,
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
   auto_select_min_links: 10, auto_select_delay: false, auto_select_delay_seconds: 15,
@@ -62,7 +62,7 @@ function normalizeSettings(input, previous = {}) {
     if (input.default_provider !== 'auto' && !PROVIDERS.includes(input.default_provider)) invalid('Unsupported default movie provider');
     next.default_provider = input.default_provider;
   }
-  for (const key of [...ACCESS_KEYS, 'auto_select', 'auto_select_delay', 'enable_software_codecs', 'prefer_software_codecs']) {
+  for (const key of [...ACCESS_KEYS, 'theporndb_enabled', 'auto_select', 'auto_select_delay', 'enable_software_codecs', 'prefer_software_codecs']) {
     if (Object.hasOwn(input, key)) {
       if (typeof input[key] !== 'boolean') invalid(`${key} must be a boolean`);
       next[key] = input[key];
@@ -114,6 +114,7 @@ function normalizeSettings(input, previous = {}) {
     if (Object.hasOwn(input, key)) {
       if (typeof input[key] !== 'string' || input[key].length > 8192) invalid(`Invalid ${key}`);
       next[key] = input[key].trim();
+      if (key === 'theporndb_token' && /[^\x21-\x7e]/.test(next[key])) invalid('Invalid ThePornDB token');
     }
   }
   return next;
@@ -182,6 +183,7 @@ async function saveGlobalMovieSettings(input) {
   if (input && ACCESS_KEYS.some((key) => Object.hasOwn(input, key))) invalid('Service access is controlled per device');
   const previous = await readGlobalMovieSettings();
   const settings = normalizeSettings(input, previous);
+  if (settings.theporndb_enabled && !settings.theporndb_token) invalid('Add a ThePornDB token before enabling its catalog');
   if (Object.hasOwn(input, 'provider_accounts')) {
     settings.provider_accounts = normalizeProviderAccounts(input.provider_accounts, settings);
   } else if (Object.hasOwn(input, 'provider') || Object.hasOwn(input, 'debrid_token')) {
