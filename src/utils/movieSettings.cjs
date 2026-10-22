@@ -6,7 +6,7 @@ const PROVIDERS = ['none', 'Real-Debrid', 'AllDebrid', 'Premiumize', 'EasyDebrid
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token', 'theporndb_token'];
 const ACCESS_KEYS = ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled'];
 const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, adult_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', secondary_scraper_url: '', provider: 'none', default_provider: 'none',
-  anime_primary_catalog: 'anilist', theporndb_enabled: false,
+  anime_primary_catalog: 'anilist', theporndb_enabled: false, adult_use_shared_scrapers: false,
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
   auto_select_min_links: 10, auto_select_delay: false, auto_select_delay_seconds: 15,
@@ -62,7 +62,7 @@ function normalizeSettings(input, previous = {}) {
     if (input.default_provider !== 'auto' && !PROVIDERS.includes(input.default_provider)) invalid('Unsupported default movie provider');
     next.default_provider = input.default_provider;
   }
-  for (const key of [...ACCESS_KEYS, 'theporndb_enabled', 'auto_select', 'auto_select_delay', 'enable_software_codecs', 'prefer_software_codecs']) {
+  for (const key of [...ACCESS_KEYS, 'theporndb_enabled', 'adult_use_shared_scrapers', 'auto_select', 'auto_select_delay', 'enable_software_codecs', 'prefer_software_codecs']) {
     if (Object.hasOwn(input, key)) {
       if (typeof input[key] !== 'boolean') invalid(`${key} must be a boolean`);
       next[key] = input[key];

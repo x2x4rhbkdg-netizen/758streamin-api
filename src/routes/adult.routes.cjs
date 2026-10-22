@@ -34,7 +34,7 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
   const historyKey = item => hash(`${item.addon_id}:${item.type}:${item.id}:${item.season ?? ''}:${item.episode ?? ''}`);
   const historyItem = item => ({ addon_id: item.addon_id, addon_version: item.addon_version, id: item.id,
     type: item.type, title: item.title, poster: item.poster, season: item.season, episode: item.episode,
-    ...(item.addon_id === '__tpdb' ? { tpdb_kind: item.tpdb_kind, tpdb_id: item.tpdb_id } : {}) });
+    ...(item.addon_id === '__tpdb' ? { tpdb_kind: item.tpdb_kind, tpdb_id: item.tpdb_id, year: item.year } : {}) });
   async function historyItems(req) {
     const owner = await history.owner(req.device.device_id);
     const records = await history.list(owner, ['adult']);
@@ -109,7 +109,8 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
     let url = source.url, provider = '';
     if (!url) {
       if (item.type === 'series' && (!Number.isInteger(item.season) || !Number.isInteger(item.episode))) throw fail('This add-on did not identify the episode for provider playback', 409);
-      const customType = !['movie', 'series'].includes(item.type);
+      // A title-search result must never pick the largest file from an ambiguous multi-video pack.
+      const customType = source.source_kind === 'shared_scraper' || !['movie', 'series'].includes(item.type);
       const result = await resolve(req.adultSettings, { section: 'adult', type: item.type === 'series' ? 'series' : 'movie', adult_custom_type: customType,
         hash: source.hash, file_name: source.file_name, season_int: item.season, episode_int: item.episode,
         provider: req.body?.provider || 'auto', allow_uncached_rd: req.body?.allow_uncached_rd === true, allow_uncached_ad: req.body?.allow_uncached_ad === true });

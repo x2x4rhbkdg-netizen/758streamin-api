@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const { createAdultTokens } = require('../utils/adultAccess.cjs');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { addonVersion } = require('../utils/adultAddons.cjs');
-const { createAdultCatalogClient } = require('../utils/adultCatalogClient.cjs');
+const { createAdultCatalogClient, scraperVersion } = require('../utils/adultCatalogClient.cjs');
 const { createThePornDbClient } = require('../utils/thePornDb.cjs');
 
 function fixture(overrides = {}) {
@@ -199,6 +199,25 @@ test('only the selected signed hash is resolved; manual Real-Debrid preparation 
   assert.equal(f.calls[0].allow_uncached_rd, false);
   await f.invoke('resolve', { unlock_token, source_token, allow_uncached_rd: true });
   assert.equal(f.calls[1].allow_uncached_rd, true);
+});
+
+test('Adult scraper hashes use enabled providers and reject stale settings or ambiguous video packs', async () => {
+  const { provider } = require('../utils/thePornDb.cjs');
+  const f = fixture({ lookup: async (_settings, sources) => ({ available: { [sources[0].hash]: ['Premiumize', 'Torbox'] } }) });
+  Object.assign(f.settings, { theporndb_enabled: true, theporndb_token: 'secret', adult_use_shared_scrapers: true, scraper_url: 'https://pack.example/list' });
+  const unlock_token = await f.unlock();
+  const item = { addon_id: '__tpdb', addon_version: addonVersion(provider(f.settings)), id: 'tpdb:scenes:fixture-1',
+    tpdb_kind: 'scenes', tpdb_id: 'fixture-1', title: 'Fixture Title', type: 'movie' };
+  const source = { hash: 'a'.repeat(40), title: 'Fixture Title 2024', source_kind: 'shared_scraper', source_scraper_version: scraperVersion(f.settings) };
+  const source_token = f.tokens.issue('source', 1, { fingerprint: 'pin-one', age_confirmed: true, item, source });
+  const result = await f.invoke('resolve', { unlock_token, source_token, provider: 'Torbox' });
+  assert.equal(result.code, 200);
+  assert.equal(f.calls[0].provider, 'Torbox');
+  assert.equal(f.calls[0].hash, source.hash);
+  assert.equal(f.calls[0].adult_custom_type, true);
+  assert.equal(f.calls[0].section, 'adult');
+  f.settings.adult_use_shared_scrapers = false;
+  assert.equal((await f.invoke('resolve', { unlock_token, source_token })).code, 409);
 });
 test('unmapped series sources fail instead of choosing an arbitrary episode', async () => {
   const f = fixture();

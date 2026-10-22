@@ -16,7 +16,9 @@ function normalizeItem(value, kind) {
   return { id: `tpdb:${kind}:${value.id}`, type: 'movie', title: value.title.slice(0, 300),
     overview: typeof value.description === 'string' ? value.description.slice(0, 2000) : '',
     poster: image(value.poster) || image(value.posters?.large) || image(value.poster_image) || image(value.image),
-    tpdb_kind: kind, tpdb_id: value.id };
+    tpdb_kind: kind, tpdb_id: value.id,
+    ...(/^\d{4}-\d{2}-\d{2}$/.test(value.date || '') && Number(value.date.slice(0, 4)) >= 1800 && Number(value.date.slice(0, 4)) <= 2200
+      ? { year: Number(value.date.slice(0, 4)) } : {}) };
 }
 function parseItem(item) {
   if (!KINDS.includes(item.tpdb_kind) || typeof item.tpdb_id !== 'string' || !/^[a-zA-Z0-9_-]{1,200}$/.test(item.tpdb_id) ||
@@ -79,7 +81,7 @@ function createThePornDbClient({ fetcher = fetch, now = Date.now } = {}) {
     async test(token) {
       const data = await request(token, '/scenes?per_page=1&page=1', true);
       if (!Array.isArray(data.data)) throw fail('Invalid ThePornDB catalog response');
-      return { status: 'connected', message: 'ThePornDB catalog connected. Playback needs a compatible Adult source add-on.' };
+      return { status: 'connected', message: 'ThePornDB catalog connected. Playback sources are configured separately.' };
     },
     catalogs() {
       return KINDS.map(id => ({ addon_id: ID, id, type: 'movie', name: id === 'jav' ? 'JAV' : id === 'movies' ? 'Movies' : 'Scenes', addon_name: 'ThePornDB', search_supported: true }));

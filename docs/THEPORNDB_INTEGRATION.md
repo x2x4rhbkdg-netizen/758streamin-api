@@ -19,6 +19,9 @@ responses; no real account token or authenticated live catalog/playback request 
 5. Check **Enable ThePornDB catalog**, then **Save Media Settings**.
 6. Keep Adult Content enabled for the intended device. In the app, confirm 18+, enter
    its mandatory PIN and open the Scenes, Movies or JAV catalog.
+7. To search the same WEYD-style scraper packs as Movies/Series, check **Use shared
+   scrapers for Adult playback** and save. This is off by default: enabling it sends
+   the selected Adult title and release year to the configured scraper services.
 
 The token is saved in the existing encrypted global settings record. Responses expose
 only `theporndb_token_configured`; unrelated saves and disabling preserve the token.
@@ -108,17 +111,32 @@ No full-video playback-source endpoint is documented in this specification.
 image, not a stream. `hashes` use `OSHASH` or `PHASH`, not BitTorrent info hashes.
 Never send those hashes to debrid providers as torrent hashes.
 
-The implemented bridge requests sources only from enabled Adult Stremio add-ons
+The ID-based bridge requests sources from enabled Adult Stremio add-ons
 explicitly declaring `tpdb:` or a resource-specific prefix such as `tpdb:scenes:`.
 It sends `stream/movie/tpdb%3Ascenes%3A<id>.json`, using the exact kind and returned
 ThePornDB `id`. These namespaced IDs are a StreamIN adapter contract, not a claim
 that arbitrary existing add-ons support them. Manifest-level or stream-resource-level
 prefixes are accepted; an unrestricted manifest or generic `t` prefix is not sufficient.
 
-No compatible real source add-on has been configured or verified by this work. If
-none supports that contract, metadata browsing works but the title has no playback
-links. Existing Adult add-on catalogs continue working independently. Do not remove
-them expecting ThePornDB to supply streams. Source selections are invalidated when
+The separate shared-scraper path is opt-in via `adult_use_shared_scrapers`. It uses
+the existing scraper discovery engine and its title/year and content-filter checks,
+with server-issued metadata from the encrypted Adult item, not arbitrary client search
+input. Mainstream Stremio add-ons are excluded from this path. Stremio `manifest.json`
+URLs in the scraper fields are ignored by this path: register those under Stremio
+Add-ons with Adult-only scope instead. Title searches that cannot be safely handled
+by the current matcher are skipped rather than returning unrelated results.
+
+Matched torrent hashes proceed through the existing enabled-provider availability
+checks and provider resolver. Only a user-selected, signed source can be resolved.
+Title-search torrents must contain one unambiguous video; they cannot automatically
+select the largest file from a multi-video pack. Source capabilities are invalidated
+when shared scrapers are disabled or their configured URLs change. Up to two shared
+Adult scraper searches run at once; the existing per-search timeout/work limits apply.
+
+ThePornDB itself still supplies no full-video links. Without matching scraper results
+or a compatible add-on, browsing can work while a title has no playable sources.
+Existing Adult add-on catalogs continue working independently. Do not remove them
+expecting ThePornDB to supply streams. Source selections are invalidated when
 their owning add-on is disabled/reconfigured; catalog capabilities are invalidated
 when ThePornDB is disabled or its token changes. History remains owned by StreamIN.
 
@@ -139,8 +157,10 @@ does not establish content licensing or playback rights.
 
 ## Verification and release status
 
-- 256 API tests pass, including connector, source identity, PIN/age and history checks.
-- 39 focused Adult/security app tests pass with the existing remote-focus mappings.
+- 259 API tests pass, including shared scraper matching, provider resolution, source
+  identity, PIN/age and history checks.
+- 40 focused Adult/security app tests pass, including persistent horizontal category
+  tabs, poster traversal, append focus and Back restoration.
 - Dashboard desktop/mobile fixture tests pass for enable/test/save/reload/removal,
   keyboard traversal, credential masking and preserving playback-provider settings.
 - Existing anime-primary dashboard regression checks pass on desktop/mobile.

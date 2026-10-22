@@ -61,12 +61,14 @@ function fixture() {
 test('ThePornDB token is encrypted, masked, preserved on unrelated saves and cannot be device-overridden', async () => {
   const { api } = fixture();
   assert.equal((await api.readGlobalMovieSettings()).theporndb_enabled, false);
+  assert.equal((await api.readGlobalMovieSettings()).adult_use_shared_scrapers, false);
   await assert.rejects(api.saveGlobalMovieSettings({ theporndb_enabled: true }), { status: 400 });
-  await api.saveGlobalMovieSettings({ theporndb_enabled: true, theporndb_token: 'private-tpdb-key' });
+  await api.saveGlobalMovieSettings({ theporndb_enabled: true, theporndb_token: 'private-tpdb-key', adult_use_shared_scrapers: true });
   let settings = await api.readGlobalMovieSettings();
   assert.equal(settings.theporndb_token, 'private-tpdb-key');
   for (const result of [api.adminGlobalSettings(settings), api.publicSettings(settings)]) {
     assert.equal(result.theporndb_enabled, true);
+    assert.equal(result.adult_use_shared_scrapers, true);
     assert.equal(result.theporndb_token_configured, true);
     assert.equal(JSON.stringify(result).includes('private-tpdb-key'), false);
     assert.equal(Object.hasOwn(result, 'theporndb_token'), false);
@@ -76,6 +78,7 @@ test('ThePornDB token is encrypted, masked, preserved on unrelated saves and can
   await assert.rejects(api.saveGlobalMovieSettings({ theporndb_token: '' }), { status: 400 });
   await assert.rejects(api.saveGlobalMovieSettings({ theporndb_token: 'bad\nheader' }), { status: 400 });
   await assert.rejects(api.saveMovieSettings(1, { theporndb_enabled: true }), { status: 400 });
+  await assert.rejects(api.saveMovieSettings(1, { adult_use_shared_scrapers: true }), { status: 400 });
   await assert.rejects(api.saveMovieSettings(1, { theporndb_token: 'device' }), { status: 400 });
   await api.saveGlobalMovieSettings({ theporndb_enabled: false });
   assert.equal((await api.readGlobalMovieSettings()).theporndb_token, 'private-tpdb-key');
