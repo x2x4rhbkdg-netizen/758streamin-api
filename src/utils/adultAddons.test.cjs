@@ -41,7 +41,7 @@ test('Adult add-ons are exclusive and unreachable manifest errors never disclose
 });
 test('streams accept provider hashes and HTTPS files but skip unsupported formats', async () => {
   const client = createAdultAddonClient({ fetchText: async (url) => JSON.stringify(url.endsWith('manifest.json') ? manifest : {
-    streams: [{ infoHash: 'a'.repeat(40), behaviorHints: { filename: 'movie.mp4' } },
+    streams: [{ infoHash: 'a'.repeat(40), name: 'Fixture provider', title: 'Fixture release 1080p', behaviorHints: { filename: 'movie.mp4', videoSize: 2500000000 } },
       { url: 'https://cdn.example/movie.mp4?token=secret' }, { url: 'http://cdn.example/movie.mp4' },
       { url: 'https://cdn.example/movie.m3u8' }, { externalUrl: 'https://external.example/' },
       { url: 'https://cdn.example/movie.mp4', behaviorHints: { proxyHeaders: { request: { Authorization: 'secret' } } } }],
@@ -51,6 +51,9 @@ test('streams accept provider hashes and HTTPS files but skip unsupported format
   assert.equal(sources.length, 3);
   assert.equal(sources[0].hash, 'a'.repeat(40));
   assert.equal(sources[0].file_name, 'movie.mp4');
+  assert.equal(sources[0].title, 'Fixture release 1080p');
+  assert.equal(sources[0].scraper, 'Fixture provider');
+  assert.equal(sources[0].size_bytes, 2500000000);
   assert.equal(sources[1].url, 'https://cdn.example/movie.mp4?token=secret');
   await assert.rejects(client.sources(settings, { ...identity, id: 'tt1234567', type: 'movie' }), { status: 409 });
   await assert.rejects(client.sources(settings, { ...identity, addon_version: 'old', id: 'fixture:1', type: 'movie' }), { status: 409 });
@@ -96,4 +99,71 @@ test('custom-type torrent packs need an exact file hint rather than guessing the
   const input = { section: 'adult', type: 'movie', adult_custom_type: true };
   assert.throws(() => chooseVideo([{ path: 'one.mp4' }, { path: 'two.mp4' }], input), { status: 409 });
   assert.equal(chooseVideo([{ path: 'one.mp4' }], input).path, 'one.mp4');
+});
+
+test('catalog and playable item types can differ without rewriting resource types or identifiers', async () => {
+  const requests = [];
+  const custom = { id: 'fixture', types: ['porn'], resources: [
+    { name: 'catalog', types: ['porn'] },
+    { name: 'meta', types: ['movie'], idPrefixes: ['fixture:'] },
+    { name: 'stream', types: ['movie'], idPrefixes: ['fixture:'] },
+  ], catalogs: [{ id: 'recent', type: 'porn', extra: [{ name: 'skip' }] },
+    { id: 'filtered', type: 'porn', extra: [{ name: 'genre', isRequired: true, options: ['All'] }] }] };
+  const client = createAdultAddonClient({ fetchText: async url => {
+    requests.push(url);
+    if (url.endsWith('manifest.json')) return JSON.stringify(custom);
+    if (url.includes('/catalog/')) return JSON.stringify({ metas: [
+      { id: 'fixture:1', type: 'movie', name: 'Fixture title' },
+      { id: 'fixture:2', type: 'series', name: 'Unsupported type' },
+      { id: 'unknown:1', type: 'movie', name: 'Wrong prefix' },
+      { id: 'fixture:3', name: 'No playable type' },
+      { id: 'fixture:4', type: '../movie', name: 'Invalid type' },
+    ] });
+    if (url.includes('/meta/')) return JSON.stringify({ meta: { id: 'fixture:1', description: 'Fixture overview' } });
+    return JSON.stringify({ streams: [{ url: 'https://cdn.example/fixture.mp4' }] });
+  } });
+  const catalogs = await client.catalogs(settings);
+  assert.equal(catalogs.catalogs.length, 2);
+  assert.equal(catalogs.catalogs[0].type, 'porn');
+  const response = await client.catalog(settings, { addon_id: 'adult', catalog_id: 'recent', type: 'porn' });
+  assert.equal(response.items.length, 1);
+  const item = response.items[0];
+  assert.equal(item.type, 'movie');
+  assert.equal(item.id, 'fixture:1');
+  await client.details(settings, item);
+  await client.sources(settings, item);
+  assert.ok(requests.some(url => url.includes('/catalog/porn/recent/skip=0.json')));
+  assert.ok(requests.some(url => url.includes('/meta/movie/fixture%3A1.json')));
+  assert.ok(requests.some(url => url.includes('/stream/movie/fixture%3A1.json')));
+  assert.equal(requests.some(url => url.includes('/stream/porn/')), false);
+});
+
+test('required genres expose manifest options, validate selections and retain encoded genre on pagination/search', async () => {
+  const urls = [];
+  const custom = { ...manifest, catalogs: [
+    { id: 'required', type: 'movie', extra: [{ name: 'genre', isRequired: true, options: ['All', 'Drama', 'A/B & C'] }, { name: 'search' }, { name: 'skip' }] },
+    { id: 'choose', type: 'movie', extra: [{ name: 'genre', isRequired: true, options: ['Drama'] }] },
+    { id: 'no-options', type: 'movie', extra: [{ name: 'genre', isRequired: true }] },
+    { id: 'other-required', type: 'movie', extra: [{ name: 'language', isRequired: true }] },
+  ] };
+  const client = createAdultAddonClient({ fetchText: async url => {
+    urls.push(url);
+    return JSON.stringify(url.endsWith('manifest.json') ? custom : { metas: [] });
+  } });
+  const catalogs = await client.catalogs(settings);
+  assert.equal(catalogs.catalogs.length, 2);
+  assert.deepEqual(catalogs.catalogs[0].genres, ['All', 'Drama', 'A/B & C']);
+  assert.equal(catalogs.catalogs[0].genre_required, true);
+  const input = { addon_id: 'adult', catalog_id: 'required', type: 'movie' };
+  await client.catalog(settings, input);
+  assert.match(urls.at(-1), /genre=All&skip=0.json$/);
+  await client.catalog(settings, { ...input, genre: 'A/B & C', page: 2, query: 'Fixture' });
+  assert.match(urls.at(-1), /genre=A%2FB%20%26%20C&search=Fixture&skip=100.json$/);
+  await assert.rejects(client.catalog(settings, { ...input, genre: 'Not in manifest' }), { status: 400 });
+  await assert.rejects(client.catalog(settings, { ...input, genre: ['Drama'] }), { status: 400 });
+  const count = urls.filter(url => url.includes('/catalog/')).length;
+  const required = await client.catalog(settings, { ...input, catalog_id: 'choose' });
+  assert.equal(required.genre_required, true);
+  assert.deepEqual(required.items, []);
+  assert.equal(urls.filter(url => url.includes('/catalog/')).length, count);
 });

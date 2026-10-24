@@ -45,6 +45,17 @@ test('validates bounds, identifiers, scopes and HTTPS manifest URLs', () => {
   const { manifest_url, ...masked } = good;
   assert.equal(normalizeAddons([masked], [good])[0].manifest_url, manifest_url);
 });
+
+test('Adult connection test accepts separate catalog and stream type declarations', async () => {
+  const mixed = { id: 'fixture', types: ['porn'], resources: [
+    { name: 'catalog', types: ['porn'] }, { name: 'meta', types: ['movie'] }, { name: 'stream', types: ['movie'] },
+  ], catalogs: [{ id: 'recent', type: 'porn' }] };
+  const result = await testAddon(addon('fixture', ['adult']), { fetchText: async () => JSON.stringify(mixed) });
+  assert.equal(result.status, 'connected');
+  const unsupported = await testAddon(addon('fixture', ['adult']), { fetchText: async () => JSON.stringify({ ...mixed,
+    catalogs: [{ id: 'filtered', type: 'porn', extra: [{ name: 'genre', isRequired: true }] }] }) });
+  assert.equal(unsupported.status, 'unsupported');
+});
 test('rejects invalid, duplicate and oversized settings', () => {
   const good = addon('one');
   for (const input of [null, {}, Array.from({ length: 11 }, (_, i) => addon(`a${i}`)), [good, good],

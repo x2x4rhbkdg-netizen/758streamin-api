@@ -99,6 +99,10 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
     const sources = await client.sources(req.adultSettings, item);
     const available = sources.some((source) => source.hash) ? await lookup(req.adultSettings, sources.filter((source) => source.hash)) : { available: {} };
     return { sources: sources.map((source) => ({ title: source.title, direct: !!source.url,
+      ...(source.quality ? { quality: String(source.quality).slice(0, 40) } : {}),
+      ...(source.scraper ? { scraper: String(source.scraper).slice(0, 100) } : {}),
+      ...(Number.isFinite(source.size_bytes) && source.size_bytes > 0 ? { size_bytes: source.size_bytes } : {}),
+      ...(Number.isFinite(source.bitrate_mbps) && source.bitrate_mbps > 0 ? { bitrate_mbps: source.bitrate_mbps } : {}),
       providers: source.hash ? available.available?.[source.hash] || [] : [],
       on_demand_providers: source.hash ? available.on_demand?.[source.hash] || [] : [],
       source_token: issue(req, 'source', { item: historyItem(item), source }) })) };

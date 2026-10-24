@@ -61,6 +61,28 @@ test('Adult unlock requires explicit 18+ confirmation and the mandatory correct 
   assert.equal((await f.invoke('catalogs', { unlock_token: old })).code, 403);
 });
 
+test('source cards receive safe display metadata but no raw playback URLs or hashes', async () => {
+  const f = fixture({ client: {
+    catalog: async () => ({ items: [{ addon_id: 'adult', id: 'fixture:1', title: 'Fixture', type: 'movie' }] }),
+    sources: async () => [{ title: 'Fixture release 1080p', quality: '1080p', scraper: 'Fixture provider',
+      size_bytes: 2500000000, bitrate_mbps: 7.5, url: 'https://cdn.example/file.mp4?key=private' }],
+  } });
+  const unlock_token = await f.unlock();
+  const catalog = await f.invoke('catalog', { unlock_token });
+  const result = await f.invoke('sources', { unlock_token, item_token: catalog.body.items[0].item_token });
+  assert.equal(result.code, 200);
+  const source = result.body.sources[0];
+  assert.equal(source.title, 'Fixture release 1080p');
+  assert.equal(source.quality, '1080p');
+  assert.equal(source.scraper, 'Fixture provider');
+  assert.equal(source.size_bytes, 2500000000);
+  assert.equal(source.bitrate_mbps, 7.5);
+  assert.equal(source.url, undefined);
+  assert.equal(source.hash, undefined);
+  assert.equal(JSON.stringify(result.body).includes('private'), false);
+  assert.ok(source.source_token);
+});
+
 test('ThePornDB catalog integrates with protected sources and account history without weakening PIN/age checks', async () => {
   const version = addonVersion({ manifest_url: '' });
   const client = createAdultCatalogClient({

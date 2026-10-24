@@ -72,7 +72,9 @@ function createAdultCatalogClient({ addons = createAdultAddonClient(), tpdb = cr
           discover(scoped, { type: 'movie', title: item.title, ...(Number.isInteger(item.year) ? { year_int: item.year } : {}) })]);
         const hashes = new Set(addonSources.map(source => source.hash).filter(Boolean));
         const sources = (result.sources || []).filter(source => /^[a-f0-9]{40}$/.test(source.hash || '') && !hashes.has(source.hash))
-          .slice(0, 100).map(source => ({ hash: source.hash, title: source.title, source_kind: 'shared_scraper', source_scraper_version: scraperVersion(settings) }));
+          .slice(0, 100).map(source => ({ hash: source.hash, title: source.title,
+            quality: source.quality, size_bytes: source.size_bytes, bitrate_mbps: source.bitrate_mbps, scraper: source.scraper,
+            source_kind: 'shared_scraper', source_scraper_version: scraperVersion(settings) }));
         return [...addonSources, ...sources].slice(0, 100);
       } finally { activeScrapers--; }
     },

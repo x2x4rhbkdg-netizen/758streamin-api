@@ -12,11 +12,22 @@ function resource(manifest, name, type, id = '') {
   });
 }
 function adultCatalogs(data) {
+  const hasStreams = data.resources.some(entry => {
+    const item = typeof entry === 'string' ? { name: entry } : entry;
+    return item?.name === 'stream' && Array.isArray(item.types || data.types) &&
+      (item.types || data.types).some(type => typeof type === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(type));
+  });
   return (Array.isArray(data.catalogs) ? data.catalogs : []).filter((catalog) =>
     catalog && typeof catalog.type === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(catalog.type) && data.types.includes(catalog.type) &&
     typeof catalog.id === 'string' && catalog.id.length > 0 && catalog.id.length <= 200 &&
-    resource(data, 'catalog', catalog.type) && resource(data, 'stream', catalog.type) &&
-    !(catalog.extra || []).some((extra) => extra.isRequired && extra.name !== 'search'));
+    resource(data, 'catalog', catalog.type) && hasStreams &&
+    !(catalog.extra || []).some(extra => extra.isRequired && extra.name !== 'search' &&
+      !(extra.name === 'genre' && genreOptions(catalog).length)));
+}
+function genreOptions(catalog) {
+  const extra = (catalog.extra || []).find(value => value.name === 'genre');
+  return [...new Set((Array.isArray(extra?.options) ? extra.options : [])
+    .filter(value => typeof value === 'string' && value.length > 0 && value.length <= 200))].slice(0, 500);
 }
 function adultAddons(settings) {
   return (settings.stremio_addons || []).filter((addon) => addon.enabled && addon.scopes.length === 1 && addon.scopes[0] === 'adult');
@@ -47,7 +58,8 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
     return result;
   };
   const safeItem = (value, type) => {
-    if (!value || typeof value.id !== 'string' || !value.id || value.id.length > 500) return null;
+    if (!value || typeof value.id !== 'string' || !value.id || value.id.length > 500 ||
+        typeof type !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(type)) return null;
     return { id: value.id, type, title: bounded(value.name || value.id), overview: bounded(value.description, 2000), poster: poster(value.poster) };
   };
   async function streamSources(addon, type, id, signal) {
@@ -56,14 +68,19 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
     const sources = [];
     for (const stream of response.streams.slice(0, 100)) {
       if (stream?.behaviorHints?.proxyHeaders || stream?.externalUrl) continue;
-      const title = bounded(stream?.name || stream?.title || 'Source');
+      const title = bounded(stream?.title || stream?.behaviorHints?.filename || stream?.name || 'Source');
+      const scraper = bounded(stream?.name, 100);
+      const size = Number(stream?.behaviorHints?.videoSize);
       const file_name = bounded(stream?.behaviorHints?.filename, 500);
+      const qualityText = `${title} ${file_name} ${scraper}`;
+      const quality = /2160|4k/i.test(qualityText) ? '4K' : /1080/i.test(qualityText) ? '1080p' : /720/i.test(qualityText) ? '720p' : /480|420|360|\bsd\b/i.test(qualityText) ? 'SD' : '';
+      const metadata = { ...(quality ? { quality } : {}), ...(scraper ? { scraper } : {}), ...(Number.isFinite(size) && size > 0 ? { size_bytes: size } : {}) };
       const hash = String(stream?.infoHash || '').toLowerCase();
-      if (/^[a-f0-9]{40}$/.test(hash)) sources.push({ hash, title, ...(file_name ? { file_name } : {}) });
+      if (/^[a-f0-9]{40}$/.test(hash)) sources.push({ hash, title, ...metadata, ...(file_name ? { file_name } : {}) });
       else if (typeof stream?.url === 'string') {
         try {
           const url = validateUrl(stream.url);
-          if (url.protocol === 'https:' && !url.hash && !/\.mpd$/i.test(url.pathname)) sources.push({ url: url.href, title });
+          if (url.protocol === 'https:' && !url.hash && !/\.mpd$/i.test(url.pathname)) sources.push({ url: url.href, title, ...metadata });
         } catch { /* Unsupported streams cannot become playback capabilities. */ }
       }
     }
@@ -81,6 +98,7 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
             const data = await manifest(addon);
             adultCatalogs(data).slice(0, 30).forEach((catalog) => results.push({ addon_id: addon.id, id: catalog.id,
               type: catalog.type, name: bounded(catalog.name || catalog.id), addon_name: addon.name,
+              genres: genreOptions(catalog), genre_required: (catalog.extra || []).some(extra => extra.name === 'genre' && extra.isRequired),
               search_supported: (catalog.extra || []).some((extra) => extra.name === 'search') || catalog.extraSupported?.includes('search') === true }));
             diagnostics.push({ id: addon.id, status: 'ok' });
           } catch { diagnostics.push({ id: addon.id, status: 'unavailable' }); }
@@ -98,8 +116,14 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
       const page = Number(input.page || 1);
       if (!Number.isInteger(page) || page < 1 || page > 100) throw fail('Invalid catalog page');
       const extras = catalog.extra || (catalog.extraSupported || []).map((name) => ({ name }));
+      const genres = genreOptions(catalog), genreRequired = extras.some(extra => extra.name === 'genre' && extra.isRequired);
+      if (input.genre != null && typeof input.genre !== 'string') throw fail('Invalid catalog genre');
+      const genre = input.genre || (genreRequired && genres.includes('All') ? 'All' : '');
+      if (genre && !genres.includes(genre)) throw fail('Unsupported catalog genre');
+      if (!genre && genreRequired) return { items: [], has_more: false, genre_required: true };
       if (!query && extras.some((extra) => extra.name === 'search' && extra.isRequired)) return { items: [], search_required: true };
       const parts = [];
+      if (genre) parts.push(`genre=${encodeURIComponent(genre)}`);
       if (query) {
         if (!extras.some((extra) => extra.name === 'search')) throw fail('This catalog does not support search');
         parts.push(`search=${encodeURIComponent(query)}`);
@@ -109,7 +133,9 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
       if (paginated) parts.push(`skip=${(page - 1) * 100}`);
       const response = await json(addon, `catalog/${catalog.type}/${encodeURIComponent(catalog.id)}${parts.length ? `/${parts.join('&')}` : ''}.json`);
       if (!Array.isArray(response.metas)) throw fail('Invalid Adult catalog response', 502);
-      return { items: response.metas.slice(0, 100).map((entry) => safeItem(entry, catalog.type)).filter(Boolean)
+      // Catalog types describe browsing; each returned item may declare a different playable type.
+      return { items: response.metas.slice(0, 100).map((entry) => safeItem(entry, entry?.type ?? catalog.type))
+        .filter(entry => entry && resource(data, 'stream', entry.type, entry.id))
         .map((entry) => ({ ...entry, addon_id: addon.id, addon_version: addonVersion(addon) })), has_more: paginated && response.metas.length >= 100 };
     },
     async details(settings, item) {
