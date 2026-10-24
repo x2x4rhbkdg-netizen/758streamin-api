@@ -1,4 +1,5 @@
 const { request, safe, item, FIELDS } = require('./anilistCatalog.cjs');
+const { getEnglishDubIds, parseDubIndex } = require('./myDubList.cjs');
 const bad = message => Object.assign(new Error(message), { status: 400 });
 const SORTS = { popularity: 'POPULARITY_DESC', score: 'SCORE_DESC', trending: 'TRENDING_DESC', newest: 'START_DATE_DESC', oldest: 'START_DATE', title: 'TITLE_ROMAJI', favourites: 'FAVOURITES_DESC' };
 const FORMATS = ['TV', 'TV_SHORT', 'MOVIE', 'OVA', 'ONA', 'SPECIAL', 'MUSIC'];
@@ -15,7 +16,7 @@ function parseAnimeFilters(raw) {
     if (!Array.isArray(list) || list.length > 10 || list.some(text => typeof text !== 'string' || !text.trim() || text.length > 80 || /[\x00-\x1f]/.test(text))) throw bad(`Invalid anime ${key}`);
     result[key] = [...new Set(list.map(text => text.trim()))];
   }
-  for (const [key, choices, fallback] of [['format', FORMATS, ''], ['status', STATUSES, ''], ['season', ['WINTER', 'SPRING', 'SUMMER', 'FALL'], ''], ['availability', ['all', 'released', 'upcoming'], 'all'], ['sort', Object.keys(SORTS), 'popularity']]) {
+  for (const [key, choices, fallback] of [['format', FORMATS, ''], ['status', STATUSES, ''], ['season', ['WINTER', 'SPRING', 'SUMMER', 'FALL'], ''], ['availability', ['all', 'released', 'upcoming', 'dub'], 'all'], ['sort', Object.keys(SORTS), 'popularity']]) {
     const selected = value[key] || fallback;
     if (selected !== '' && !choices.includes(selected)) throw bad(`Invalid anime ${key}`);
     result[key] = selected;
@@ -31,11 +32,11 @@ function parseAnimeFilters(raw) {
   return result;
 }
 const SEARCH = `query StreamINAnimeSearch($page: Int!, $search: String, $formats: [MediaFormat], $genres: [String], $tags: [String], $status: MediaStatus, $statusNot: MediaStatus,
-  $season: MediaSeason, $year: String, $minDuration: Int, $maxDuration: Int, $minEpisodes: Int, $maxEpisodes: Int, $sort: [MediaSort], $ids: [Int]) {
+  $season: MediaSeason, $year: String, $minDuration: Int, $maxDuration: Int, $minEpisodes: Int, $maxEpisodes: Int, $sort: [MediaSort], $ids: [Int], $malIds: [Int]) {
   Page(page: $page, perPage: 25) { pageInfo { hasNextPage }
     media(type: ANIME, isAdult: false, search: $search, format_in: $formats, genre_in: $genres, tag_in: $tags, status: $status, status_not: $statusNot,
       season: $season, startDate_like: $year, duration_greater: $minDuration, duration_lesser: $maxDuration,
-      episodes_greater: $minEpisodes, episodes_lesser: $maxEpisodes, sort: $sort, id_in: $ids) { ${FIELDS} }
+      episodes_greater: $minEpisodes, episodes_lesser: $maxEpisodes, sort: $sort, id_in: $ids, idMal_in: $malIds) { ${FIELDS} }
   }
 }`;
 const STUDIO_MEDIA = `query StreamINStudioMedia($id: Int!, $page: Int!, $sort: [MediaSort]) {
@@ -65,6 +66,12 @@ async function searchAnime({ type, query = '', page = 1, filters }, options = {}
     statusNot: f.availability === 'released' ? 'NOT_YET_RELEASED' : undefined,
     season: f.season || undefined, year: f.year ? `${f.year}%` : undefined, sort: [SORTS[f.sort], 'ID'],
   };
+  let dubbed;
+  if (f.availability === 'dub') {
+    // Filter before pagination; absence from this index never implies verified subtitles.
+    variables.malIds = parseDubIndex({ language: 'English', dubbed: await (options.getEnglishDubIds || getEnglishDubIds)() });
+    dubbed = new Set(variables.malIds);
+  }
   // AniList bounds are exclusive; the UI promises inclusive minimums and maximums.
   for (const name of ['Duration', 'Episodes']) {
     if (f[`min${name}`] > 0) variables[`min${name}`] = f[`min${name}`] - 1;
@@ -83,7 +90,7 @@ async function searchAnime({ type, query = '', page = 1, filters }, options = {}
   const data = await run(SEARCH, variables);
   if (!Array.isArray(data.Page?.media)) throw Object.assign(new Error('Anime search unavailable'), { status: 502 });
   const seen = new Set();
-  const items = data.Page.media.filter(safe).map(item).filter(value => value.type === type && value.title && !seen.has(value.id) && seen.add(value.id));
+  const items = data.Page.media.filter(media => safe(media) && (!dubbed || dubbed.has(media.idMal))).map(item).filter(value => value.type === type && value.title && !seen.has(value.id) && seen.add(value.id));
   return { items, page, total_pages: (more ?? data.Page.pageInfo?.hasNextPage) && page < 200 ? page + 1 : page, metadata_provider: 'anilist' };
 }
 module.exports = { parseAnimeFilters, animeFilterOptions, searchAnime };
