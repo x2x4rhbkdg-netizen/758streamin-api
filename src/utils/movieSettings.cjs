@@ -5,8 +5,8 @@ const { normalizeSportsAliases } = require('./sportsChannels.cjs');
 
 const PROVIDERS = ['none', 'Real-Debrid', 'AllDebrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token', 'theporndb_token'];
-const ACCESS_KEYS = ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled'];
-const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, adult_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', secondary_scraper_url: '', provider: 'none', default_provider: 'none',
+const ACCESS_KEYS = ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled', 'sports_enabled'];
+const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, adult_enabled: false, live_tv_enabled: true, radio_enabled: true, sports_enabled: false, scraper_url: '', secondary_scraper_url: '', provider: 'none', default_provider: 'none',
   anime_primary_catalog: 'anilist', theporndb_enabled: false, adult_use_shared_scrapers: false, sports_broadcaster_aliases: [],
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
@@ -150,7 +150,7 @@ async function readStoredDeviceSettings(deviceId) {
 async function saveMovieSettings(deviceId, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       !Object.keys(input).length || Object.keys(input).some((key) => !ACCESS_KEYS.includes(key) || typeof input[key] !== 'boolean')) {
-    invalid('Device access accepts only enabled, anime_enabled, adult_enabled, live_tv_enabled and radio_enabled booleans');
+    invalid('Device access accepts only enabled, anime_enabled, adult_enabled, live_tv_enabled, radio_enabled and sports_enabled booleans');
   }
   const settings = normalizeSettings(input, await readStoredDeviceSettings(deviceId));
   await pool.execute(`INSERT INTO device_movie_settings (device_id, settings_enc) VALUES (?, ?)
@@ -161,7 +161,7 @@ async function saveMovieSettings(deviceId, input) {
 
 function deviceAccess(settings) {
   return { enabled: settings.enabled === true, anime_enabled: settings.anime_enabled === true, adult_enabled: settings.adult_enabled === true, live_tv_enabled: settings.live_tv_enabled !== false,
-    radio_enabled: settings.radio_enabled !== false };
+    radio_enabled: settings.radio_enabled !== false, sports_enabled: settings.sports_enabled === true };
 }
 
 async function readDeviceMovieAccess(deviceId) {

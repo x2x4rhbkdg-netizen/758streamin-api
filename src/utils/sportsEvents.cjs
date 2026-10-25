@@ -37,9 +37,16 @@ function diverseEvents(events, limit) {
   }
   return result;
 }
-function upcomingSports(feed, now = Date.now()) {
+function upcomingSports(feed, now = Date.now(), { query = '', eventId = '' } = {}) {
   if (feed.updatedAt > now + HOUR || now - feed.updatedAt > 24 * HOUR) throw unavailable();
+  const normalize = value => String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const terms = normalize(query).trim().split(/\s+/).filter(Boolean);
   const eligible = feed.events.filter(event => {
+    if (eventId && event.id !== eventId) return false;
+    if (terms.length) {
+      const haystack = normalize([event.title, event.homeTeam, event.awayTeam, event.league, event.sport, ...(event.broadcasters || [])].join(' '));
+      if (!terms.every(term => haystack.includes(term))) return false;
+    }
     if (['finished', 'postponed', 'cancelled', 'canceled'].includes(event.status)) return false;
     return event.status === 'live' ? event.startsAt >= now - 8 * HOUR && event.startsAt <= now + HOUR
       : event.startsAt >= now - 4 * HOUR && event.startsAt <= now + 7 * 24 * HOUR;
@@ -54,12 +61,12 @@ function upcomingSports(feed, now = Date.now()) {
 }
 function createSportsEvents({ fetchImpl = globalThis.fetch, now = Date.now, url = process.env.SPORTS_EVENTS_URL || DEFAULT_URL } = {}) {
   let cache, fetchedAt = 0, pending, retryAt = 0;
-  return async () => {
-    const snapshot = stale => ({ ...upcomingSports(cache, now()), stale });
+  return async (options = {}) => {
+    const snapshot = stale => ({ ...upcomingSports(cache, now(), options), stale });
     const fallback = () => { if (cache && now() - fetchedAt < HOUR) return snapshot(true); throw unavailable(); };
     if (cache && now() - fetchedAt < 300000) return snapshot(false);
     if (now() < retryAt) return fallback();
-    if (pending) return pending;
+    if (pending) { const result = await pending; return snapshot(result.stale); }
     pending = (async () => {
       const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
       try {

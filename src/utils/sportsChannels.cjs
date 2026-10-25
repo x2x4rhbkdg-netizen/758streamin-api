@@ -85,8 +85,9 @@ function createSportsChannelResolver({ loadEvents = getSportsEvents,
   return async (device, eventId) => {
     if (typeof eventId !== 'string' || !eventId || eventId.length > 100) throw fail('Invalid sports event');
     const settings = await readSettings(device);
+    if (settings.sports_enabled !== true) throw fail('Sports is disabled for this device', 403);
     if (settings.live_tv_enabled === false) throw fail('Live TV is disabled for this device', 403);
-    const snapshot = await loadEvents();
+    const snapshot = await loadEvents({ eventId });
     const event = snapshot.events.find(value => value.id === eventId);
     if (!event) throw fail('This event is no longer listed. Refresh the schedule.', 404);
     const upstream = await getUpstream(device);

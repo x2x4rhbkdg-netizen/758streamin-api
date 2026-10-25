@@ -11,14 +11,25 @@ test('sports route requires existing device auth and returns only neutral failur
     },
   });
   const auth = () => {}, data = { events: [{ id: '1' }] };
-  let fail = false;
-  const router = module.exports.createSportsEventsRouter({ auth, load: async () => { if (fail) throw new Error('upstream secret detail'); return data; } });
+  let fail = false, options;
+  let sportsEnabled = true, device;
+  const router = module.exports.createSportsEventsRouter({ auth, readSettings: async id => { device = id; return { sports_enabled: sportsEnabled }; }, load: async value => { options = value; if (fail) throw new Error('upstream secret detail'); return data; } });
   const route = router.stack.find(layer => layer.route?.path === '/sports/events').route;
   assert.equal(route.stack[0].handle, auth);
   const res = { code: 200, headers: {}, set(key, value) { this.headers[key] = value; }, status(code) { this.code = code; return this; }, json(value) { this.body = value; return this; } };
-  await route.stack.at(-1).handle({}, res);
+  const req = { device: { device_id: 42 } };
+  await route.stack.at(-1).handle(req, res);
+  assert.equal(device, 42);
   assert.equal(res.body, data); assert.equal(res.headers['Cache-Control'], 'private, no-store');
-  fail = true; await route.stack.at(-1).handle({}, res);
+  await route.stack.at(-1).handle({ ...req, query: { q: ' Texans ' } }, res);
+  assert.equal(options.query, 'Texans');
+  for (const q of [['NFL'], 'x'.repeat(101), 'bad\nquery', { name: 'NFL' }]) {
+    await route.stack.at(-1).handle({ query: { q } }, res); assert.equal(res.code, 400);
+  }
+  sportsEnabled = false; await route.stack.at(-1).handle(req, res);
+  assert.equal(res.code, 403); assert.equal(res.body.error, 'Sports is disabled for this device');
+  sportsEnabled = undefined; await route.stack.at(-1).handle(req, res); assert.equal(res.code, 403);
+  sportsEnabled = true; fail = true; await route.stack.at(-1).handle(req, res);
   assert.equal(res.code, 503); assert.equal(res.body.error, 'Sports events temporarily unavailable');
 });
 

@@ -59,6 +59,21 @@ function fixture() {
   return { api: module.exports, devices, vault, setMissing: () => { missingTables = true; } };
 }
 
+test('Sports defaults off, persists independently per device and rejects non-boolean/global overrides', async () => {
+  const { api } = fixture();
+  assert.equal((await api.readDeviceMovieAccess(1)).sports_enabled, false);
+  await api.saveMovieSettings(1, { sports_enabled: false });
+  await api.saveMovieSettings(1, { anime_enabled: true });
+  const settings = await api.readMovieSettings(1);
+  assert.equal(settings.sports_enabled, false); assert.equal(settings.live_tv_enabled, true); assert.equal(settings.anime_enabled, true);
+  assert.equal(api.publicSettings(settings).sports_enabled, false);
+  assert.equal((await api.readMovieSettings(2)).sports_enabled, false);
+  await assert.rejects(api.saveMovieSettings(1, { sports_enabled: 'false' }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ sports_enabled: false }), { status: 400 });
+  await api.saveMovieSettings(1, { sports_enabled: true });
+  assert.equal((await api.readMovieSettings(1)).sports_enabled, true);
+});
+
 test('sports aliases persist globally, stay out of public settings and reject device overrides', async () => {
   const { api } = fixture();
   const aliases = [{ broadcaster: 'TNT Sports 1', channels: ['BT Sport 1'] }];
@@ -199,7 +214,7 @@ test('legacy per-device configuration is ignored without deleting existing recor
   devices.set(1, vault.encryptString(JSON.stringify({ enabled: true, provider: 'Real-Debrid', debrid_token: 'legacy' })));
   await api.saveGlobalMovieSettings({ provider: 'Torbox', debrid_token: 'shared' });
   assert.equal((await api.readMovieSettings(1)).debrid_token, 'shared');
-  assert.deepEqual(Object.keys(await api.readDeviceMovieAccess(1)), ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled']);
+  assert.deepEqual(Object.keys(await api.readDeviceMovieAccess(1)), ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled', 'sports_enabled']);
   await api.saveMovieSettings(1, { enabled: false });
   assert.equal(JSON.parse(vault.decryptString(devices.get(1))).debrid_token, 'legacy');
 });

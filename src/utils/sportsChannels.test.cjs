@@ -34,7 +34,7 @@ function fixture() {
   const calls = [];
   const resolve = createSportsChannelResolver({
     now: () => time,
-    readSettings: async () => ({ live_tv_enabled: enabled, sports_broadcaster_aliases: aliases }),
+    readSettings: async () => ({ sports_enabled: true, live_tv_enabled: enabled, sports_broadcaster_aliases: aliases }),
     loadEvents: async () => ({ events: [{ id: 'event', broadcasters: ['TNT Sports 1'] }, { id: 'empty', broadcasters: [] }] }),
     getUpstream: async device => ({ upstream_base_url: 'https://example.com', username: String(device), password }),
     loadCatalog: async upstream => { calls.push(upstream.username); return { categories, streams: [stream(1, 'TNT Sports 1'), stream(2, 'BT Sport 1')] }; },
@@ -63,7 +63,7 @@ test('falls back to both team names in EPG descriptions, isolated by subscriptio
   let calls = 0;
   const start = Date.UTC(2026, 9, 25, 17);
   const resolve = createSportsChannelResolver({ now: () => start,
-    readSettings: async () => ({}), getUpstream: async device => ({ username: device }),
+    readSettings: async () => ({ sports_enabled: true }), getUpstream: async device => ({ username: device }),
     loadEvents: async () => ({ events: [{ id: 'nfl', title: 'Houston Texans vs New York Giants', homeTeam: 'Houston Texans', awayTeam: 'New York Giants', startsAt: start, broadcasters: [] }] }),
     loadCatalog: async () => ({ categories, streams: [stream(1, 'TSN 1 HD'), stream(2, 'ESPN'), stream(3, 'Adult sports', { category_id: '2' })] }),
     loadEpg: async (account, id) => { calls++;
@@ -78,7 +78,7 @@ test('falls back to both team names in EPG descriptions, isolated by subscriptio
 });
 test('exact TSN broadcaster matches avoid scanning EPG and never confuse channel numbers', async () => {
   let scans = 0;
-  const resolve = createSportsChannelResolver({ readSettings: async () => ({}), getUpstream: async () => ({}),
+  const resolve = createSportsChannelResolver({ readSettings: async () => ({ sports_enabled: true }), getUpstream: async () => ({}),
     loadEvents: async () => ({ events: [{ id: 'nfl', title: 'Houston Texans vs New York Giants', broadcasters: ['TSN 1'] }] }),
     loadCatalog: async () => ({ categories, streams: [stream(1, 'TSN 1 HD'), stream(2, 'TSN 2 HD')] }),
     loadEpg: async () => { scans++; return []; },
@@ -88,7 +88,7 @@ test('exact TSN broadcaster matches avoid scanning EPG and never confuse channel
 });
 test('EPG scan is bounded and skips adult/radio streams even inside the candidate selection', async () => {
   let active = 0, peak = 0, calls = 0;
-  const resolve = createSportsChannelResolver({ readSettings: async () => ({}), getUpstream: async () => ({}),
+  const resolve = createSportsChannelResolver({ readSettings: async () => ({ sports_enabled: true }), getUpstream: async () => ({}),
     loadEvents: async () => ({ events: [{ id: 'event', title: 'Houston Texans vs New York Giants', startsAt: Date.now(), broadcasters: [] }] }),
     loadCatalog: async () => ({ categories, streams: [stream(1001, 'TSN adult', { is_adult: 1 }), stream(1002, 'TSN radio', { category_id: '3' }),
       ...Array.from({ length: 100 }, (_, i) => stream(i + 1, `Sports ${i}`))] }),
@@ -99,8 +99,21 @@ test('EPG scan is bounded and skips adult/radio streams even inside the candidat
   assert.deepEqual((await resolve('a', 'event')).channels, []);
   assert.equal(calls, 60); assert.equal(peak, 4);
 });
+test('search result outside the default list resolves by ID against the full eligible feed', async () => {
+  const { normalizeSportsFeed, upcomingSports } = require('./sportsEvents.cjs');
+  const now = Date.now();
+  const feed = normalizeSportsFeed({ version: 1, updatedAt: now, events: Array.from({ length: 151 }, (_, i) => ({
+    id: String(i).padStart(3, '0'), title: `Team ${i} vs Opponent`, sport: 'Soccer', startsAt: now + 3600000, status: 'scheduled', broadcasters: [{ name: 'TSN 1' }],
+  })) });
+  assert.equal(upcomingSports(feed, now).events.some(row => row.id === '150'), false);
+  const resolve = createSportsChannelResolver({ readSettings: async () => ({ sports_enabled: true }), getUpstream: async () => ({}),
+    loadEvents: async options => upcomingSports(feed, now, options),
+    loadCatalog: async () => ({ categories, streams: [stream(1, 'TSN 1 HD')] }),
+  });
+  assert.deepEqual((await resolve('a', '150')).channels.map(row => row.stream_id), ['1']);
+});
 test('missing subscriptions and failed upstream requests do not return stale channels', async () => {
-  const base = { readSettings: async () => ({}), loadEvents: async () => ({ events: [{ id: 'event', broadcasters: ['ESPN'] }] }) };
+  const base = { readSettings: async () => ({ sports_enabled: true }), loadEvents: async () => ({ events: [{ id: 'event', broadcasters: ['ESPN'] }] }) };
   await assert.rejects(createSportsChannelResolver({ ...base, getUpstream: async () => null })(1, 'event'), { status: 404 });
   let time = 0, failed = false;
   const resolve = createSportsChannelResolver({ ...base, now: () => time, getUpstream: async () => ({}), loadCatalog: async () => {
@@ -109,4 +122,12 @@ test('missing subscriptions and failed upstream requests do not return stale cha
   assert.equal((await resolve(1, 'event')).channels.length, 1);
   failed = true; time = 120001;
   await assert.rejects(resolve(1, 'event'), /provider error/);
+});
+test('disabling Sports blocks channel lookup before loading events, subscription or EPG', async () => {
+  const unexpected = async () => { throw new Error('must not load'); };
+  const resolve = createSportsChannelResolver({ readSettings: async () => ({ sports_enabled: false, live_tv_enabled: true }),
+    loadEvents: unexpected, getUpstream: unexpected, loadCatalog: unexpected, loadEpg: unexpected });
+  await assert.rejects(resolve(1, 'event'), { status: 403, message: 'Sports is disabled for this device' });
+  const legacy = createSportsChannelResolver({ readSettings: async () => ({}), loadEvents: unexpected });
+  await assert.rejects(legacy(1, 'event'), { status: 403 });
 });

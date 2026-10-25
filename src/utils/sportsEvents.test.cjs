@@ -71,3 +71,22 @@ test('rejects redirects, failed HTTP, oversized and malformed feeds without cach
   const load = createSportsEvents({ url: 'http://example.com', fetchImpl: async () => { throw new Error('must not fetch'); } });
   await assert.rejects(load(), { status: 503 });
 });
+test('search covers full eligible feed before capping, ignores accents/case and supports teams, leagues and sports', () => {
+  const target = { ...event, id: 'target', title: 'Castellón vs Sporting de Gijón', homeTeam: 'Castellón', awayTeam: 'Sporting de Gijón', sport: 'Soccer', league: 'La Liga 2', broadcasters: ['TSN 1'] };
+  const data = normalizeSportsFeed(feed([...Array.from({ length: 150 }, (_, i) => ({ ...event, sport: 'Soccer', id: String(i).padStart(3, '0') })), target]));
+  assert.equal(upcomingSports(data, now).events.some(row => row.id === 'target'), false);
+  for (const query of ['CASTELLON', 'gijon', 'liga soccer', 'tsn']) {
+    assert.ok(upcomingSports(data, now, { query }).events.some(row => row.id === 'target'));
+  }
+  assert.deepEqual(upcomingSports(data, now, { query: 'not-a-team' }).events, []);
+  assert.deepEqual(upcomingSports(data, now, { eventId: 'target' }).events.map(row => row.id), ['target']);
+});
+test('concurrent searches share the download but never reuse another search result', async () => {
+  let calls = 0;
+  const load = createSportsEvents({ now: () => now, fetchImpl: async () => {
+    calls++; return new Response(JSON.stringify(feed([{ ...event, id: 'one', title: 'Texans vs Giants' }, { ...event, id: 'two', title: 'Lakers vs Celtics' }])));
+  } });
+  const [one, two] = await Promise.all([load({ query: 'texans' }), load({ query: 'celtics' })]);
+  assert.equal(calls, 1); assert.deepEqual(one.events.map(row => row.id), ['one']); assert.deepEqual(two.events.map(row => row.id), ['two']);
+  assert.deepEqual((await load({ query: 'missing' })).events, []); assert.equal(calls, 1);
+});
