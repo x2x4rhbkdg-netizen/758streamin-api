@@ -21,3 +21,30 @@ test('sports route requires existing device auth and returns only neutral failur
   fail = true; await route.stack.at(-1).handle({}, res);
   assert.equal(res.code, 503); assert.equal(res.body.error, 'Sports events temporarily unavailable');
 });
+
+test('sports channel route uses authenticated device identity and sanitizes upstream failures', async () => {
+  const module = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(require.resolve('./sportsEvents.routes.cjs'), 'utf8'), {
+    module, require(name) {
+      if (name === '../middleware/authJwt.cjs') return { authJwt: () => {} };
+      return require(name);
+    },
+  });
+  const auth = () => {}, calls = [];
+  let error;
+  const router = module.exports.createSportsEventsRouter({ auth, resolveChannels: async (...args) => {
+    calls.push(args); if (error) throw error; return { event_id: args[1], channels: [] };
+  } });
+  const route = router.stack.find(layer => layer.route?.path === '/sports/events/:id/channels').route;
+  assert.equal(route.stack[0].handle, auth);
+  const req = { device: { device_id: 42 }, params: { id: 'fixture' }, query: { device_id: 999, broadcaster: 'untrusted' } };
+  const res = { code: 200, headers: {}, set(key, value) { this.headers[key] = value; }, status(code) { this.code = code; return this; }, json(value) { this.body = value; return this; } };
+  await route.stack.at(-1).handle(req, res);
+  assert.deepEqual(calls, [[42, 'fixture']]);
+  assert.equal(res.headers['Cache-Control'], 'private, no-store');
+  error = Object.assign(new Error('Live TV disabled'), { status: 403 });
+  await route.stack.at(-1).handle(req, res); assert.equal(res.code, 403);
+  error = new Error('upstream secret credentials');
+  await route.stack.at(-1).handle(req, res); assert.equal(res.code, 503);
+  assert.equal(res.body.error, 'Live TV channels temporarily unavailable');
+});

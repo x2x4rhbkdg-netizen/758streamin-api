@@ -52,11 +52,24 @@ function fixture() {
       if (name === '../db/pool.cjs') return { pool };
       if (name === './cryptoVault.cjs') return vault;
       if (name === './stremioAddons.cjs') return require('./stremioAddons.cjs');
+      if (name === './sportsChannels.cjs') return require('./sportsChannels.cjs');
       throw new Error(`Unexpected dependency: ${name}`);
     },
   });
   return { api: module.exports, devices, vault, setMissing: () => { missingTables = true; } };
 }
+
+test('sports aliases persist globally, stay out of public settings and reject device overrides', async () => {
+  const { api } = fixture();
+  const aliases = [{ broadcaster: 'TNT Sports 1', channels: ['BT Sport 1'] }];
+  await api.saveGlobalMovieSettings({ sports_broadcaster_aliases: aliases });
+  await api.saveGlobalMovieSettings({ anime_primary_catalog: 'kitsu' });
+  const settings = await api.readGlobalMovieSettings();
+  assert.equal(JSON.stringify(api.adminGlobalSettings(settings).sports_broadcaster_aliases), JSON.stringify(aliases));
+  assert.equal(Object.hasOwn(api.publicSettings(settings), 'sports_broadcaster_aliases'), false);
+  await assert.rejects(api.saveMovieSettings(1, { sports_broadcaster_aliases: aliases }), { status: 400 });
+  await assert.rejects(api.saveGlobalMovieSettings({ sports_broadcaster_aliases: [{ broadcaster: 'TNT', channels: [] }] }), { status: 400 });
+});
 
 test('ThePornDB token is encrypted, masked, preserved on unrelated saves and cannot be device-overridden', async () => {
   const { api } = fixture();

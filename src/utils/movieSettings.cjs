@@ -1,12 +1,13 @@
 const { pool } = require('../db/pool.cjs');
 const { encryptString, decryptString } = require('./cryptoVault.cjs');
 const { normalizeAddons, publicAddons } = require('./stremioAddons.cjs');
+const { normalizeSportsAliases } = require('./sportsChannels.cjs');
 
 const PROVIDERS = ['none', 'Real-Debrid', 'AllDebrid', 'Premiumize', 'EasyDebrid', 'OffCloud', 'Torbox'];
 const SECRETS = ['tmdb_read_access_token', 'debrid_token', 'trakt_access_token', 'theporndb_token'];
 const ACCESS_KEYS = ['enabled', 'anime_enabled', 'adult_enabled', 'live_tv_enabled', 'radio_enabled'];
 const DEFAULTS = Object.freeze({ enabled: false, anime_enabled: false, adult_enabled: false, live_tv_enabled: true, radio_enabled: true, scraper_url: '', secondary_scraper_url: '', provider: 'none', default_provider: 'none',
-  anime_primary_catalog: 'anilist', theporndb_enabled: false, adult_use_shared_scrapers: false,
+  anime_primary_catalog: 'anilist', theporndb_enabled: false, adult_use_shared_scrapers: false, sports_broadcaster_aliases: [],
   min_bitrate_mbps: 0, max_bitrate_mbps: 20, hide_phrases: '', auto_select: false, max_links: 10,
   primary_sort: 'quality', primary_sort_direction: 'desc', secondary_sort: 'bitrate', secondary_sort_direction: 'desc',
   auto_select_min_links: 10, auto_select_delay: false, auto_select_delay_seconds: 15,
@@ -53,6 +54,7 @@ function invalid(message) {
 function normalizeSettings(input, previous = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Movie settings must be an object');
   const next = { ...DEFAULTS, ...previous };
+  if (Object.hasOwn(input, 'sports_broadcaster_aliases')) next.sports_broadcaster_aliases = normalizeSportsAliases(input.sports_broadcaster_aliases);
   if (Object.hasOwn(input, 'anime_primary_catalog')) {
     if (!['anilist', 'jikan', 'kitsu'].includes(input.anime_primary_catalog)) invalid('Unsupported Anime primary catalog');
     next.anime_primary_catalog = input.anime_primary_catalog;
@@ -126,6 +128,7 @@ function publicSettings(settings) {
   // Configured scraper URLs may contain provider keys in their path or query.
   delete result.scraper_url;
   delete result.secondary_scraper_url;
+  delete result.sports_broadcaster_aliases;
   result.scraper_configured = Boolean(settings.scraper_url || settings.secondary_scraper_url);
   result.secondary_scraper_configured = Boolean(settings.secondary_scraper_url);
   for (const key of SECRETS) result[`${key}_configured`] = Boolean(settings[key]);
@@ -208,6 +211,7 @@ async function saveGlobalMovieSettings(input) {
 
 function adminGlobalSettings(settings) {
   const result = { ...publicSettings(settings), scraper_url: settings.scraper_url, secondary_scraper_url: settings.secondary_scraper_url,
+    sports_broadcaster_aliases: settings.sports_broadcaster_aliases || [],
     stremio_addons: publicAddons(settings.stremio_addons) };
   for (const key of ACCESS_KEYS) delete result[key];
   return result;

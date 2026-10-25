@@ -1,0 +1,72 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { channelName, normalizeSportsAliases, matchSportsChannels, createSportsChannelResolver } = require('./sportsChannels.cjs');
+const categories = [{ category_id: '1', category_name: 'Sports' }, { category_id: '2', category_name: 'Adult' }, { category_id: '3', category_name: 'Radio' }];
+const stream = (id, name, other = {}) => ({ stream_id: id, category_id: '1', name, ...other });
+test('format normalization preserves channel numbers and distinct brands', () => {
+  assert.equal(channelName('UK: TNT Sports1 FHD'), channelName('TNT Sports 1'));
+  assert.equal(channelName('ESPN+ HD'), channelName('ESPN Plus'));
+  assert.notEqual(channelName('ESPN'), channelName('ESPN 2'));
+  assert.notEqual(channelName('BT Sport 1'), channelName('TNT Sports 1'));
+});
+test('only exact names or explicit aliases match; output excludes upstream secrets and adult/radio content', () => {
+  const result = matchSportsChannels(['TNT Sports 1', 'ESPN'], [
+    stream(1, 'UK: TNT Sports1 HD', { direct_url: 'secret', password: 'secret' }),
+    stream(2, 'BT Sport 1'), stream(3, 'ESPN 2'), stream(4, 'ESPN', { category_id: '2' }),
+    stream(5, 'ESPN', { category_id: '3' }), stream(6, 'ESPN', { is_adult: 'true' }),
+    stream(7, 'ESPN', { is_adult: 1 }), stream(8, 'ESPN', { stream_type: 'movie' }),
+    stream(9, 'ESPN', { category_id: 'unknown' }), stream(1, 'TNT Sports 1'),
+  ], categories, [{ broadcaster: 'TNT Sports 1', channels: ['BT Sport 1'] }]);
+  assert.deepEqual(result.map(row => row.stream_id), ['1', '2']);
+  assert.equal(result[1].match_type, 'alias');
+  assert.deepEqual(Object.keys(result[0]).sort(), ['broadcaster', 'category_id', 'match_type', 'name', 'stream_id']);
+  assert.equal(JSON.stringify(result).includes('secret'), false);
+});
+test('aliases validate bounds, canonical duplicates and fields', () => {
+  assert.deepEqual(normalizeSportsAliases([{ broadcaster: ' ESPN ', channels: [' ESPN HD ', ' ESPN HD '] }]), [{ broadcaster: 'ESPN', channels: ['ESPN HD'] }]);
+  for (const input of [null, Array(201).fill({}), [{ broadcaster: 'ESPN', channels: [] }], [{ broadcaster: 'ESPN', channels: ['bad\nname'] }],
+    [{ broadcaster: 'ESPN', channels: ['ESPN'], url: 'untrusted' }], [{ broadcaster: 'ESPN', channels: ['ESPN'] }, { broadcaster: 'ESPN HD', channels: ['ESPN'] }]]) {
+    assert.throws(() => normalizeSportsAliases(input), { status: 400 });
+  }
+});
+function fixture() {
+  let time = 0, password = 'one', enabled = true, aliases = [];
+  const calls = [];
+  const resolve = createSportsChannelResolver({
+    now: () => time,
+    readSettings: async () => ({ live_tv_enabled: enabled, sports_broadcaster_aliases: aliases }),
+    loadEvents: async () => ({ events: [{ id: 'event', broadcasters: ['TNT Sports 1'] }, { id: 'empty', broadcasters: [] }] }),
+    getUpstream: async device => ({ upstream_base_url: 'https://example.com', username: String(device), password }),
+    loadCatalog: async upstream => { calls.push(upstream.username); return { categories, streams: [stream(1, 'TNT Sports 1'), stream(2, 'BT Sport 1')] }; },
+  });
+  return { resolve, calls, advance: () => { time += 120001; }, password: value => { password = value; }, disable: () => { enabled = false; }, aliases: value => { aliases = value; } };
+}
+test('cache is singleflight, expires and isolates devices and changed credentials; aliases are fresh', async () => {
+  const f = fixture();
+  await Promise.all([f.resolve('a', 'event'), f.resolve('a', 'event')]);
+  assert.deepEqual(f.calls, ['a']);
+  f.aliases([{ broadcaster: 'TNT Sports 1', channels: ['BT Sport 1'] }]);
+  assert.equal((await f.resolve('a', 'event')).channels.length, 2);
+  assert.equal(f.calls.length, 1);
+  await f.resolve('b', 'event'); assert.deepEqual(f.calls, ['a', 'b']);
+  f.password('two'); await f.resolve('a', 'event'); assert.equal(f.calls.length, 3);
+  f.advance(); await f.resolve('a', 'event'); assert.equal(f.calls.length, 4);
+});
+test('no broadcaster yields no channel; missing event and disabled access never fetch catalog', async () => {
+  const f = fixture();
+  assert.deepEqual(await f.resolve('a', 'empty'), { event_id: 'empty', channels: [] });
+  await assert.rejects(f.resolve('a', 'missing'), { status: 404 });
+  f.disable(); await assert.rejects(f.resolve('a', 'event'), { status: 403 });
+  assert.equal(f.calls.length, 0);
+});
+test('missing subscriptions and failed upstream requests do not return stale channels', async () => {
+  const base = { readSettings: async () => ({}), loadEvents: async () => ({ events: [{ id: 'event', broadcasters: ['ESPN'] }] }) };
+  await assert.rejects(createSportsChannelResolver({ ...base, getUpstream: async () => null })(1, 'event'), { status: 404 });
+  let time = 0, failed = false;
+  const resolve = createSportsChannelResolver({ ...base, now: () => time, getUpstream: async () => ({}), loadCatalog: async () => {
+    if (failed) throw new Error('provider error'); return { categories, streams: [stream(1, 'ESPN')] };
+  } });
+  assert.equal((await resolve(1, 'event')).channels.length, 1);
+  failed = true; time = 120001;
+  await assert.rejects(resolve(1, 'event'), /provider error/);
+});
