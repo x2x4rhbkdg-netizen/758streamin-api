@@ -5,7 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test src/utils/*.test.cjs src/routes/*.test.cjs"
+    "test": "node --test src/utils/*.test.cjs src/routes/*.test.cjs src/middleware/*.test.cjs",
+    "cleanup:device-transfers": "node scripts/cleanup-device-transfers.cjs"
   },
   "engines": {
     "node": ">=20.0.0"

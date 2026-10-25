@@ -29,6 +29,7 @@ const adminHomeAdsRoutes = require("./routes/admin.homeAds.routes.cjs");
 const adminUploadsRoutes = require("./routes/admin.uploads.routes.cjs");
 
 const app = express();
+require('./utils/deviceTransferCleanup.cjs').startDeviceTransferCleanup(require('./db/pool.cjs').pool);
 
 const homeAdsUploadStaticDir = String(process.env.HOME_AD_UPLOAD_DIR || path.join(__dirname, "..", "tmp", "uploads", "home-ads")).trim();
 if (homeAdsUploadStaticDir) {
@@ -91,6 +92,7 @@ app.use("/v1", movieCatalogRoutes);
 app.use("/v1", moviePlaybackRoutes);
 app.use("/v1", adultRoutes);
 app.use("/v1", require("./routes/mediaHistory.routes.cjs"));
+app.use("/v1", require("./routes/liveFavorites.routes.cjs"));
 app.use("/v1", analyticsRoutes);
 app.use("/v1", epgRoutes);
 app.use("/v1", appUpdateRoutes);

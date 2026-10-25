@@ -30,6 +30,7 @@ router.use(require('./adminThePornDb.routes.cjs').createThePornDbAdminRouter({
 router.use(require('./adminPassword.routes.cjs').createAdminPasswordRouter({
   db: pool, authenticate: adminAuth, onError: sendInternalError,
 }));
+router.use(require('./adminDeviceCode.routes.cjs').createDeviceCodeRouter({ db: pool, authenticate: adminAuth, onError: sendInternalError }));
 
 const addonTests = new Map();
 router.post('/movie-settings/addons/test', adminAuth, async (req, res) => {
@@ -1087,6 +1088,7 @@ router.get("/devices", adminAuth, async (req, res) => {
       SELECT
         d.id,
         d.device_code,
+        DATE_FORMAT(t.delete_after, '%Y-%m-%dT%H:%i:%sZ') AS transfer_delete_after,
         d.customer_name,
         d.customer_phone,
         d.status,
@@ -1116,6 +1118,7 @@ router.get("/devices", adminAuth, async (req, res) => {
       FROM devices d
       LEFT JOIN admins r ON r.id = d.reseller_admin_id
       LEFT JOIN device_access a ON a.device_id = d.id
+      LEFT JOIN device_code_transfers t ON t.retained_device_id = d.id
       ${where}
       ORDER BY d.created_at DESC
       LIMIT 200

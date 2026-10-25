@@ -25,7 +25,7 @@ async function authJwt(req, res, next) {
     }
 
     const [rows] = await pool.execute(
-      `SELECT d.status, d.platform, a.expires_at, a.max_streams
+      `SELECT d.status, d.platform, d.device_code, a.expires_at, a.max_streams
        FROM devices d
        LEFT JOIN device_access a ON a.device_id = d.id
        WHERE d.id=?
@@ -35,6 +35,9 @@ async function authJwt(req, res, next) {
 
     const dev = rows[0];
     if (!dev) return res.status(401).json({ error: "device not found" });
+    if (!payload.device_code || String(payload.device_code).toUpperCase() !== String(dev.device_code).toUpperCase()) {
+      return res.status(401).json({ error: "device code changed; activate this device again" });
+    }
     if (dev.status !== "active") return res.status(403).json({ error: "device not active" });
 
     if (dev.expires_at) {
