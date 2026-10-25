@@ -1,5 +1,6 @@
 const { createHash } = require('node:crypto');
 const { getSportsEvents } = require('./sportsEvents.cjs');
+const { epgMatchesEvent, fetchSportsEpg } = require('./sportsEpg.cjs');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
 function channelName(value) {
@@ -23,9 +24,19 @@ function normalizeSportsAliases(value) {
     return { broadcaster: row.broadcaster.trim(), channels: [...new Set(row.channels.map(name => name.trim()))] };
   });
 }
-function matchSportsChannels(broadcasters, streams, categories, aliases = []) {
+function eligibleStreams(streams, categories) {
   const allowedCategories = new Set(categories.filter(category => !/radio|adult|xxx|18\+|porn|hentai/i.test(String(category.category_name || category.name || '')))
     .map(category => String(category.category_id ?? category.id ?? '')).filter(Boolean));
+  const seen = new Set();
+  return streams.filter(stream => {
+    const id = String(stream.stream_id || '');
+    if (!/^\d+$/.test(id) || !allowedCategories.has(String(stream.category_id || '')) || seen.has(id) ||
+        String(stream.is_adult).toLowerCase() === 'true' || Number(stream.is_adult) === 1 ||
+        stream.stream_type && stream.stream_type !== 'live' || typeof stream.name !== 'string' || stream.name.length > 300) return false;
+    seen.add(id); return true;
+  });
+}
+function matchSportsChannels(broadcasters, streams, categories, aliases = []) {
   const wanted = new Map();
   for (const broadcaster of broadcasters) {
     const key = channelName(broadcaster);
@@ -34,14 +45,10 @@ function matchSportsChannels(broadcasters, streams, categories, aliases = []) {
     const mapping = aliases.find(row => channelName(row.broadcaster) === key);
     for (const alias of mapping?.channels || []) if (!wanted.has(channelName(alias))) wanted.set(channelName(alias), { broadcaster, kind: 'alias' });
   }
-  const seen = new Set();
-  return streams.flatMap(stream => {
+  return eligibleStreams(streams, categories).flatMap(stream => {
     const id = String(stream.stream_id || ''), categoryId = String(stream.category_id || '');
-    if (!/^\d+$/.test(id) || !allowedCategories.has(categoryId) || seen.has(id) || String(stream.is_adult).toLowerCase() === 'true' || Number(stream.is_adult) === 1 ||
-        stream.stream_type && stream.stream_type !== 'live' || typeof stream.name !== 'string' || stream.name.length > 300) return [];
     const match = wanted.get(channelName(stream.name));
     if (!match) return [];
-    seen.add(id);
     // Never expose provider credentials, stream URLs, or arbitrary upstream fields.
     return [{ stream_id: id, category_id: categoryId, name: stream.name, broadcaster: match.broadcaster, match_type: match.kind }];
   }).sort((a, b) => Number(a.match_type === 'alias') - Number(b.match_type === 'alias') || a.name.localeCompare(b.name, undefined, { numeric: true })).slice(0, 60);
@@ -61,8 +68,20 @@ async function fetchLiveCatalog(upstream) {
 }
 function createSportsChannelResolver({ loadEvents = getSportsEvents,
   readSettings = device => require('./movieSettings.cjs').readMovieSettings(device),
-  getUpstream = device => require('./upstreamAuth.cjs').getDeviceUpstream(device), loadCatalog = fetchLiveCatalog, now = Date.now } = {}) {
-  const cache = new Map(), pending = new Map();
+  getUpstream = device => require('./upstreamAuth.cjs').getDeviceUpstream(device), loadCatalog = fetchLiveCatalog,
+  loadEpg = fetchSportsEpg, now = Date.now } = {}) {
+  const cache = new Map(), pending = new Map(), epgCache = new Map(), epgPending = new Map();
+  async function guide(key, upstream, id) {
+    const cacheKey = `${key}:${id}`, saved = epgCache.get(cacheKey);
+    if (saved && now() - saved.at < 120000) return saved.rows;
+    if (epgPending.has(cacheKey)) return epgPending.get(cacheKey);
+    if (epgPending.size >= 4) return [];
+    const request = Promise.resolve().then(() => loadEpg(upstream, id)).catch(() => []).then(rows => {
+      if (epgCache.size >= 800) epgCache.delete(epgCache.keys().next().value);
+      epgCache.set(cacheKey, { at: now(), rows }); return rows;
+    }).finally(() => epgPending.delete(cacheKey));
+    epgPending.set(cacheKey, request); return request;
+  }
   return async (device, eventId) => {
     if (typeof eventId !== 'string' || !eventId || eventId.length > 100) throw fail('Invalid sports event');
     const settings = await readSettings(device);
@@ -70,7 +89,6 @@ function createSportsChannelResolver({ loadEvents = getSportsEvents,
     const snapshot = await loadEvents();
     const event = snapshot.events.find(value => value.id === eventId);
     if (!event) throw fail('This event is no longer listed. Refresh the schedule.', 404);
-    if (!event.broadcasters?.length) return { event_id: eventId, channels: [] };
     const upstream = await getUpstream(device);
     if (!upstream) throw fail('No Live TV account configured for this device', 404);
     // Device plus upstream identity prevents sharing subscription channel lists across accounts.
@@ -89,7 +107,25 @@ function createSportsChannelResolver({ loadEvents = getSportsEvents,
       }
       catalog = await pending.get(key);
     }
-    return { event_id: eventId, channels: matchSportsChannels(event.broadcasters, catalog.streams, catalog.categories, settings.sports_broadcaster_aliases || []) };
+    const channels = matchSportsChannels(event.broadcasters || [], catalog.streams, catalog.categories, settings.sports_broadcaster_aliases || []);
+    if (!channels.length && (event.homeTeam && event.awayTeam || /\s+(?:vs\.?|v|versus)\s+/i.test(event.title || ''))) {
+      const sports = new Set(catalog.categories.filter(row => /sport|nfl|nba|nhl|cricket|football|soccer|hockey|basketball|baseball|rugby|tennis/i.test(row.category_name || ''))
+        .map(row => String(row.category_id)));
+      const candidates = eligibleStreams(catalog.streams, catalog.categories).filter(row => sports.has(String(row.category_id)) ||
+        /\b(?:tsn|espn|tnt sports|bein|sky sports|nfl|cbs|fox|nbc|sportsnet)\b/i.test(row.name)).slice(0, 60);
+      let index = 0;
+      const deadline = Date.now() + 6000;
+      await Promise.all(Array.from({ length: 4 }, async () => {
+        while (index < candidates.length && Date.now() < deadline) {
+          const stream = candidates[index++];
+          const rows = await guide(key, upstream, String(stream.stream_id));
+          if (epgMatchesEvent(event, rows)) channels.push({ stream_id: String(stream.stream_id), category_id: String(stream.category_id),
+            name: stream.name, broadcaster: 'Program guide match', match_type: 'epg' });
+        }
+      }));
+      channels.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    }
+    return { event_id: eventId, channels };
   };
 }
 module.exports = { channelName, normalizeSportsAliases, matchSportsChannels, createSportsChannelResolver, resolveSportsChannels: createSportsChannelResolver() };

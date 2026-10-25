@@ -52,12 +52,52 @@ test('cache is singleflight, expires and isolates devices and changed credential
   f.password('two'); await f.resolve('a', 'event'); assert.equal(f.calls.length, 3);
   f.advance(); await f.resolve('a', 'event'); assert.equal(f.calls.length, 4);
 });
-test('no broadcaster yields no channel; missing event and disabled access never fetch catalog', async () => {
+test('no broadcaster or teams yields no channel; missing event and disabled access never fetch another catalog', async () => {
   const f = fixture();
   assert.deepEqual(await f.resolve('a', 'empty'), { event_id: 'empty', channels: [] });
   await assert.rejects(f.resolve('a', 'missing'), { status: 404 });
   f.disable(); await assert.rejects(f.resolve('a', 'event'), { status: 403 });
-  assert.equal(f.calls.length, 0);
+  assert.equal(f.calls.length, 1);
+});
+test('falls back to both team names in EPG descriptions, isolated by subscription and with failures tolerated', async () => {
+  let calls = 0;
+  const start = Date.UTC(2026, 9, 25, 17);
+  const resolve = createSportsChannelResolver({ now: () => start,
+    readSettings: async () => ({}), getUpstream: async device => ({ username: device }),
+    loadEvents: async () => ({ events: [{ id: 'nfl', title: 'Houston Texans vs New York Giants', homeTeam: 'Houston Texans', awayTeam: 'New York Giants', startsAt: start, broadcasters: [] }] }),
+    loadCatalog: async () => ({ categories, streams: [stream(1, 'TSN 1 HD'), stream(2, 'ESPN'), stream(3, 'Adult sports', { category_id: '2' })] }),
+    loadEpg: async (account, id) => { calls++;
+      if (id !== '1') throw new Error('private upstream error');
+      return account.username === 'a' ? [{ title: 'Live NFL Football', description: Buffer.from('The Houston Texans host the New York Giants in NFL week 7.').toString('base64'), start_timestamp: start / 1000, stop_timestamp: start / 1000 + 10800 }] : [];
+    },
+  });
+  assert.deepEqual((await resolve('a', 'nfl')).channels, [{ stream_id: '1', category_id: '1', name: 'TSN 1 HD', broadcaster: 'Program guide match', match_type: 'epg' }]);
+  assert.equal(calls, 2);
+  await resolve('a', 'nfl'); assert.equal(calls, 2);
+  assert.deepEqual((await resolve('b', 'nfl')).channels, []); assert.equal(calls, 4);
+});
+test('exact TSN broadcaster matches avoid scanning EPG and never confuse channel numbers', async () => {
+  let scans = 0;
+  const resolve = createSportsChannelResolver({ readSettings: async () => ({}), getUpstream: async () => ({}),
+    loadEvents: async () => ({ events: [{ id: 'nfl', title: 'Houston Texans vs New York Giants', broadcasters: ['TSN 1'] }] }),
+    loadCatalog: async () => ({ categories, streams: [stream(1, 'TSN 1 HD'), stream(2, 'TSN 2 HD')] }),
+    loadEpg: async () => { scans++; return []; },
+  });
+  assert.deepEqual((await resolve('a', 'nfl')).channels.map(row => row.stream_id), ['1']);
+  assert.equal(scans, 0);
+});
+test('EPG scan is bounded and skips adult/radio streams even inside the candidate selection', async () => {
+  let active = 0, peak = 0, calls = 0;
+  const resolve = createSportsChannelResolver({ readSettings: async () => ({}), getUpstream: async () => ({}),
+    loadEvents: async () => ({ events: [{ id: 'event', title: 'Houston Texans vs New York Giants', startsAt: Date.now(), broadcasters: [] }] }),
+    loadCatalog: async () => ({ categories, streams: [stream(1001, 'TSN adult', { is_adult: 1 }), stream(1002, 'TSN radio', { category_id: '3' }),
+      ...Array.from({ length: 100 }, (_, i) => stream(i + 1, `Sports ${i}`))] }),
+    loadEpg: async (_upstream, id) => { assert.ok(Number(id) < 1000); calls++; active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setImmediate(resolve)); active--; return [];
+    },
+  });
+  assert.deepEqual((await resolve('a', 'event')).channels, []);
+  assert.equal(calls, 60); assert.equal(peak, 4);
 });
 test('missing subscriptions and failed upstream requests do not return stale channels', async () => {
   const base = { readSettings: async () => ({}), loadEvents: async () => ({ events: [{ id: 'event', broadcasters: ['ESPN'] }] }) };

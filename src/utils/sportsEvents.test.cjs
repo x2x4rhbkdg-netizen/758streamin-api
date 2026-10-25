@@ -14,11 +14,32 @@ test('normalizes bounded display metadata without exposing playback links or uns
 });
 test('live and upcoming schedule excludes completed, cancelled, postponed and stale events and sorts stably', () => {
   const data = normalizeSportsFeed(feed([event, { ...event, id: 'live', status: 'live', startsAt: now - HOUR },
-    { ...event, id: 'old-live', status: 'live', startsAt: now - 9 * HOUR }, { ...event, id: 'old', startsAt: now - HOUR },
+    { ...event, id: 'old-live', status: 'live', startsAt: now - 9 * HOUR }, { ...event, id: 'old', startsAt: now - 5 * HOUR },
     { ...event, id: 'far', startsAt: now + 8 * 24 * HOUR },
     ...['finished', 'postponed', 'cancelled'].map(status => ({ ...event, id: status, status }))]));
   assert.deepEqual(upcomingSports(data, now).events.map(value => value.id), ['live', '1']);
   assert.throws(() => upcomingSports({ ...data, updatedAt: now - 25 * HOUR }, now), { status: 503 });
+});
+test('retains the 13th broadcaster and recently started scheduled NFL fixtures among busy soccer listings', () => {
+  const nfl = { ...event, id: 'nfl', title: 'Houston Texans vs New York Giants', sport: 'American Football', league: 'NFL',
+    startsAt: now - 2 * HOUR, broadcasters: [...Array.from({ length: 12 }, (_, i) => ({ name: `Network ${i}` })), { name: 'TSN 1' }] };
+  const data = normalizeSportsFeed(feed([
+    ...Array.from({ length: 200 }, (_, i) => ({ ...event, id: `soccer-${i}`, sport: 'Soccer', startsAt: now - 3 * HOUR })), nfl,
+  ]));
+  const found = upcomingSports(data, now).events.find(row => row.id === 'nfl');
+  assert.ok(found); assert.equal(found.status, 'scheduled');
+  assert.ok(found.broadcasters.includes('TSN 1'));
+  const future = upcomingSports(normalizeSportsFeed(feed([...data.events.map(row => ({ ...row, startsAt: now + HOUR }))])), now);
+  assert.ok(future.events.some(row => row.id === 'nfl'));
+});
+test('keeps a full simultaneous NFL kickoff slate alongside other sports and upcoming fixtures', () => {
+  const events = ['Soccer', 'Basketball', 'Ice Hockey', 'Volleyball', 'Handball', 'American Football'].flatMap(sport =>
+    Array.from({ length: sport === 'American Football' ? 7 : 40 }, (_, i) => ({ ...event, sport, id: `${sport}-${i}`, startsAt: now - 2 * HOUR })));
+  events.push(...Array.from({ length: 50 }, (_, i) => ({ ...event, id: `next-${i}` })));
+  const result = upcomingSports(normalizeSportsFeed(feed(events)), now);
+  assert.equal(result.events.length, 100);
+  assert.equal(result.events.filter(row => row.sport === 'American Football').length, 7);
+  assert.ok(result.events.filter(row => row.startsAt >= now).length >= 25);
 });
 test('coalesces downloads and caches for five minutes, with bounded stale fallback and backoff', async () => {
   let time = now, calls = 0, failed = false;

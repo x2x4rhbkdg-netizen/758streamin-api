@@ -16,19 +16,41 @@ function normalizeSportsFeed(data) {
     return [{ id, title, sport, startsAt: event.startsAt, league: text(event.league, 100), status: text(event.status, 40).toLowerCase(),
       homeTeam: text(event.homeTeam, 100), awayTeam: text(event.awayTeam, 100), homeBadge: image(event.homeBadge), awayBadge: image(event.awayBadge),
       homeScore: score(event.homeScore), awayScore: score(event.awayScore),
-      broadcasters: [...new Set((Array.isArray(event.broadcasters) ? event.broadcasters : []).slice(0, 30).map(value => text(value?.name, 80)).filter(Boolean))].slice(0, 12) }];
+      broadcasters: [...new Set((Array.isArray(event.broadcasters) ? event.broadcasters : []).slice(0, 100).map(value => text(typeof value === 'string' ? value : value?.name, 100)).filter(Boolean))] }];
   });
   return { events, updatedAt: data.updatedAt, partial: data.partial === true, attribution: text(data.attribution, 100) };
+}
+function diverseEvents(events, limit) {
+  const groups = new Map();
+  for (const event of events) {
+    const key = event.sport.toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(event);
+  }
+  const result = [];
+  for (let index = 0; result.length < limit; index++) {
+    let added = false;
+    for (const group of groups.values()) {
+      if (group[index] && result.length < limit) { result.push(group[index]); added = true; }
+    }
+    if (!added) break;
+  }
+  return result;
 }
 function upcomingSports(feed, now = Date.now()) {
   if (feed.updatedAt > now + HOUR || now - feed.updatedAt > 24 * HOUR) throw unavailable();
   const eligible = feed.events.filter(event => {
     if (['finished', 'postponed', 'cancelled', 'canceled'].includes(event.status)) return false;
     return event.status === 'live' ? event.startsAt >= now - 8 * HOUR && event.startsAt <= now + HOUR
-      : event.startsAt >= now && event.startsAt <= now + 7 * 24 * HOUR;
+      : event.startsAt >= now - 4 * HOUR && event.startsAt <= now + 7 * 24 * HOUR;
   }).sort((a, b) => a.startsAt - b.startsAt || a.id.localeCompare(b.id));
-  const live = eligible.filter(event => event.status === 'live').slice(0, 25);
-  return { ...feed, events: [...live, ...eligible.filter(event => event.status !== 'live').slice(0, 100 - live.length)] };
+  const live = diverseEvents(eligible.filter(event => event.status === 'live'), 25);
+  // Providers sometimes leave games marked scheduled after kickoff. Keep them visible
+  // without falsely declaring them live, and reserve space for upcoming fixtures.
+  const future = eligible.filter(event => event.status !== 'live' && event.startsAt >= now);
+  const started = diverseEvents(eligible.filter(event => event.status !== 'live' && event.startsAt < now), 100 - live.length - Math.min(25, future.length));
+  const upcoming = diverseEvents(future, 100 - live.length - started.length);
+  return { ...feed, events: [...live, ...started, ...upcoming] };
 }
 function createSportsEvents({ fetchImpl = globalThis.fetch, now = Date.now, url = process.env.SPORTS_EVENTS_URL || DEFAULT_URL } = {}) {
   let cache, fetchedAt = 0, pending, retryAt = 0;
