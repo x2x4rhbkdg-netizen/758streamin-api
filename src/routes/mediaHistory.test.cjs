@@ -34,6 +34,11 @@ function fixture() {
   return { invoke, owners, records, settings };
 }
 const entry = { id: '10', type: 'series', title: 'Fixture', season: 1, episode: 2, position: 60, duration: 1800, updatedAt: 100 };
+test('anime history round trips only supported language preferences', () => {
+  for (const sourceLanguage of ['dub', 'all']) assert.equal(normalizeHistory({ ...entry, section: 'anime', sourceLanguage }).entry.sourceLanguage, sourceLanguage);
+  assert.equal(normalizeHistory({ ...entry, sourceLanguage: 'dub' }).entry.sourceLanguage, undefined);
+  assert.equal(normalizeHistory({ ...entry, section: 'anime', sourceLanguage: 'invalid' }).entry.sourceLanguage, undefined);
+});
 
 test('same WHMCS account restores progress on another device and excludes other accounts', async () => {
   const f = fixture();

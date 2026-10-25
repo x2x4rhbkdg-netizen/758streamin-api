@@ -16,6 +16,7 @@ function normalizeHistory(input, now = Date.now()) {
     typeof input.title !== 'string' || !input.title.trim() || input.title.length > 500) throw fail('Invalid history entry');
   const entry = { id: input.id, type: input.type, title: input.title, ...normalizeProgress(input, now) };
   if (section === 'anime') entry.section = 'anime';
+  if (section === 'anime' && ['dub', 'all'].includes(input.sourceLanguage)) entry.sourceLanguage = input.sourceLanguage;
   if (input.type === 'series') {
     if (!Number.isInteger(input.season) || input.season < 0 || input.season > 10000 ||
       !Number.isInteger(input.episode) || input.episode < 0 || input.episode > 100000) throw fail('Invalid history episode');

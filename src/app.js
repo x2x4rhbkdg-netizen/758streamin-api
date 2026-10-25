@@ -96,6 +96,7 @@ app.use("/v1", epgRoutes);
 app.use("/v1", appUpdateRoutes);
 app.use("/v1", notificationsRoutes);
 app.use("/v1", homeAdsRoutes);
+app.use("/v1", require("./routes/sportsEvents.routes.cjs"));
 app.use("/v1/admin", adminRoutes);
 app.use("/v1/admin", require("./routes/admin.serviceUrls.routes.cjs").createServiceUrlsRouter({
   db: require("./db/pool.cjs").pool, authenticate: require("./middleware/adminAuth.cjs").adminAuth,
