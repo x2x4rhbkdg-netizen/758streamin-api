@@ -78,7 +78,8 @@ function item(media) {
   return { id: `anilist:${media.id}`, anilist_id: media.id, type: media.format === 'MOVIE' ? 'movie' : 'series',
     section: 'anime', metadata_provider: 'anilist', title: String(media.title?.english || media.title?.romaji || media.title?.native || '').slice(0, 200),
     original_title: String(media.title?.romaji || media.title?.english || '').slice(0, 200),
-    year: String(media.startDate?.year || ''), overview: String(media.description || '').replace(/<br\s*\/?\s*>|<\/p>/gi, '\n\n').replace(/<[^>]*>/g, '').slice(0, 10000),
+    year: String(media.startDate?.year || ''), overview: String(media.description || '').replace(/<br\s*\/?\s*>|<\/p>/gi, '\n\n').replace(/<[^>]*>/g, '')
+      .replace(/\r\n?/g, '\n').replace(/[\t \u00a0]*\n[\t \u00a0]*/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 10000),
     native_title: String(media.title?.native || '').slice(0, 200), genres: Array.isArray(media.genres) ? media.genres.filter(value => typeof value === 'string') : [],
     popularity: Number(media.popularity) || null, favourites: Number(media.favourites) || null,
     anime_season: [media.season, media.seasonYear].filter(Boolean).join(' '), start_date: media.startDate, end_date: media.endDate,

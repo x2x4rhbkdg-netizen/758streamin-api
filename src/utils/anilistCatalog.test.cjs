@@ -38,13 +38,13 @@ test('poster and overview metadata retain episode counts, native titles and syno
     assert.match(query, /genres popularity favourites/);
     return { Page: { media: [{ ...media, title: { ...media.title, native: 'Native title' }, episodes: 25,
       season: 'SPRING', seasonYear: 2013, genres: ['Action'], popularity: 1000, favourites: 200,
-      description: 'First paragraph.<br><br>Second paragraph.' }], pageInfo: {} } };
+      description: '<p>First paragraph.</p>\r\n<br><br> \n <p>Second paragraph.</p>' }], pageInfo: {} } };
   } });
   const value = result.items[0];
   assert.equal(value.episode_count, 25); assert.equal(value.native_title, 'Native title');
   assert.equal(value.anime_season, 'SPRING 2013'); assert.deepEqual(value.genres, ['Action']);
   assert.equal(value.popularity, 1000); assert.equal(value.favourites, 200);
-  assert.match(value.overview, /First paragraph\.\n+Second paragraph\./);
+  assert.equal(value.overview, 'First paragraph.\n\nSecond paragraph.');
 });
 
 test('Latest Episodes uses aired schedules, preserves episode labels and deduplicates titles', async () => {
