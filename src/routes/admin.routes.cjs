@@ -1054,7 +1054,7 @@ router.patch("/admins/:id", adminAuth, async (req, res) => {
 
 /** =========================================
  *  GET /v1/admin/devices?search=
- *  - Lists recent devices + access info
+ *  - Lists devices + access info
  *  - Search is case-insensitive regardless of collation
  *  ========================================= */
 router.get("/devices", adminAuth, async (req, res) => {
@@ -1121,7 +1121,6 @@ router.get("/devices", adminAuth, async (req, res) => {
       LEFT JOIN device_code_transfers t ON t.retained_device_id = d.id
       ${where}
       ORDER BY d.created_at DESC
-      LIMIT 200
       `,
       params
     );
