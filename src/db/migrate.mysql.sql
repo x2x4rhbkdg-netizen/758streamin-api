@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS devices (
 
 CREATE TABLE IF NOT EXISTS device_access (
   device_id   BIGINT UNSIGNED NOT NULL,
+  activation_mode VARCHAR(20) NOT NULL DEFAULT 'provider',
   expires_at  DATETIME NULL,
   max_streams INT NOT NULL DEFAULT 1,
   notes       TEXT NULL,

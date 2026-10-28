@@ -25,7 +25,7 @@ async function authJwt(req, res, next) {
     }
 
     const [rows] = await pool.execute(
-      `SELECT d.status, d.platform, d.device_code, a.expires_at, a.max_streams
+      `SELECT d.status, d.platform, d.device_code, a.expires_at, a.max_streams, a.activation_mode
        FROM devices d
        LEFT JOIN device_access a ON a.device_id = d.id
        WHERE d.id=?
@@ -47,6 +47,16 @@ async function authJwt(req, res, next) {
       }
     }
 
+    const playlistOnly = payload.playlist_only === true || dev.activation_mode === 'playlist';
+    const requestPath = req.originalUrl ? req.originalUrl.split('?')[0].replace(/^\/v1(?=\/)/, '') : req.path;
+    if (playlistOnly && ![
+      '/device/profile', '/device/heartbeat', '/device/movie-settings', '/device/adult/status',
+      '/device/adult/set', '/device/adult/verify', '/device/adult/reset',
+      '/notifications', '/home-ads', '/live/favorites',
+    ].includes(requestPath)) {
+      return res.status(403).json({ error: 'This activation supports your own playlist only' });
+    }
+
     pool.execute(
       `UPDATE devices
        SET last_seen_at=NOW()
@@ -64,6 +74,7 @@ async function authJwt(req, res, next) {
     req.device = {
       ...payload,
       platform: dev.platform || payload.platform || "",
+      playlist_only: playlistOnly,
       max_streams: Number(dev.max_streams || payload.max_streams || 1),
     };
     return next();

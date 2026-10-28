@@ -20,6 +20,8 @@ const router = Router();
 router.get('/device/movie-settings', authJwt, async (req, res) => {
   try {
     res.set('Cache-Control', 'no-store');
+    if (req.device.playlist_only) return res.json({ live_tv_enabled: true, radio_enabled: false,
+      enabled: false, anime_enabled: false, adult_enabled: false, sports_enabled: false });
     return res.json(publicSettings(await readMovieSettings(req.device.device_id)));
   } catch (error) { return sendInternalError(req, res, 'device/movie-settings', error); }
 });
@@ -581,7 +583,8 @@ router.post("/device/auth", async (req, res) => {
          d.whmcs_account_number,
          d.whmcs_service_id,
          a.expires_at,
-         a.max_streams
+         a.max_streams,
+         a.activation_mode
        FROM devices d
        LEFT JOIN device_access a ON a.device_id = d.id
        WHERE d.device_code=?
@@ -669,6 +672,7 @@ router.post("/device/auth", async (req, res) => {
         device_id: dev.id,
         device_code,
         max_streams: Number(dev.max_streams || 1),
+        ...(dev.activation_mode === 'playlist' ? { playlist_only: true } : {}),
       },
       env.JWT_SECRET,
       { expiresIn: "12h" }
@@ -676,12 +680,51 @@ router.post("/device/auth", async (req, res) => {
 
     return res.json({
       access_token: token,
+      activation_mode: dev.activation_mode === 'playlist' ? 'playlist' : 'provider',
       max_streams: Number(dev.max_streams || 1),
       expires_at: dev.expires_at || null,
     });
   } catch (err) {
     return sendInternalError(req, res, "device/auth", err);
   }
+});
+
+// Playlist URLs and their credentials stay on the user's device. This endpoint never fetches a supplied URL.
+router.post('/device/activate-playlist', async (req, res) => {
+  const uuid = normStr(req.body?.device_uuid, 64);
+  const code = normStr(req.body?.device_code, 32).toUpperCase();
+  if (!isUuidLike(uuid) || !code) return res.status(400).json({ error: 'device_uuid + device_code required' });
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const [rows] = await connection.execute(`SELECT d.id, d.device_uuid, d.device_code, d.status,
+      d.trial_expires_at, a.expires_at, a.activation_mode
+      FROM devices d LEFT JOIN device_access a ON a.device_id=d.id
+      WHERE d.device_code=? FOR UPDATE`, [code]);
+    const device = rows[0];
+    if (!device || device.device_uuid !== uuid) {
+      await connection.rollback();
+      return res.status(401).json({ error: 'Device registration does not match' });
+    }
+    if (!['pending', 'active'].includes(device.status) || [device.expires_at, device.trial_expires_at]
+      .some(value => value && new Date(value).getTime() <= Date.now())) {
+      await connection.rollback();
+      return res.status(403).json({ error: 'Device is suspended or expired' });
+    }
+    const mode = device.status === 'active' && device.activation_mode !== 'playlist' ? 'provider' : 'playlist';
+    await connection.execute(`INSERT INTO device_access (device_id, activation_mode, updated_at)
+      VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE activation_mode=VALUES(activation_mode), updated_at=NOW()`, [device.id, mode]);
+    await connection.execute(`UPDATE devices SET status='active', last_seen_at=NOW(), updated_at=NOW() WHERE id=?`, [device.id]);
+    await connection.commit();
+    const access_token = jwt.sign({ device_id: device.id, device_code: device.device_code, max_streams: 1, playlist_only: true },
+      env.JWT_SECRET, { expiresIn: '12h' });
+    res.set('Cache-Control', 'no-store');
+    return res.json({ access_token, device_code: device.device_code, status: 'active', activation_mode: 'playlist' });
+  } catch (error) {
+    if (connection) await connection.rollback().catch(() => {});
+    return sendInternalError(req, res, 'device/activate-playlist', error);
+  } finally { connection?.release(); }
 });
 
 /** =========================================
@@ -868,6 +911,7 @@ router.get("/device/profile", authJwt, async (req, res) => {
         : null;
     return res.json({
       status: trialState.status,
+      activation_mode: req.device.playlist_only ? 'playlist' : 'provider',
       device_code: device.device_code || req.device.device_code || null,
       customer_name: device.customer_name || null,
       plan_name: device.plan_name || null,

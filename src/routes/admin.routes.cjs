@@ -1769,6 +1769,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
             encryptString(whmcsUpstream.password),
           ]
         );
+        await pool.execute(`UPDATE device_access SET activation_mode='provider', updated_at=NOW() WHERE device_id=?`, [dev.id]);
       }
     }
 
@@ -2062,6 +2063,8 @@ router.post("/devices/:code/upstream", adminAuth, async (req, res) => {
       `,
       [dev.id, base, encU, encP]
     );
+
+    await pool.execute(`UPDATE device_access SET activation_mode='provider', updated_at=NOW() WHERE device_id=?`, [dev.id]);
 
     return res.json({ ok: true });
   } catch (err) {
