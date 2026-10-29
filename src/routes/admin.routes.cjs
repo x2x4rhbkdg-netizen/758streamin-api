@@ -1724,6 +1724,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         whmcs_account_number=?,
         whmcs_billing_status=?,
         whmcs_next_due_date=?,
+        status=CASE WHEN LOWER(TRIM(?))='active' THEN 'active' ELSE status END,
         whmcs_last_sync_at=NOW(),
         updated_at=NOW()
       WHERE id=?
@@ -1737,6 +1738,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         whmcsAccountNumber,
         service.status,
         service.next_due_date,
+        service.status,
         dev.id,
       ]
     );

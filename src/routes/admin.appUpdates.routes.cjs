@@ -63,6 +63,16 @@ function validHttpUrl(v) {
   }
 }
 
+async function resolveTargetDevice(code) {
+  if (code == null || code === '') return 0;
+  if (typeof code !== 'string' || !/^[a-z0-9_-]{1,32}$/i.test(code.trim())) {
+    throw Object.assign(new Error('invalid target_device_code'), { status: 400 });
+  }
+  const [rows] = await pool.execute('SELECT id FROM devices WHERE device_code=? LIMIT 1', [code.trim().toUpperCase()]);
+  if (!rows[0]) throw Object.assign(new Error('target device not found'), { status: 404 });
+  return rows[0].id;
+}
+
 router.get("/app-updates", adminAuth, async (req, res) => {
   try {
     const channel = Object.prototype.hasOwnProperty.call(req.query, "channel")
@@ -78,6 +88,7 @@ router.get("/app-updates", adminAuth, async (req, res) => {
 
     const where = [];
     const params = [];
+    if (req.admin?.role !== 'super_admin') where.push('au.target_device_id=0');
     if (channel) {
       where.push("au.channel=?");
       params.push(channel);
@@ -99,6 +110,8 @@ router.get("/app-updates", adminAuth, async (req, res) => {
         au.id,
         au.channel,
         au.platform,
+        au.target_device_id,
+        d.device_code AS target_device_code,
         au.version_code,
         au.version_name,
         au.apk_url,
@@ -112,6 +125,7 @@ router.get("/app-updates", adminAuth, async (req, res) => {
         au.updated_at
       FROM app_updates au
       LEFT JOIN admins a ON a.id = au.created_by_admin_id
+      LEFT JOIN devices d ON d.id = au.target_device_id
       ${whereSql}
       ORDER BY au.updated_at DESC, au.id DESC
       LIMIT ${limit}
@@ -159,13 +173,14 @@ router.post("/app-updates", adminAuth, async (req, res) => {
       return res.status(400).json({ error: "sha256 must be 64 hex chars" });
     }
     if (!status) return res.status(400).json({ error: "invalid status" });
+    const targetDeviceId = await resolveTargetDevice(req.body?.target_device_code);
 
     const [result] = await pool.execute(
       `
       INSERT INTO app_updates
-        (channel, platform, version_code, version_name, apk_url, sha256, force_update, status, notes, created_by_admin_id, created_at, updated_at)
+        (channel, platform, version_code, version_name, apk_url, sha256, force_update, status, notes, created_by_admin_id, target_device_id, created_at, updated_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `,
       [
         channel,
@@ -178,6 +193,7 @@ router.post("/app-updates", adminAuth, async (req, res) => {
         status,
         notes,
         req.admin?.id || null,
+        targetDeviceId,
       ]
     );
 
@@ -188,8 +204,9 @@ router.post("/app-updates", adminAuth, async (req, res) => {
 
     return res.status(201).json({ ok: true, update: rows[0] || null });
   } catch (err) {
+    if (err?.status === 400 || err?.status === 404) return res.status(err.status).json({ error: err.message });
     if (err?.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({ error: "version already exists for channel/platform" });
+      return res.status(409).json({ error: "version already exists for this channel, platform and recipient" });
     }
     if (isSchemaMismatch(err)) {
       return res.status(500).json({
@@ -214,6 +231,10 @@ router.patch("/app-updates/:id", adminAuth, async (req, res) => {
     const params = [];
     const requestedForceUpdateChange =
       typeof req.body?.force_update !== "undefined" || typeof req.body?.force !== "undefined";
+    if (Object.hasOwn(req.body || {}, 'target_device_code')) {
+      updates.push('target_device_id=?');
+      params.push(await resolveTargetDevice(req.body.target_device_code));
+    }
 
     if (typeof req.body?.channel !== "undefined") {
       const channel = normChannel(req.body?.channel);
@@ -300,8 +321,9 @@ router.patch("/app-updates/:id", adminAuth, async (req, res) => {
 
     return res.json({ ok: true, update: rows[0] || null });
   } catch (err) {
+    if (err?.status === 400 || err?.status === 404) return res.status(err.status).json({ error: err.message });
     if (err?.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({ error: "version already exists for channel/platform" });
+      return res.status(409).json({ error: "version already exists for this channel, platform and recipient" });
     }
     if (isSchemaMismatch(err)) {
       return res.status(500).json({

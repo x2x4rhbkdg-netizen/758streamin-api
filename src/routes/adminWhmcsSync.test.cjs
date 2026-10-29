@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-function fixture({ owner = 2, status = 'active', claimRows = 1, serviceFound = true } = {}) {
+function fixture({ owner = 2, status = 'active', claimRows = 1, serviceFound = true, billingStatus = 'Active' } = {}) {
   const source = fs.readFileSync(path.join(__dirname, 'admin.routes.cjs'), 'utf8');
   const start = source.indexOf('router.post("/devices/:code/whmcs-sync",');
   const end = source.indexOf('\n/**', start);
@@ -19,9 +19,12 @@ function fixture({ owner = 2, status = 'active', claimRows = 1, serviceFound = t
         return [{ affectedRows: claimRows }];
       }
       if (sql.trim().startsWith('SELECT')) return [[device]];
+      if (sql.includes("status=CASE WHEN LOWER(TRIM(?))='active'")) {
+        if (String(params.at(-2)).trim().toLowerCase() === 'active') device.status = 'active';
+      }
       return [{ affectedRows: 1 }];
     } },
-    fetchWhmcsServiceById: async id => { fetched.push(id); return serviceFound ? { raw: { productname: 'Premium no XXX' }, service_id: id, client_id: 50, status: 'Active', next_due_date: '2026-11-01' } : null; },
+    fetchWhmcsServiceById: async id => { fetched.push(id); return serviceFound ? { raw: { productname: 'Premium no XXX' }, service_id: id, client_id: 50, status: billingStatus, next_due_date: '2026-11-01' } : null; },
     extractWhmcsPlanName: raw => raw.productname,
     syncWhmcsPlanAccess: async (...args) => access.push(args),
     extractWhmcsUpstreamCredentials: () => null,
@@ -40,6 +43,19 @@ test('resellers can sync their own device and retain plan access updates', async
   assert.equal(result.code, 200); assert.deepEqual(fetched, [1965]);
   assert.equal(result.body.whmcs.service_id, 1965);
   assert.deepEqual(access.map(value => Array.from(value)), [[10, 'Premium no XXX']]);
+});
+test('Active WHMCS billing activates suspended/pending devices; other billing statuses leave status unchanged', async () => {
+  for (const status of ['pending', 'suspended']) {
+    for (const billingStatus of ['Active', 'active', ' ACTIVE ']) {
+      const { sync } = fixture({ status, billingStatus });
+      const res = await sync();
+      assert.equal(res.code, 200); assert.equal(res.body.device.status, 'active');
+    }
+  }
+  for (const billingStatus of ['Suspended', 'Cancelled', 'Terminated', 'Pending', '']) {
+    const { sync } = fixture({ status: 'suspended', billingStatus });
+    assert.equal((await sync()).body.device.status, 'suspended');
+  }
 });
 test('other reseller devices and unassigned active devices are denied before contacting WHMCS', async () => {
   for (const owner of [3, null]) {

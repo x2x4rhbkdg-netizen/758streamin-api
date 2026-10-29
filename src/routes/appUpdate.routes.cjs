@@ -33,6 +33,14 @@ async function handleCheck(req, res) {
     const channel = normChannel(req.body?.channel);
     const platform = normPlatform(req.body?.platform);
     const currentVersionCode = toInt(req.body?.version_code);
+    const deviceUuid = normStr(req.body?.device_uuid, 64);
+    const deviceCode = normStr(req.body?.device_code, 32).toUpperCase();
+    let targetDeviceId = 0;
+    if (deviceUuid) {
+      const [devices] = await pool.execute(`SELECT id FROM devices WHERE device_uuid=?${deviceCode ? ' AND device_code=?' : ''} LIMIT 1`,
+        deviceCode ? [deviceUuid, deviceCode] : [deviceUuid]);
+      targetDeviceId = devices[0]?.id || 0;
+    }
 
     const params = [channel];
     let where = `WHERE status='active' AND channel=?`;
@@ -40,6 +48,8 @@ async function handleCheck(req, res) {
       where += ` AND (platform=? OR platform='all')`;
       params.push(platform);
     }
+    where += ' AND (target_device_id=0 OR target_device_id=?)';
+    params.push(targetDeviceId);
 
     const [rows] = await pool.execute(
       `
@@ -56,7 +66,7 @@ async function handleCheck(req, res) {
         updated_at
       FROM app_updates
       ${where}
-      ORDER BY version_code DESC, updated_at DESC
+      ORDER BY version_code DESC, (target_device_id<>0) DESC, updated_at DESC
       LIMIT 1
       `,
       params
