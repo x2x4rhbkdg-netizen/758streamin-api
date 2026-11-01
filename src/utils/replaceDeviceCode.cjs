@@ -8,8 +8,7 @@ function normalizeDeviceCode(value) {
   return value.trim().toUpperCase();
 }
 function canEditDevice(admin, device) {
-  return admin?.role === 'super_admin' || (admin?.role === 'reseller' && admin.id != null &&
-    device.reseller_admin_id != null && String(admin.id) === String(device.reseller_admin_id));
+  return admin?.role === 'super_admin' || (admin?.role === 'reseller' && admin.id != null);
 }
 async function assertUnusedPending(connection, target, source) {
   if (target.status !== 'pending' || (target.reseller_admin_id != null && String(target.reseller_admin_id) !== String(source.reseller_admin_id)) ||

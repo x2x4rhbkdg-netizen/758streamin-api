@@ -79,9 +79,11 @@ test('unused code renames only the existing record; unchanged code is a no-op', 
   const same = fixture(); await same.change('old123');
   assert.equal(same.calls.some(call => call.sql.startsWith('UPDATE')), false);
 });
-test('resellers cannot change another account; super admins may change it', async () => {
-  const f = fixture(); await assert.rejects(f.change('NEW456', { id: 3, role: 'reseller' }), { status: 403 });
-  assert.equal(f.calls.some(call => call.sql.startsWith('UPDATE')), false); assert.equal(f.released, true);
+test('resellers can transfer another account without changing its reseller; other roles remain denied', async () => {
+  const f = fixture(); await f.change('NEW456', { id: 3, role: 'reseller' });
+  assert.equal(f.devices.get(1).reseller_admin_id, 2);
+  const blocked = fixture(); await assert.rejects(blocked.change('NEW456', { id: 3, role: 'admin' }), { status: 403 });
+  assert.equal(blocked.calls.some(call => call.sql.startsWith('UPDATE')), false);
   await fixture().change('NEW456', { id: 1, role: 'super_admin' });
 });
 test('configured or differently owned target devices are rejected without writes', async () => {

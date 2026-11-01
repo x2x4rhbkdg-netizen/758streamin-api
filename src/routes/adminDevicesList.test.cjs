@@ -46,9 +46,9 @@ test('super admin receives devices beyond the former 200-device cap', async () =
   assert.doesNotMatch(calls[0].sql, /d\.reseller_admin_id\s*=\s*\?/);
 });
 
-test('reseller device listing remains scoped to its own devices', async () => {
+test('resellers receive all devices for cross-reseller customer support', async () => {
   const { calls, list } = fixture();
   await list({ id: 7, role: 'reseller' });
-  assert.match(calls[0].sql, /d\.reseller_admin_id\s*=\s*\?/);
-  assert.deepEqual(Array.from(calls[0].params), [8, 7]);
+  assert.doesNotMatch(calls[0].sql, /d\.reseller_admin_id\s*=\s*\?/);
+  assert.deepEqual(Array.from(calls[0].params), [8]);
 });

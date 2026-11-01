@@ -57,11 +57,12 @@ test('Active WHMCS billing activates suspended/pending devices; other billing st
     assert.equal((await sync()).body.device.status, 'suspended');
   }
 });
-test('other reseller devices and unassigned active devices are denied before contacting WHMCS', async () => {
+test('resellers can sync other owners and unassigned active devices without changing ownership', async () => {
   for (const owner of [3, null]) {
     const { sync, fetched, queries } = fixture({ owner });
-    assert.equal((await sync({ whmcs_service_id: 1965, reseller_admin_id: 2 })).code, 403);
-    assert.deepEqual(fetched, []); assert.equal(queries.some(value => value.sql.startsWith('UPDATE')), false);
+    assert.equal((await sync({ whmcs_service_id: 1965, reseller_admin_id: 2 })).code, 200);
+    assert.deepEqual(fetched, [1965]);
+    assert.equal(queries.some(value => value.sql.startsWith('UPDATE devices SET reseller_admin_id')), false);
   }
 });
 test('pending devices are atomically assigned to the syncing reseller', async () => {

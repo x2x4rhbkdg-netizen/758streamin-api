@@ -45,10 +45,11 @@ test('oversized and non-text notes are rejected before writes', async () => {
     const { patch, calls } = fixture(); assert.equal((await patch({ notes })).code, 400); assert.equal(calls.length, 0);
   }
 });
-test('notes obey existing device ownership and super admin permissions', async () => {
-  const blocked = fixture(3);
-  assert.equal((await blocked.patch({ notes: 'No access' })).code, 403);
-  assert.equal(blocked.calls.some(value => value.sql.includes('INSERT')), false);
+test('resellers can support other owners while regular admins retain ownership checks', async () => {
+  const support = fixture(3);
+  assert.equal((await support.patch({ notes: 'Support note' })).code, 200);
+  assert.equal(support.calls.some(value => value.sql.includes('INSERT')), true);
+  assert.equal((await fixture(3).patch({ notes: 'No access' }, { id: 2, role: 'admin' })).code, 403);
   const admin = fixture(3);
   assert.equal((await admin.patch({ notes: 'Admin note' }, { id: 1, role: 'super_admin' })).code, 200);
 });

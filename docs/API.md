@@ -386,7 +386,11 @@ Errors:
 - 404: `admin not found`
 - 409: `admin already exists`
 ### GET /v1/admin/devices?search=
-Lists up to 200 recent devices, with optional search.
+Lists devices, newest first, with optional search. Resellers can list and support
+all devices, regardless of reseller assignment. Per-device editing, activation,
+suspension, service credentials, WHMCS sync, parental PIN and content settings
+are available across owners. Supporting an assigned device does not reassign it;
+reseller reassignment and existing super-admin-only fields remain restricted.
 
 Headers:
 - `x-admin-key: <ADMIN_API_KEY>`
@@ -489,6 +493,9 @@ Errors:
 
 ### DELETE /v1/admin/devices/:code
 Deletes a device (and its access/upstream/analytics records).
+Resellers are forbidden from deleting any device, including their own (HTTP 403).
+Super admins and the existing owner-scoped regular-admin deletion permission
+are unchanged. Bulk deletion uses this same guarded endpoint for each device.
 
 Headers:
 - `x-admin-key: <ADMIN_API_KEY>`

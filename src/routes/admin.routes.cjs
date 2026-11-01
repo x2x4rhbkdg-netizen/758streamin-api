@@ -89,7 +89,7 @@ router.route('/devices/:code/movie-settings').all(adminAuth, async (req, res, ne
     const [rows] = await pool.execute('SELECT id, reseller_admin_id FROM devices WHERE device_code=? LIMIT 1', [String(req.params.code || '').trim()]);
     const device = rows[0];
     if (!device) return res.status(404).json({ error: 'Device not found' });
-    if (req.admin?.role !== 'super_admin' && String(device.reseller_admin_id) !== String(req.admin.id)) return res.status(403).json({ error: 'Forbidden' });
+    if (req.admin?.role !== 'super_admin' && req.admin?.role !== 'reseller' && String(device.reseller_admin_id) !== String(req.admin.id)) return res.status(403).json({ error: 'Forbidden' });
     req.movieDeviceId = device.id;
     next();
   } catch (error) { return sendInternalError(req, res, 'admin/movie-settings/access', error); }
@@ -1074,7 +1074,7 @@ router.get("/devices", adminAuth, async (req, res) => {
       params.push(s, s, s, s);
     }
 
-    if (req.admin?.role !== "super_admin") {
+    if (req.admin?.role !== "super_admin" && req.admin?.role !== "reseller") {
       whereParts.push(
         "(d.reseller_admin_id=? OR (d.reseller_admin_id IS NULL AND LOWER(COALESCE(d.status,''))='pending'))"
       );
@@ -1447,6 +1447,7 @@ router.patch("/devices/:code", adminAuth, async (req, res) => {
 
     if (
       req.admin?.role !== "super_admin" &&
+      req.admin?.role !== "reseller" &&
       dev.reseller_admin_id !== req.admin.id &&
       !canAutoAssignToReseller
     ) {
@@ -1683,9 +1684,6 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
     const canClaim = isReseller && !dev.reseller_admin_id && String(dev.status || '').toLowerCase() === 'pending';
-    if (!isSuperAdmin && Number(dev.reseller_admin_id) !== req.admin.id && !canClaim) {
-      return res.status(403).json({ error: "forbidden" });
-    }
 
     const serviceIdInput = req.body?.whmcs_service_id;
     if (serviceIdInput != null && serviceIdInput !== '' && !['string', 'number'].includes(typeof serviceIdInput)) {
@@ -1904,7 +1902,7 @@ router.post("/devices/:code/activate", adminAuth, async (req, res) => {
 
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
-    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+    if (req.admin?.role !== "super_admin" && req.admin?.role !== "reseller" && dev.reseller_admin_id !== req.admin.id) {
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -1950,7 +1948,7 @@ router.post("/devices/:code/suspend", adminAuth, async (req, res) => {
 
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
-    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+    if (req.admin?.role !== "super_admin" && req.admin?.role !== "reseller" && dev.reseller_admin_id !== req.admin.id) {
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -1986,7 +1984,7 @@ router.get("/devices/:code/upstream", adminAuth, async (req, res) => {
 
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
-    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+    if (req.admin?.role !== "super_admin" && req.admin?.role !== "reseller" && dev.reseller_admin_id !== req.admin.id) {
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -2046,7 +2044,7 @@ router.post("/devices/:code/upstream", adminAuth, async (req, res) => {
 
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
-    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+    if (req.admin?.role !== "super_admin" && req.admin?.role !== "reseller" && dev.reseller_admin_id !== req.admin.id) {
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -2090,7 +2088,7 @@ router.get("/devices/:code/parental", adminAuth, async (req, res) => {
 
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
-    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+    if (req.admin?.role !== "super_admin" && req.admin?.role !== "reseller" && dev.reseller_admin_id !== req.admin.id) {
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -2125,7 +2123,7 @@ router.put("/devices/:code/parental", adminAuth, async (req, res) => {
 
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
-    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+    if (req.admin?.role !== "super_admin" && req.admin?.role !== "reseller" && dev.reseller_admin_id !== req.admin.id) {
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -2164,7 +2162,7 @@ router.delete("/devices/:code/parental", adminAuth, async (req, res) => {
 
     const dev = devRows[0];
     if (!dev) return res.status(404).json({ error: "device not found" });
-    if (req.admin?.role !== "super_admin" && dev.reseller_admin_id !== req.admin.id) {
+    if (req.admin?.role !== "super_admin" && req.admin?.role !== "reseller" && dev.reseller_admin_id !== req.admin.id) {
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -2185,6 +2183,7 @@ router.delete("/devices/:code/parental", adminAuth, async (req, res) => {
  *  ========================================= */
 router.delete("/devices/:code", adminAuth, async (req, res) => {
   try {
+    if (req.admin?.role === "reseller") return res.status(403).json({ error: "Resellers cannot delete devices" });
     const code = String(req.params.code || "").trim();
     if (!code) return res.status(400).json({ error: "device code required" });
 

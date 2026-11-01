@@ -40,11 +40,11 @@ test('reseller edits do not grant access to WHMCS client, billing, dates or assi
   assert.deepEqual(Array.from(update.params), [1965, 10]);
   assert.equal((await fixture().patch({ whmcs_client_id: 999 })).code, 400);
 });
-test('resellers cannot edit another reseller device or an unassigned active device', async () => {
+test('resellers can edit another reseller device or an unassigned active device without taking ownership', async () => {
   for (const reseller_admin_id of [3, null]) {
     const { calls, patch } = fixture({ id: 10, reseller_admin_id, status: 'active' });
-    assert.equal((await patch({ whmcs_service_id: 1965 })).code, 403);
-    assert.equal(calls.some(call => call.sql.startsWith('UPDATE')), false);
+    assert.equal((await patch({ whmcs_service_id: 1965 })).code, 200);
+    assert.doesNotMatch(calls.find(call => call.sql.startsWith('UPDATE')).sql, /reseller_admin_id=/);
   }
 });
 test('pending unassigned devices retain existing reseller auto-assignment when saving a service ID', async () => {
