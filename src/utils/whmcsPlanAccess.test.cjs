@@ -15,7 +15,7 @@ test('no XXX takes precedence even when another XXX marker exists', () => {
   }
 });
 
-test('Premium plans from WHMCS enable Adult unless explicitly No XXX', () => {
+test('paid Premium plans from WHMCS enable Adult unless explicitly No XXX', () => {
   for (const days of [30, 90, 365]) {
     for (let devices = 1; devices <= 6; devices += 1) {
       const plan = `758 StreamIN Premium ${days} days ${devices} Devices (Hidden)`;
@@ -26,6 +26,24 @@ test('Premium plans from WHMCS enable Adult unless explicitly No XXX', () => {
   }
   assert.equal(adultAccessForPlan('premium'), true);
   assert.equal(adultAccessForPlan('PREMIUM 30 days 1 Device'), true);
+});
+
+test('Premium trials require explicit XXX and non-XXX sync clears previously enabled Adult access', async () => {
+  for (const name of ['Premium Free Trial ', ' premium free trial ', 'PREMIUM FREE TRIAL', 'Premium Trial']) {
+    assert.equal(adultAccessForPlan(name), false, name);
+  }
+  for (const name of ['Premium with XXX Adult Free Trial ', 'premium with xxx adult free trial', 'Premium Free Trial XXX']) {
+    assert.equal(adultAccessForPlan(name), true, name);
+  }
+  assert.equal(adultAccessForPlan('Premium Free Trial XXX - No XXX'), false);
+  const calls = [];
+  const settings = { adult_enabled: true, anime_enabled: true, enabled: true };
+  const save = async (id, patch) => { calls.push([id, patch]); Object.assign(settings, patch); };
+  await syncWhmcsPlanAccess(42, 'Premium Free Trial ', save);
+  assert.deepEqual(settings, { adult_enabled: false, anime_enabled: true, enabled: true });
+  await syncWhmcsPlanAccess(42, 'Premium with XXX Adult Free Trial ', save);
+  assert.equal(settings.adult_enabled, true);
+  assert.deepEqual(calls, [[42, { adult_enabled: false }], [42, { adult_enabled: true }]]);
 });
 
 test('missing or unrelated plan names do not change manual access', async () => {
@@ -63,7 +81,8 @@ test('both WHMCS sync routes apply access from the fetched plan, not a stale dev
     const start = source.indexOf(`router.post("${route}"`);
     const end = source.indexOf('\nrouter.', start + 1);
     assert.ok(start >= 0 && end > start);
-    for (const plan of ['Premium XXX', 'Premium 30 days 1 Device', 'Premium no XXX', null]) {
+    for (const plan of ['Premium XXX', 'Premium 30 days 1 Device', 'Premium no XXX',
+      'Premium Free Trial ', 'Premium with XXX Adult Free Trial ', null]) {
       let handler;
       const calls = [];
       vm.runInNewContext(source.slice(start, end), {
