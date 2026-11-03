@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS app_updates (
   version_name       VARCHAR(64) NOT NULL,
   apk_url            TEXT NOT NULL,
   sha256             CHAR(64) NULL,
+  apk_variants       MEDIUMTEXT NULL,
   force_update       TINYINT(1) NOT NULL DEFAULT 0,
   status             ENUM('active','inactive') NOT NULL DEFAULT 'active',
   notes              TEXT NULL,

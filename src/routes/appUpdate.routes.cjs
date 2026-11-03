@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const { pool } = require("../db/pool.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
+const { selectApkVariant } = require('../utils/apkVariants.cjs');
 
 const router = Router();
 
@@ -61,6 +62,7 @@ async function handleCheck(req, res) {
         version_name,
         apk_url,
         sha256,
+        apk_variants,
         force_update,
         notes,
         updated_at
@@ -80,13 +82,13 @@ async function handleCheck(req, res) {
     const latestCode = Number(row.version_code || 0);
     const currentCode = Number.isFinite(currentVersionCode) ? currentVersionCode : null;
     const available = currentCode === null ? true : latestCode > currentCode;
+    const selectedApk = selectApkVariant(row, req.body?.supported_abis);
 
     return res.json({
       available,
       latest_version_code: latestCode,
       latest_version_name: row.version_name || null,
-      apk_url: row.apk_url,
-      sha256: row.sha256 || null,
+      ...selectedApk,
       force: available,
       message: row.notes || null,
       channel: row.channel,

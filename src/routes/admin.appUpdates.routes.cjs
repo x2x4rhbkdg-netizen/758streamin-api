@@ -2,6 +2,7 @@ const { Router } = require("express");
 const { adminAuth } = require("../middleware/adminAuth.cjs");
 const { pool } = require("../db/pool.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
+const { normalizeApkVariants, readApkVariants } = require('../utils/apkVariants.cjs');
 
 const router = Router();
 
@@ -116,6 +117,7 @@ router.get("/app-updates", adminAuth, async (req, res) => {
         au.version_name,
         au.apk_url,
         au.sha256,
+        au.apk_variants,
         au.force_update,
         au.status,
         au.notes,
@@ -133,7 +135,7 @@ router.get("/app-updates", adminAuth, async (req, res) => {
       params
     );
 
-    return res.json({ updates: rows });
+    return res.json({ updates: rows.map(row => ({ ...row, apk_variants: readApkVariants(row.apk_variants) })) });
   } catch (err) {
     if (isSchemaMismatch(err)) {
       return res.status(500).json({
@@ -159,6 +161,7 @@ router.post("/app-updates", adminAuth, async (req, res) => {
     const sha256 = normStr(req.body?.sha256, 64) || null;
     const status = normStatus(req.body?.status || "active");
     const notes = normStr(req.body?.notes, 500) || null;
+    const apkVariants = normalizeApkVariants(req.body?.apk_variants);
 
     if (!channel) return res.status(400).json({ error: "invalid channel" });
     if (!platform) return res.status(400).json({ error: "invalid platform" });
@@ -178,9 +181,9 @@ router.post("/app-updates", adminAuth, async (req, res) => {
     const [result] = await pool.execute(
       `
       INSERT INTO app_updates
-        (channel, platform, version_code, version_name, apk_url, sha256, force_update, status, notes, created_by_admin_id, target_device_id, created_at, updated_at)
+        (channel, platform, version_code, version_name, apk_url, sha256, force_update, status, notes, created_by_admin_id, target_device_id, apk_variants, created_at, updated_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `,
       [
         channel,
@@ -194,6 +197,7 @@ router.post("/app-updates", adminAuth, async (req, res) => {
         notes,
         req.admin?.id || null,
         targetDeviceId,
+        JSON.stringify(apkVariants),
       ]
     );
 
@@ -231,6 +235,10 @@ router.patch("/app-updates/:id", adminAuth, async (req, res) => {
     const params = [];
     const requestedForceUpdateChange =
       typeof req.body?.force_update !== "undefined" || typeof req.body?.force !== "undefined";
+    if (Object.hasOwn(req.body || {}, 'apk_variants')) {
+      updates.push('apk_variants=?');
+      params.push(JSON.stringify(normalizeApkVariants(req.body.apk_variants)));
+    }
     if (Object.hasOwn(req.body || {}, 'target_device_code')) {
       updates.push('target_device_id=?');
       params.push(await resolveTargetDevice(req.body.target_device_code));

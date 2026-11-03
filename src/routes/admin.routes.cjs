@@ -881,21 +881,29 @@ router.get("/admins", adminAuth, async (req, res) => {
     const params = [];
     let where = "";
     if (role) {
-      where = "WHERE role=?";
+      where = "WHERE a.role=?";
       params.push(role);
     }
 
     const [rows] = await pool.execute(
       `
-      SELECT id, name, username, email, role, status, last_login_at, created_at, updated_at
-      FROM admins
+      SELECT a.id, a.name, a.username, a.email, a.role, a.status, a.last_login_at, a.created_at, a.updated_at,
+        COALESCE(dc.device_count, 0) AS device_count
+      FROM admins a
+      LEFT JOIN (
+        SELECT d.reseller_admin_id, COUNT(*) AS device_count
+        FROM devices d
+        LEFT JOIN device_code_transfers t ON t.retained_device_id = d.id
+        WHERE d.reseller_admin_id IS NOT NULL AND t.retained_device_id IS NULL
+        GROUP BY d.reseller_admin_id
+      ) dc ON dc.reseller_admin_id = a.id
       ${where}
-      ORDER BY created_at DESC
+      ORDER BY a.created_at DESC
       `,
       params
     );
 
-    return res.json({ admins: rows });
+    return res.json({ admins: rows.map(row => ({ ...row, device_count: Number(row.device_count || 0) })) });
   } catch (err) {
     return sendInternalError(req, res, "admin/admins/list", err);
   }

@@ -15,7 +15,7 @@ function fixture(initial = []) {
         : device.device_code === params[0])];
     }
     if (sql.includes('INSERT INTO app_updates')) {
-      const columns = ['channel', 'platform', 'version_code', 'version_name', 'apk_url', 'sha256', 'force_update', 'status', 'notes', 'created_by_admin_id', 'target_device_id'];
+      const columns = ['channel', 'platform', 'version_code', 'version_name', 'apk_url', 'sha256', 'force_update', 'status', 'notes', 'created_by_admin_id', 'target_device_id', 'apk_variants'];
       const row = Object.fromEntries(columns.map((key, index) => [key, params[index]]));
       row.id = records.length + 1; records.push(row); return [{ insertId: row.id }];
     }
@@ -108,4 +108,37 @@ test('target-only release reports unavailable to non-recipients and remains visi
   assert.equal((await f.check({ device_uuid: 'uuid-two' })).body.available, false);
   assert.equal((await f.list('reseller')).body.updates.length, 0);
   assert.equal((await f.list('super_admin')).body.updates[0].target_device_code, 'ONE123');
+});
+
+test('ABI links stay on the selected release and respect device targeting', async () => {
+  const f = fixture();
+  const variants = { 'arm64-v8a': { apk_url: 'https://example.com/arm64.apk', sha256: 'a'.repeat(64) },
+    'armeabi-v7a': { apk_url: 'https://example.com/arm32.apk' } };
+  assert.equal((await f.create({ ...release, apk_variants: variants })).code, 201);
+  await f.create({ ...release, version_code: 20, target_device_code: 'ONE123', apk_variants: {
+    'arm64-v8a': { apk_url: 'https://example.com/target-arm64.apk' },
+  } });
+  const selected = (await f.check({ device_uuid: 'uuid-two', supported_abis: ['arm64-v8a', 'armeabi-v7a'] })).body;
+  assert.equal(selected.apk_url, variants['arm64-v8a'].apk_url);
+  assert.equal(selected.sha256, 'a'.repeat(64));
+  assert.equal(selected.latest_version_code, 10);
+  assert.equal((await f.check({ device_uuid: 'uuid-one', supported_abis: ['arm64-v8a'] })).body.apk_url, 'https://example.com/target-arm64.apk');
+  assert.equal((await f.check({ supported_abis: ['armeabi-v7a'] })).body.apk_url, variants['armeabi-v7a'].apk_url);
+  for (const supported_abis of [undefined, [], ['unknown'], 'arm64-v8a']) {
+    assert.equal((await f.check({ supported_abis })).body.apk_url, release.apk_url);
+  }
+  await f.patch({ notes: 'No variant changes' });
+  assert.ok(JSON.parse(f.records[0].apk_variants)['arm64-v8a']);
+  await f.patch({ apk_variants: {} });
+  assert.equal((await f.check({ supported_abis: ['arm64-v8a'] })).body.apk_url, release.apk_url);
+});
+
+test('invalid ABI metadata is rejected before storing an update', async () => {
+  const f = fixture();
+  for (const apk_variants of [[], 'bad', { bad: { apk_url: release.apk_url } },
+    { 'arm64-v8a': { apk_url: 'javascript:alert(1)' } }, { 'arm64-v8a': { apk_url: release.apk_url, sha256: 'bad' } }]) {
+    assert.equal((await f.create({ ...release, apk_variants })).code, 400);
+    assert.equal((await f.patch({ apk_variants })).code, 400);
+  }
+  assert.equal(f.records.length, 0);
 });
