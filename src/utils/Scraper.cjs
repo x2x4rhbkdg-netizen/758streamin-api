@@ -183,7 +183,9 @@ async function loadDefinitions(urls, fetchText, signal) {
     return definition;
   });
   const definitions = loaded.filter((entry) => entry.ok && entry.value?.is_torrent === true).map((entry) => entry.value);
-  return { definitions, definition_errors: loaded.filter((entry) => !entry.ok).length + manifests.filter((entry) => !entry.ok).length };
+  const manifest_errors = manifests.filter((entry) => !entry.ok).length;
+  return { definitions, manifest_errors,
+    definition_errors: loaded.filter((entry) => !entry.ok).length + manifest_errors };
 }
 
 async function discoverSources(settings, input, { fetchText = readText } = {}) {
@@ -229,8 +231,15 @@ async function discoverSources(settings, input, { fetchText = readText } = {}) {
       if (!deduplicated.has(result.hash)) deduplicated.set(result.hash, result);
     }
     // Discovery is already bounded per scraper. Do not discard lower resolutions before cache checks.
+    const successfulScrapers = results.filter((entry) => entry.ok).length;
+    const healthyAddon = addons.diagnostics.some((entry) => entry.status === 'ok');
+    const attemptedDiscovery = urls.length > 0 || addons.diagnostics.length > 0;
+    const discoveryUnavailable = attemptedDiscovery && !successfulScrapers && !healthyAddon && !deduplicated.size;
     return { sources: [...deduplicated.values()].sort((a, b) => compareSources(a, b, settings)),
       diagnostics: { scrapers: definitions.length, failed: results.filter((entry) => !entry.ok).length,
+        manifests: urls.length, manifest_errors: loaded.manifest_errors || 0,
+        successful_scrapers: successfulScrapers,
+        discovery_status: discoveryUnavailable ? 'unavailable' : 'complete',
         definition_errors: loaded.definition_errors || 0, timed_out: controller.signal.aborted,
         addons: addons.diagnostics },
       playable: false };

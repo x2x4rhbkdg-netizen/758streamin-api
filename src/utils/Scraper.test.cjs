@@ -1,6 +1,30 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { discoverSources, searchUrl, parseApi, parseHtml, validateSearch, compareSources, mapLimit } = require('./Scraper.cjs');
+
+test('failed manifests are distinguished from successful empty searches without leaking URLs or errors', async () => {
+  const settings = { scraper_url: 'https://first.test/private-key', secondary_scraper_url: 'https://second.test/private-key' };
+  const failed = await discoverSources(settings, { type: 'movie', imdb_id: 'tt1234567' }, {
+    fetchText: async () => { throw new Error('private-key'); },
+  });
+  assert.equal(failed.diagnostics.discovery_status, 'unavailable');
+  assert.equal(failed.diagnostics.manifests, 2);
+  assert.equal(failed.diagnostics.manifest_errors, 2);
+  assert.equal(failed.diagnostics.scrapers, 0);
+  assert.equal(JSON.stringify(failed).includes('private-key'), false);
+});
+
+test('reachable scrapers with no matches remain a successful empty search', async () => {
+  const result = await discoverSources({ scraper_url: 'https://manifest.test' }, { type: 'movie', imdb_id: 'tt1234567' }, {
+    fetchText: async url => url === 'https://manifest.test' ? JSON.stringify(['https://defs.test/empty'])
+      : url === 'https://defs.test/empty' ? JSON.stringify({ is_torrent: true, base_url: 'https://empty.test',
+        search_url_format_movie: { string_format: '/%s', replacement: ['imdb_id'] },
+        api: { path_to_array: 'streams' } }) : JSON.stringify({ streams: [] }),
+  });
+  assert.equal(result.diagnostics.discovery_status, 'complete');
+  assert.equal(result.diagnostics.successful_scrapers, 1);
+  assert.equal(result.sources.length, 0);
+});
 const { publicAddress, validateUrl, readText } = require('./scraperHttp.cjs');
 const hash = 'a'.repeat(40);
 const otherHash = 'b'.repeat(40);

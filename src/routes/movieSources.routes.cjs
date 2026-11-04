@@ -9,7 +9,8 @@ const { requireCatalogAccess, requireAnime } = require('../utils/animeCatalog.cj
 const { canonicalKitsuSearch } = require('../utils/kitsuCatalog.cjs');
 
 function createMovieSourcesRouter({ auth = authJwt, readSettings = readMovieSettings, discover = discoverSources,
-  lookup = lookupProviders, issue = issueSource, request = tmdb, animeSearch = canonicalKitsuSearch } = {}) {
+  lookup = lookupProviders, issue = issueSource, request = tmdb, animeSearch = canonicalKitsuSearch,
+  logDiagnostic = (data) => console.warn('[movie-source-search]', JSON.stringify(data)) } = {}) {
   const router = Router();
   const active = new Set();
   const recent = new Map();
@@ -26,8 +27,11 @@ function createMovieSourcesRouter({ auth = authJwt, readSettings = readMovieSett
       const now = Date.now();
       for (const [key, timestamp] of recent) if (now - timestamp > 60000) recent.delete(key);
       if (active.has(deviceId) || active.size >= 4 || now - (recent.get(deviceId) || 0) < 10000 || recent.size >= 10000) {
+        const reason = active.has(deviceId) ? 'device_search_in_progress' : active.size >= 4 ? 'server_search_capacity'
+          : now - (recent.get(deviceId) || 0) < 10000 ? 'device_search_cooldown' : 'rate_limit_capacity';
+        logDiagnostic({ outcome: 'busy', reason, active_searches: active.size });
         res.set('Retry-After', '10');
-        return res.status(429).json({ error: 'Source search is busy. Try again shortly.' });
+        return res.status(429).json({ error: 'Source search is busy. Try again shortly.', code: reason });
       }
       active.add(deviceId);
       recent.set(deviceId, now);
@@ -42,6 +46,22 @@ function createMovieSourcesRouter({ auth = authJwt, readSettings = readMovieSett
         }
         const data = await discover(settings, metadata);
         const sources = Array.isArray(data.sources) ? data.sources : [];
+        if (!sources.length) {
+          const d = data.diagnostics || {};
+          // Allowlisted counters only: never log settings, URLs, titles, tokens or upstream errors.
+          const diagnostic = { outcome: d.discovery_status === 'unavailable' ? 'unavailable' : 'empty',
+            type: metadata.type, section: metadata.section || metadata.type,
+            manifests: Number(d.manifests) || 0, manifest_errors: Number(d.manifest_errors) || 0,
+            scrapers: Number(d.scrapers) || 0, failed: Number(d.failed) || 0,
+            definition_errors: Number(d.definition_errors) || 0, timed_out: d.timed_out === true,
+            addons: Array.isArray(d.addons) ? d.addons.length : 0,
+            addons_healthy: Array.isArray(d.addons) ? d.addons.filter(a => a.status === 'ok').length : 0 };
+          logDiagnostic(diagnostic);
+          if (d.discovery_status === 'unavailable') {
+            return res.status(502).json({ error: 'Movie source services are temporarily unavailable. Try again shortly.',
+              code: 'source_discovery_unavailable' });
+          }
+        }
         const providers = sources.length ? await lookup(settings, sources) : { available: {}, provider_status: {} };
         return res.json({ ...data, sources: sources.map((source) => ({ ...source, providers: providers.available[source.hash] || [],
           on_demand_providers: providers.on_demand?.[source.hash] || [],
@@ -52,6 +72,7 @@ function createMovieSourcesRouter({ auth = authJwt, readSettings = readMovieSett
       finally { active.delete(deviceId); }
     } catch (error) {
       if ([400, 403, 404].includes(error.status)) return res.status(error.status).json({ error: error.message });
+      logDiagnostic({ outcome: 'error', stage: 'source_request' });
       // Never expose upstream URLs or credentials in diagnostics.
       return res.status(502).json({ error: 'Movie source discovery temporarily unavailable' });
     }

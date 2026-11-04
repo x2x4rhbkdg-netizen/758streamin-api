@@ -69,6 +69,35 @@ test('source search rate-limits repeated device work and applies no-store', asyn
   const next = await invoke(router);
   assert.equal(next.statusCode, 429);
   assert.equal(next.headers['Retry-After'], '10');
+  assert.equal(next.body.code, 'device_search_cooldown');
+});
+
+test('all discovery services failing returns an upstream error instead of a successful empty list', async () => {
+  let providerCalls = 0;
+  const diagnostics = [];
+  const router = factory()({
+    readSettings: async () => ({ enabled: true, scraper_url: 'https://example.com/private-key' }),
+    discover: async () => ({ sources: [], diagnostics: { discovery_status: 'unavailable',
+      manifests: 1, manifest_errors: 1, definition_errors: 1, scrapers: 0,
+      private_url: 'https://example.com/private-key', addons: [] } }),
+    lookup: async () => { providerCalls++; }, logDiagnostic: entry => diagnostics.push(entry),
+  });
+  const response = await invoke(router);
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.body.code, 'source_discovery_unavailable');
+  assert.equal(providerCalls, 0);
+  assert.equal(diagnostics[0].outcome, 'unavailable');
+  assert.equal(diagnostics[0].manifest_errors, 1);
+  assert.equal(JSON.stringify([response.body, diagnostics]).includes('private-key'), false);
+});
+
+test('healthy searches with no matches preserve the successful empty response', async () => {
+  const diagnostics = [];
+  const router = factory()({ readSettings: async () => ({ enabled: true, scraper_url: 'https://example.com' }),
+    discover: async () => ({ sources: [], diagnostics: { discovery_status: 'complete', scrapers: 2, addons: [] } }),
+    logDiagnostic: entry => diagnostics.push(entry) });
+  assert.equal((await invoke(router)).statusCode, 200);
+  assert.equal(diagnostics[0].outcome, 'empty');
 });
 
 test('source responses distinguish RD on-demand candidates from ready copies', async () => {
