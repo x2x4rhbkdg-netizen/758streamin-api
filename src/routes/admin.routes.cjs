@@ -1070,6 +1070,8 @@ router.get("/devices", adminAuth, async (req, res) => {
     const search = String(req.query.search || "").trim();
     const onlineWindowSeconds = Number(env.DEVICE_ONLINE_WINDOW_SECONDS || 8);
     const currentContentWindowSeconds = 120;
+    const presenceOnly = req.query.presence === "1";
+    const includePlayback = !presenceOnly || req.query.playback === "1";
 
     const whereParts = [];
     const params = [onlineWindowSeconds];
@@ -1094,6 +1096,10 @@ router.get("/devices", adminAuth, async (req, res) => {
     const [rows] = await pool.execute(
       `
       SELECT
+        ${presenceOnly ? `d.id, d.device_code, d.status, d.last_seen_at,
+        CASE WHEN d.last_seen_at IS NOT NULL
+          AND TIMESTAMPDIFF(SECOND, d.last_seen_at, NOW()) <= ? THEN TRUE ELSE FALSE END AS online`
+        : `
         d.id,
         d.device_code,
         DATE_FORMAT(t.delete_after, '%Y-%m-%dT%H:%i:%sZ') AS transfer_delete_after,
@@ -1122,13 +1128,14 @@ router.get("/devices", adminAuth, async (req, res) => {
         d.updated_at,
         a.expires_at,
         a.max_streams,
-        a.notes
+        a.notes`}
       FROM devices d
+      ${presenceOnly ? "" : `
       LEFT JOIN admins r ON r.id = d.reseller_admin_id
       LEFT JOIN device_access a ON a.device_id = d.id
-      LEFT JOIN device_code_transfers t ON t.retained_device_id = d.id
+      LEFT JOIN device_code_transfers t ON t.retained_device_id = d.id`}
       ${where}
-      ORDER BY d.created_at DESC
+      ${presenceOnly ? "" : "ORDER BY d.created_at DESC"}
       `,
       params
     );
@@ -1138,7 +1145,7 @@ router.get("/devices", adminAuth, async (req, res) => {
       .map((row) => Number(row?.id || 0))
       .filter((id) => Number.isFinite(id) && id > 0);
 
-    if (onlineDeviceIds.length) {
+    if (includePlayback && onlineDeviceIds.length) {
       const [currentRows] = await pool.execute(
         `
         SELECT
@@ -1153,7 +1160,7 @@ router.get("/devices", adminAuth, async (req, res) => {
         WHERE ae.device_id IN (${onlineDeviceIds.map(() => "?").join(",")})
           AND ae.content_id IS NOT NULL
           AND ae.event_type IN ('play', 'time_watched')
-          AND TIMESTAMPDIFF(SECOND, ae.created_at, NOW()) <= ?
+          AND ae.created_at >= DATE_SUB(NOW(), INTERVAL ? SECOND)
         ORDER BY ae.device_id ASC, ae.created_at DESC, ae.id DESC
         `,
         [...onlineDeviceIds, currentContentWindowSeconds]
