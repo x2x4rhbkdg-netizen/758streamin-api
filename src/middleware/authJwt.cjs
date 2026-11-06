@@ -7,6 +7,7 @@ const { pool } = require("../db/pool.cjs");
 const { env } = require("../config/env.cjs");
 
 const LAST_SEEN_TOUCH_INTERVAL_SECONDS = 60;
+const lastSeenTouches = new Map();
 
 async function authJwt(req, res, next) {
   const h = req.headers.authorization || "";
@@ -57,19 +58,29 @@ async function authJwt(req, res, next) {
       return res.status(403).json({ error: 'This activation supports your own playlist only' });
     }
 
-    pool.execute(
-      `UPDATE devices
-       SET last_seen_at=NOW()
-       WHERE id=?
-         AND (last_seen_at IS NULL OR TIMESTAMPDIFF(SECOND, last_seen_at, NOW()) >= ?)`,
-      [deviceId, LAST_SEEN_TOUCH_INTERVAL_SECONDS]
-    ).catch((err) => {
-      console.warn("[authJwt] could not update last_seen_at", {
-        deviceId,
-        code: err?.code,
-        message: err?.message,
+    // Heartbeat owns its presence write. Other requests still authorize against SQL,
+    // but reserve a touch slot before scheduling a write to avoid request bursts.
+    const now = Date.now();
+    const lastTouch = lastSeenTouches.get(String(deviceId));
+    if (requestPath !== '/device/heartbeat' &&
+        (lastTouch === undefined || now - lastTouch >= LAST_SEEN_TOUCH_INTERVAL_SECONDS * 1000)) {
+      if (lastSeenTouches.size >= 10000) lastSeenTouches.delete(lastSeenTouches.keys().next().value);
+      lastSeenTouches.set(String(deviceId), now);
+      pool.execute(
+        `UPDATE devices
+         SET last_seen_at=NOW()
+         WHERE id=?
+           AND (last_seen_at IS NULL OR TIMESTAMPDIFF(SECOND, last_seen_at, NOW()) >= ?)`,
+        [deviceId, LAST_SEEN_TOUCH_INTERVAL_SECONDS]
+      ).catch((err) => {
+        if (lastSeenTouches.get(String(deviceId)) === now) lastSeenTouches.delete(String(deviceId));
+        console.warn("[authJwt] could not update last_seen_at", {
+          deviceId,
+          code: err?.code,
+          message: err?.message,
+        });
       });
-    });
+    }
 
     req.device = {
       ...payload,

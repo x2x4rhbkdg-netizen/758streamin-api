@@ -54,3 +54,27 @@ test('playlist activations cannot access provider catalogs, playback, metadata, 
   claim = false;
   assert.equal((await request('/catalog/home')).code, 200); assert.equal(passed.playlist_only, false);
 });
+
+test('bursts retain fresh authorization reads but only one presence touch; heartbeat owns its write', async () => {
+  const module = { exports: {} }; let reads = 0, writes = 0, passed = 0, exists = true;
+  vm.runInNewContext(fs.readFileSync(require.resolve('./authJwt.cjs'), 'utf8'), { module, console,
+    require(name) {
+      if (name === 'jsonwebtoken') return { verify: () => ({ device_id: 1, device_code: 'ABC123' }) };
+      if (name === '../config/env.cjs') return { env: { JWT_SECRET: 'test' } };
+      if (name === '../db/pool.cjs') return { pool: { async execute(sql) {
+        if (sql.trim().startsWith('UPDATE')) { writes++; return [{}]; }
+        reads++; return [exists ? [{ device_code: 'ABC123', status: 'active' }] : []];
+      } } };
+      throw new Error(name);
+    },
+  });
+  const request = async path => {
+    const res = { code: 200, status(code) { this.code = code; return this; }, json() { return this; } };
+    await module.exports.authJwt({ headers: { authorization: 'Bearer fixture' }, originalUrl: `/v1${path}` }, res, () => { passed++; });
+    return res.code;
+  };
+  await request('/device/heartbeat'); assert.equal(writes, 0);
+  await Promise.all(Array.from({ length: 20 }, () => request('/device/profile')));
+  assert.equal(reads, 21); assert.equal(passed, 21); assert.equal(writes, 1);
+  exists = false; assert.equal(await request('/device/profile'), 401); assert.equal(passed, 21);
+});

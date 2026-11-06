@@ -168,7 +168,23 @@ function extractWhmcsPrice(product) {
   return null;
 }
 
+const whmcsPriceCache = new Map();
 async function fetchWhmcsPriceByServiceId(serviceId) {
+  const id = Number(serviceId);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  const cached = whmcsPriceCache.get(id);
+  if (cached && cached.until > Date.now()) return cached.promise;
+  if (whmcsPriceCache.size >= 2000) whmcsPriceCache.delete(whmcsPriceCache.keys().next().value);
+  const entry = { until: Date.now() + 300000, promise: null };
+  entry.promise = fetchWhmcsPriceUncached(id).then(price => {
+    entry.until = Date.now() + (price === null ? 60000 : 300000);
+    return price;
+  });
+  whmcsPriceCache.set(id, entry);
+  return entry.promise;
+}
+
+async function fetchWhmcsPriceUncached(serviceId) {
   const serviceIdNum = Number(serviceId || 0);
   if (!Number.isFinite(serviceIdNum) || serviceIdNum <= 0) return null;
 
@@ -194,6 +210,7 @@ async function fetchWhmcsPriceByServiceId(serviceId) {
         "User-Agent": "streamin-api/1.0",
       },
       body: body.toString(),
+      signal: AbortSignal.timeout(15000),
     });
 
     const text = await resp.text();
@@ -213,10 +230,7 @@ async function fetchWhmcsPriceByServiceId(serviceId) {
       products = products && typeof products === "object" ? [products] : [];
     }
 
-    const matched =
-      products.find((p) => Number(p?.id || p?.serviceid || 0) === serviceIdNum) ||
-      products[0] ||
-      null;
+    const matched = products.find((p) => Number(p?.id || p?.serviceid || 0) === serviceIdNum) || null;
     if (!matched) return null;
 
     return extractWhmcsPrice(matched);
@@ -743,11 +757,12 @@ router.post("/device/heartbeat", authJwt, async (req, res) => {
     await pool.execute(
       `UPDATE devices
        SET last_seen_at=NOW(),
-           updated_at=NOW(),
+           updated_at=CASE WHEN (? IS NOT NULL AND NOT (model <=> ?))
+             OR (? IS NOT NULL AND NOT (app_version <=> ?)) THEN NOW() ELSE updated_at END,
            model=COALESCE(?, model),
            app_version=COALESCE(?, app_version)
        WHERE id=?`,
-      [model, app_version, deviceId]
+      [model, model, app_version, app_version, model, app_version, deviceId]
     );
 
     return res.json({

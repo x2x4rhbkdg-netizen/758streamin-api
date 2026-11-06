@@ -15,7 +15,10 @@ async function getDeviceUpstream(deviceId) {
     [deviceId]
   );
 
-  const row = rows[0];
+  return resolveDeviceUpstreamRow(rows[0]);
+}
+
+function resolveDeviceUpstreamRow(row) {
   if (!row) return null;
 
   const username = decryptString(row.enc_username);
@@ -31,4 +34,4 @@ async function getDeviceUpstream(deviceId) {
   };
 }
 
-module.exports = { getDeviceUpstream };
+module.exports = { getDeviceUpstream, resolveDeviceUpstreamRow };

@@ -19,8 +19,9 @@ function fixture({ owner = 2, status = 'active', claimRows = 1, serviceFound = t
         return [{ affectedRows: claimRows }];
       }
       if (sql.trim().startsWith('SELECT')) return [[device]];
-      if (sql.includes("status=CASE WHEN LOWER(TRIM(?))='active'")) {
-        if (String(params.at(-2)).trim().toLowerCase() === 'active') device.status = 'active';
+      if (sql.includes('status=CASE LOWER(TRIM(?))')) {
+        const value = String(params.at(-2)).trim().toLowerCase();
+        if (['active', 'suspended'].includes(value)) device.status = value;
       }
       return [{ affectedRows: 1 }];
     } },
@@ -44,7 +45,7 @@ test('resellers can sync their own device and retain plan access updates', async
   assert.equal(result.body.whmcs.service_id, 1965);
   assert.deepEqual(access.map(value => Array.from(value)), [[10, 'Premium no XXX']]);
 });
-test('Active WHMCS billing activates suspended/pending devices; other billing statuses leave status unchanged', async () => {
+test('Active WHMCS billing activates suspended/pending devices; Suspended suspends them', async () => {
   for (const status of ['pending', 'suspended']) {
     for (const billingStatus of ['Active', 'active', ' ACTIVE ']) {
       const { sync } = fixture({ status, billingStatus });
@@ -52,7 +53,9 @@ test('Active WHMCS billing activates suspended/pending devices; other billing st
       assert.equal(res.code, 200); assert.equal(res.body.device.status, 'active');
     }
   }
-  for (const billingStatus of ['Suspended', 'Cancelled', 'Terminated', 'Pending', '']) {
+  const active = fixture({ status: 'active', billingStatus: 'Suspended' });
+  assert.equal((await active.sync()).body.device.status, 'suspended');
+  for (const billingStatus of ['Cancelled', 'Terminated', 'Pending', '']) {
     const { sync } = fixture({ status: 'suspended', billingStatus });
     assert.equal((await sync()).body.device.status, 'suspended');
   }

@@ -1,20 +1,23 @@
 # Device-list database load
 
-Deploy the API before the dashboard. No database migration is required.
+Deploy the API before the dashboard. The November 6 status worker requires
+`src/db/migrate.whmcs-status-jobs.mysql.sql`; see `WHMCS-STATUS-PERFORMANCE.md`.
 
 - `GET /v1/admin/devices` preserves the full list, authorization and playback labels.
 - `GET /v1/admin/devices?presence=1` returns only ID, code, status, last-seen and online.
   It performs one devices SELECT, with the same admin ownership scope, no joins,
   no sorting, no analytics query and no name resolution.
-- Add `&playback=1` to refresh playback metadata. The dashboard requests this at
-  most once every 15 seconds (normally 16 seconds on its two-second timer).
+- Add `&playback=1` to refresh playback metadata. The dashboard polls every 15 seconds,
+  including playback at most once every 30 seconds.
 - Full loads occur on initial load, manual/selected auto-refresh, existing mutation
   flows, and discovery of a new device or changed device code. Presence snapshots
   remove deleted or no-longer-visible rows without recreating them.
 - Polling pauses in hidden tabs, does not overlap itself or full loads, and ignores
   responses superseded by edits/full loads. Failed polls retain existing data.
-- Presence requests never perform the dashboard proxy's trial/billing reconciliation;
-  full list requests still do. Device JWT, deletion and expiry checks are unchanged.
+- Presence requests never perform trial/billing reconciliation. Full list requests
+  retain trial expiry suspension, but never reactivate devices based only on a due
+  date. WHMCS status is checked by the server worker. Device JWT, deletion and expiry
+  checks remain per request.
 
 ## Production execution-plan check
 

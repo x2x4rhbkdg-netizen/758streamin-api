@@ -690,7 +690,7 @@ router.post("/whmcs/payments/auto", async (req, res) => {
         whmcs_service_id=?,
         whmcs_billing_status=?,
         whmcs_next_due_date=?,
-        status=CASE WHEN LOWER(TRIM(?))='active' THEN 'active' ELSE status END,
+        status=CASE LOWER(TRIM(?)) WHEN 'active' THEN 'active' WHEN 'suspended' THEN 'suspended' ELSE status END,
         whmcs_last_sync_at=NOW(),
         updated_at=NOW()
       WHERE id=?

@@ -1096,7 +1096,7 @@ router.get("/devices", adminAuth, async (req, res) => {
     const [rows] = await pool.execute(
       `
       SELECT
-        ${presenceOnly ? `d.id, d.device_code, d.status, d.last_seen_at,
+        ${presenceOnly ? `d.id, d.device_code, d.status, d.whmcs_billing_status, d.last_seen_at,
         CASE WHEN d.last_seen_at IS NOT NULL
           AND TIMESTAMPDIFF(SECOND, d.last_seen_at, NOW()) <= ? THEN TRUE ELSE FALSE END AS online`
         : `
@@ -1737,7 +1737,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         whmcs_account_number=?,
         whmcs_billing_status=?,
         whmcs_next_due_date=?,
-        status=CASE WHEN LOWER(TRIM(?))='active' THEN 'active' ELSE status END,
+        status=CASE LOWER(TRIM(?)) WHEN 'active' THEN 'active' WHEN 'suspended' THEN 'suspended' ELSE status END,
         whmcs_last_sync_at=NOW(),
         updated_at=NOW()
       WHERE id=?

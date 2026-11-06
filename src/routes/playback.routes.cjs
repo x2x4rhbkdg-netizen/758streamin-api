@@ -6,7 +6,7 @@ const { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } 
 const jwt = require("jsonwebtoken");
 const { authJwt } = require("../middleware/authJwt.cjs");
 const { env } = require("../config/env.cjs");
-const { getDeviceUpstream } = require("../utils/upstreamAuth.cjs");
+const { resolveDeviceUpstreamRow } = require("../utils/upstreamAuth.cjs");
 const {
   buildUrl,
   buildUrlCandidates,
@@ -1026,9 +1026,11 @@ async function resolvePlaybackContext(token) {
   });
 
   const [rows] = await pool.execute(
-    `SELECT d.status, d.platform, a.expires_at
+    `SELECT d.status, d.platform, a.expires_at, u.device_id AS upstream_device_id,
+            u.upstream_base_url, u.enc_username, u.enc_password
      FROM devices d
      LEFT JOIN device_access a ON a.device_id = d.id
+     LEFT JOIN device_upstream u ON u.device_id = d.id
      WHERE d.id=?
      LIMIT 1`,
     [payload.device_id]
@@ -1053,7 +1055,7 @@ async function resolvePlaybackContext(token) {
     }
   }
 
-  const upstream = await getDeviceUpstream(payload.device_id);
+  const upstream = resolveDeviceUpstreamRow(device.upstream_device_id == null ? null : device);
   if (!upstream) {
     const err = new Error("no upstream configured for device");
     err.status = 404;

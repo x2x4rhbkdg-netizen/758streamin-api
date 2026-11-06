@@ -30,6 +30,7 @@ const adminUploadsRoutes = require("./routes/admin.uploads.routes.cjs");
 
 const app = express();
 require('./utils/deviceTransferCleanup.cjs').startDeviceTransferCleanup(require('./db/pool.cjs').pool);
+require('./utils/whmcsStatusSync.cjs').createWhmcsStatusSync({ pool: require('./db/pool.cjs').pool, env }).start();
 
 const homeAdsUploadStaticDir = String(process.env.HOME_AD_UPLOAD_DIR || path.join(__dirname, "..", "tmp", "uploads", "home-ads")).trim();
 if (homeAdsUploadStaticDir) {
@@ -70,7 +71,6 @@ const corsOptionsDelegate = (req, cb) => {
 app.use(cors(corsOptionsDelegate));
 app.options("*", cors(corsOptionsDelegate));
 
-//app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 /** =========================================
  *  ROOT
  *  ========================================= */
@@ -79,7 +79,7 @@ app.get("/", (_req, res) => {
     ok: true,
     service: "758streamin API",
     docs: "/health",
-    version: "v1"
+    version: "v2"
   });
 });
 app.use("/v1", deviceRoutes);
