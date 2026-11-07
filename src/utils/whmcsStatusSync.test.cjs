@@ -25,23 +25,28 @@ test('WHMCS paginates once per page and ignores unrelated service IDs and creden
 });
 
 function fixture() {
-  const state = { locked: false, due: true, reads: 0, writes: [], releases: 0, fetches: 0, fail: false };
-  const pool = { async getConnection() { return {
-    async execute(sql, params) {
+  const state = { locked: false, due: true, reads: 0, writes: [], releases: 0, fetches: 0, fail: false, lease: '2030-01-01 00:00:00' };
+  const execute = async (sql, params) => {
       if (sql.includes('GET_LOCK')) {
         if (state.locked) return [[{ acquired: 0 }]];
         state.locked = true; return [[{ acquired: 1 }]];
       }
       if (sql.includes('RELEASE_LOCK')) { state.locked = false; return [[{ released: 1 }]]; }
-      if (sql.includes('WHERE job_name=? AND next_run_at')) {
+      if (sql.includes('WHERE job_name=? AND next_run_at<=UTC_TIMESTAMP()')) {
         const affectedRows = state.due ? 1 : 0; state.due = false; return [{ affectedRows }];
       }
+      if (sql.includes('DATE_FORMAT')) return [[{ lease: state.lease }]];
       if (sql.includes('SELECT DISTINCT')) { state.reads++; return [[{ whmcs_service_id: 10 }, { whmcs_service_id: 20 }]]; }
-      if (sql.startsWith('UPDATE devices')) { state.writes.push({ sql, params }); return [{ affectedRows: 1 }]; }
+      if (sql.startsWith('UPDATE devices')) {
+        if (params.at(-1) !== state.lease) return [{ affectedRows: 0 }];
+        state.writes.push({ sql, params }); return [{ affectedRows: 1 }];
+      }
       return [{ affectedRows: 1 }];
-    }, release() { state.releases++; },
-  }; } };
+    };
+  const pool = { execute, async getConnection() { return { execute, release() { state.releases++; } }; } };
   const options = { pool, env, logger: { warn() {} }, fetcher: async () => {
+    assert.equal(state.locked, false, 'HTTP must not hold the advisory lock');
+    assert.ok(state.releases > 0, 'HTTP must not retain its checked-out connection');
     state.fetches++; if (state.fail) throw new Error('Transport failed');
     return response({ totalresults: 2, products: { product: [{ id: 10, status: 'Active' }, { id: 20, status: 'Suspended' }] } });
   } };
@@ -60,7 +65,8 @@ test('workers share a durable due slot; status-only writes preserve plans, expir
     assert.match(sql, /status IN \('active', 'suspended'\)/);
     assert.match(sql, /whmcs_billing_status <=>/);
     assert.doesNotMatch(sql, /plan_name|device_access|expires_at|upstream|DELETE|device_code/);
-    assert.equal(params[0], params.at(-2));
+    assert.equal(params[0], params.at(-4));
+    assert.match(sql, /next_run_at=\? AND next_run_at>UTC_TIMESTAMP/);
   }
 });
 
@@ -74,4 +80,16 @@ test('no configured WHMCS means no database connection or status change', async 
   const { state, options } = fixture();
   assert.deepEqual(await createWhmcsStatusSync({ ...options, env: {} }).run(), { skipped: true });
   assert.equal(state.releases, 0); assert.equal(state.fetches, 0);
+});
+
+test('a superseded WHMCS worker cannot write device states after its HTTP response', async () => {
+  const { state, options } = fixture();
+  const fetcher = options.fetcher;
+  options.fetcher = async (...args) => {
+    const response = await fetcher(...args);
+    state.lease = '2030-01-01 00:05:00';
+    return response;
+  };
+  const result = await createWhmcsStatusSync(options).run();
+  assert.equal(result.changed, 0); assert.equal(state.writes.length, 0);
 });

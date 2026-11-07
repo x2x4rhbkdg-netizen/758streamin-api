@@ -21,3 +21,18 @@ process.on("uncaughtException", (err) => {
 });
 
 module.exports = server;
+
+let shuttingDown = false;
+for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.locals.stopBackgroundJobs();
+  // Bound drain time: a long-running video proxy must not block worker shutdown.
+  const deadline = setTimeout(() => process.exit(1), 15000);
+  deadline.unref();
+  server.close(async () => {
+    try { await require('./db/pool.cjs').pool.end(); }
+    catch (error) { console.error('[shutdown]', error.code || 'pool_close_failed'); }
+    finally { clearTimeout(deadline); process.exit(0); }
+  });
+});

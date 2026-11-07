@@ -768,6 +768,7 @@ router.post("/device/heartbeat", authJwt, async (req, res) => {
     return res.json({
       ok: true,
       online_window_seconds: Number(env.DEVICE_ONLINE_WINDOW_SECONDS || 8),
+      heartbeat_interval_seconds: Math.max(4, Math.min(15, Math.floor(Number(env.DEVICE_ONLINE_WINDOW_SECONDS || 8) / 3))),
     });
   } catch (err) {
     return sendInternalError(req, res, "device/heartbeat", err);

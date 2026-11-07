@@ -2,6 +2,35 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+test('busy SQL is retryable without authorizing; recovery still checks deletion, suspension and expiry', async () => {
+  const module = { exports: {} }; let busy = true, exists = true, status = 'active', expires_at = null, nextCalls = 0;
+  vm.runInNewContext(fs.readFileSync(require.resolve('./authJwt.cjs'), 'utf8'), { module, console,
+    require(name) {
+      if (name === '../utils/databaseBusy.cjs') return require('../utils/databaseBusy.cjs');
+      if (name === 'jsonwebtoken') return { verify: () => ({ device_id: 1, device_code: 'ABC123' }) };
+      if (name === '../config/env.cjs') return { env: { JWT_SECRET: 'test' } };
+      if (name === '../db/pool.cjs') return { pool: { async execute(sql) {
+        if (busy) { const error = new Error('queue full'); error.code = 'DB_POOL_BUSY'; throw error; }
+        if (sql.trim().startsWith('UPDATE')) return [{}];
+        return [exists ? [{ device_code: 'ABC123', status, expires_at }] : []];
+      } } };
+      throw new Error(name);
+    },
+  });
+  async function request() {
+    const res = { code: 200, headers: {}, setHeader(k, v) { this.headers[k] = v; },
+      status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+    await module.exports.authJwt({ headers: { authorization: 'Bearer fixture' }, originalUrl: '/v1/device/heartbeat' }, res, () => nextCalls++);
+    return res;
+  }
+  const overloaded = await request(); assert.equal(overloaded.code, 503); assert.equal(overloaded.headers['Retry-After'], '5');
+  assert.equal(nextCalls, 0); busy = false;
+  assert.equal((await request()).code, 200); assert.equal(nextCalls, 1);
+  exists = false; assert.equal((await request()).code, 401);
+  exists = true; status = 'suspended'; assert.equal((await request()).code, 403);
+  status = 'active'; expires_at = '2000-01-01'; assert.equal((await request()).code, 403);
+  assert.equal(nextCalls, 1);
+});
 test('code changes invalidate old sessions; current-code sessions still use the existing active/expiry checks', async () => {
   const module = { exports: {} }; let code = 'OLD123', status = 'active', nextCalls = 0, touches = 0;
   vm.runInNewContext(fs.readFileSync(require.resolve('./authJwt.cjs'), 'utf8'), { module, console,

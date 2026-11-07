@@ -65,7 +65,7 @@ const env = {
   WHMCS_STATUS_INTERVAL_SECONDS: Number(process.env.WHMCS_STATUS_INTERVAL_SECONDS || 300),
   DEVICE_ONLINE_WINDOW_SECONDS: Math.max(
     5,
-    Math.min(600, Number(process.env.DEVICE_ONLINE_WINDOW_SECONDS || 8) || 8)
+    Math.min(600, Number(process.env.DEVICE_ONLINE_WINDOW_SECONDS || 45) || 45)
   ),
 
   DB_HOST: must("DB_HOST"),

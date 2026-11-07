@@ -44,7 +44,7 @@ function createWhmcsStatusSync({ pool, env, fetcher = fetch, logger = console })
   async function run() {
     if (running || !env.WHMCS_API_URL || !env.WHMCS_API_IDENTIFIER || !env.WHMCS_API_SECRET) return { skipped: true };
     running = true;
-    let connection, locked = false, claimed = false;
+    let connection, locked = false, claimed = false, lease;
     try {
       connection = await pool.getConnection();
       const [lock] = await connection.execute('SELECT GET_LOCK(?, 0) AS acquired', [LOCK]);
@@ -53,12 +53,18 @@ function createWhmcsStatusSync({ pool, env, fetcher = fetch, logger = console })
       // The due time survives Passenger restarts and is shared by all API workers.
       const [claim] = await connection.execute(`UPDATE api_background_jobs
         SET next_run_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND)
-        WHERE job_name=? AND next_run_at<=UTC_TIMESTAMP()`, [interval, JOB]);
+        WHERE job_name=? AND next_run_at<=UTC_TIMESTAMP()`, [Math.max(interval, 300), JOB]);
       if (!claim.affectedRows) return { skipped: true };
       claimed = true;
+      const [reservation] = await connection.execute("SELECT DATE_FORMAT(next_run_at, '%Y-%m-%d %H:%i:%s') AS lease FROM api_background_jobs WHERE job_name=?", [JOB]);
+      lease = reservation[0]?.lease;
+      if (!lease) throw new Error('WHMCS lease unavailable');
       const [devices] = await connection.execute(`SELECT DISTINCT whmcs_service_id FROM devices
         WHERE whmcs_service_id>0 AND status IN ('active', 'suspended')`);
       const ids = devices.map(row => String(row.whmcs_service_id));
+      await connection.execute('SELECT RELEASE_LOCK(?)', [LOCK]);
+      locked = false;
+      connection.release(); connection = null;
       const statuses = ids.length ? await fetchServiceStatuses(env, ids, fetcher) : new Map();
       let changed = 0;
       // Only changed states are written; unknown/missing/failed services are never suspended.
@@ -67,19 +73,21 @@ function createWhmcsStatusSync({ pool, env, fetcher = fetch, logger = console })
         for (let offset = 0; offset < matching.length; offset += 250) {
           const batch = matching.slice(offset, offset + 250);
           const billing = status === 'active' ? 'Active' : 'Suspended';
-          const [result] = await connection.execute(`UPDATE devices SET status=?, whmcs_billing_status=?, updated_at=NOW()
+          const [result] = await pool.execute(`UPDATE devices SET status=?, whmcs_billing_status=?, updated_at=NOW()
             WHERE whmcs_service_id IN (${batch.map(() => '?').join(',')})
               AND status IN ('active', 'suspended')
-              AND (status<>? OR NOT (whmcs_billing_status <=> ?))`, [status, billing, ...batch, status, billing]);
+              AND (status<>? OR NOT (whmcs_billing_status <=> ?))
+              AND EXISTS (SELECT 1 FROM api_background_jobs WHERE job_name=? AND next_run_at=? AND next_run_at>UTC_TIMESTAMP())`,
+            [status, billing, ...batch, status, billing, JOB, lease]);
           changed += Number(result.affectedRows || 0);
         }
       }
-      await connection.execute(`UPDATE api_background_jobs SET last_success_at=UTC_TIMESTAMP(),
-        next_run_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND) WHERE job_name=?`, [interval, JOB]);
+      await pool.execute(`UPDATE api_background_jobs SET last_success_at=UTC_TIMESTAMP(),
+        next_run_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND) WHERE job_name=? AND next_run_at=?`, [interval, JOB, lease]);
       return { checked: ids.length, found: statuses.size, changed };
     } catch (error) {
-      if (claimed && connection) await connection.execute(`UPDATE api_background_jobs
-        SET next_run_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND) WHERE job_name=?`, [interval, JOB]).catch(() => {});
+      if (claimed && lease) await pool.execute(`UPDATE api_background_jobs
+        SET next_run_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND) WHERE job_name=? AND next_run_at=?`, [interval, JOB, lease]).catch(() => {});
       if (error.code !== 'ER_NO_SUCH_TABLE' || !warnedMissing) logger.warn('[whmcs-status]', error.code || 'status_check_failed');
       warnedMissing = error.code === 'ER_NO_SUCH_TABLE';
       throw error;

@@ -29,8 +29,9 @@ const adminHomeAdsRoutes = require("./routes/admin.homeAds.routes.cjs");
 const adminUploadsRoutes = require("./routes/admin.uploads.routes.cjs");
 
 const app = express();
-require('./utils/deviceTransferCleanup.cjs').startDeviceTransferCleanup(require('./db/pool.cjs').pool);
-require('./utils/whmcsStatusSync.cjs').createWhmcsStatusSync({ pool: require('./db/pool.cjs').pool, env }).start();
+const stopTransferCleanup = require('./utils/deviceTransferCleanup.cjs').startDeviceTransferCleanup(require('./db/pool.cjs').pool);
+const stopWhmcsSync = require('./utils/whmcsStatusSync.cjs').createWhmcsStatusSync({ pool: require('./db/pool.cjs').pool, env }).start();
+app.locals.stopBackgroundJobs = () => { stopTransferCleanup(); stopWhmcsSync(); };
 
 const homeAdsUploadStaticDir = String(process.env.HOME_AD_UPLOAD_DIR || path.join(__dirname, "..", "tmp", "uploads", "home-ads")).trim();
 if (homeAdsUploadStaticDir) {
@@ -79,7 +80,7 @@ app.get("/", (_req, res) => {
     ok: true,
     service: "758streamin API",
     docs: "/health",
-    version: "v2"
+    version: "v1.2"
   });
 });
 app.use("/v1", deviceRoutes);

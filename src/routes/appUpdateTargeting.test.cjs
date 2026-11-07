@@ -15,7 +15,7 @@ function fixture(initial = []) {
         : device.device_code === params[0])];
     }
     if (sql.includes('INSERT INTO app_updates')) {
-      const columns = ['channel', 'platform', 'version_code', 'version_name', 'apk_url', 'sha256', 'force_update', 'status', 'notes', 'created_by_admin_id', 'target_device_id', 'apk_variants'];
+      const columns = ['channel', 'platform', 'version_code', 'version_name', 'apk_url', 'sha256', 'force_update', 'status', 'notes', 'created_by_admin_id', 'target_device_id', 'apk_variants', 'delta_patches'];
       const row = Object.fromEntries(columns.map((key, index) => [key, params[index]]));
       row.id = records.length + 1; records.push(row); return [{ insertId: row.id }];
     }

@@ -1,4 +1,5 @@
 const { env } = require("../config/env.cjs");
+const { isDatabaseBusy, sendDatabaseBusy } = require('./databaseBusy.cjs');
 
 function toBool(v) {
   const s = String(v || "").trim().toLowerCase();
@@ -34,6 +35,7 @@ function buildInternalError(req, err, extra = {}) {
 }
 
 function sendInternalError(req, res, scope, err, extra = {}) {
+  if (isDatabaseBusy(err)) return sendDatabaseBusy(res);
   console.error(`[${scope}] error:`, err);
   return res.status(extra.status || 500).json(
     buildInternalError(req, err, {

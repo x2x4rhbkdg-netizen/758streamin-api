@@ -90,6 +90,8 @@ async function authJwt(req, res, next) {
     };
     return next();
   } catch (err) {
+    const { isDatabaseBusy, sendDatabaseBusy } = require('../utils/databaseBusy.cjs');
+    if (isDatabaseBusy(err)) return sendDatabaseBusy(res);
     return res.status(401).json({ error: "invalid token" });
   }
 }
