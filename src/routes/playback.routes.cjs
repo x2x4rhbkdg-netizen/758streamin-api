@@ -15,6 +15,10 @@ const {
 } = require("../utils/xui.cjs");
 const { pool } = require("../db/pool.cjs");
 const { sendInternalError } = require("../utils/errorResponse.cjs");
+const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
+const hlsUpstreamDiagnostics = createHlsUpstreamDiagnostics();
+const { createPlaybackAssetReader, legacyAssetOrigins } = require('../utils/playbackAssetHttp.cjs');
+const readPlaybackAsset = createPlaybackAssetReader();
 
 const router = Router();
 
@@ -884,8 +888,10 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
 
   for (let i = 0; i < list.length; i += 1) {
     const targetUrl = list[i];
+    const startedAt = hlsUpstreamDiagnostics.now();
+    let timedOut = false;
     const controller = timeoutMs > 0 ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const timer = controller ? setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs) : null;
 
     try {
       const response = await fetch(targetUrl, {
@@ -900,8 +906,6 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
         err.status = response.status;
         err.url = targetUrl;
         err.body = text.slice(0, 200);
-        lastErr = err;
-        if (i < list.length - 1 && response.status >= 500) continue;
         throw err;
       }
 
@@ -912,6 +916,7 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
       };
     } catch (err) {
       lastErr = err;
+      hlsUpstreamDiagnostics.failure(err, { startedAt, timedOut, candidate: i + 1, totalCandidates: list.length, timeoutMs });
       const status = Number(err?.status || 0);
       if (i < list.length - 1 && (!status || status >= 500)) continue;
       throw err;
@@ -924,42 +929,7 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
 }
 
 async function fetchBinaryWithResolvedUrl(url, init = {}, options = {}) {
-  const targetUrl = String(url || "").trim();
-  if (!targetUrl) throw new Error("No upstream URL candidate");
-
-  const timeoutMs = Number(options.timeoutMs || 0);
-  const controller = timeoutMs > 0 ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-
-  try {
-    const response = await fetch(targetUrl, {
-      ...init,
-      redirect: "follow",
-      signal: controller?.signal || init.signal,
-    });
-
-    if (!response.ok) {
-      const bodyText = await response.text().catch(() => "");
-      const err = new Error("upstream failed");
-      err.status = response.status;
-      err.url = targetUrl;
-      err.body = bodyText.slice(0, 200);
-      throw err;
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    return {
-      buffer: Buffer.from(arrayBuffer),
-      url: String(response.url || targetUrl),
-      status: Number(response.status || 200) || 200,
-      contentType: String(response.headers.get("content-type") || ""),
-      contentLength: String(response.headers.get("content-length") || ""),
-      contentRange: String(response.headers.get("content-range") || ""),
-      acceptRanges: String(response.headers.get("accept-ranges") || ""),
-    };
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  return readPlaybackAsset(url, init, options);
 }
 
 async function resolveEmbeddedHlsManifest(urls, options = {}) {
@@ -1629,7 +1599,7 @@ router.get("/playback/embedded-hls-asset", async (req, res) => {
       return res.status(400).json({ error: "invalid asset url" });
     }
 
-    const { payload, device } = await resolvePlaybackContext(token);
+    const { payload, device, upstream } = await resolvePlaybackContext(token);
     if (payload.type !== "live") {
       return res.status(400).json({ error: "embedded hls asset is only supported for live playback" });
     }
@@ -1642,6 +1612,7 @@ router.get("/playback/embedded-hls-asset", async (req, res) => {
       headers: { "User-Agent": "streamin-api/1.0" },
     }, {
       timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
+      allowedOrigins: legacyAssetOrigins(upstream.upstream_base_url),
     });
 
     res.setHeader("Cache-Control", "no-store");
