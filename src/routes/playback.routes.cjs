@@ -1020,10 +1020,21 @@ async function resolveEmbeddedHlsManifest(urls, options = {}) {
 }
 
 async function resolvePlaybackContext(token) {
-  const payload = jwt.verify(token, env.JWT_SECRET, {
-    audience: PLAYBACK_AUD,
-    issuer: PLAYBACK_ISS,
-  });
+  let payload;
+  try {
+    payload = jwt.verify(token, env.JWT_SECRET, {
+      audience: PLAYBACK_AUD,
+      issuer: PLAYBACK_ISS,
+    });
+  } catch (error) {
+    if (!['TokenExpiredError', 'JsonWebTokenError', 'NotBeforeError'].includes(error?.name)) throw error;
+    const expired = error.name === 'TokenExpiredError';
+    const notActive = error.name === 'NotBeforeError';
+    const failure = new Error(expired ? 'playback token expired' : notActive ? 'playback token not active' : 'invalid playback token');
+    failure.status = 401;
+    failure.playbackCode = expired ? 'PLAYBACK_TOKEN_EXPIRED' : notActive ? 'PLAYBACK_TOKEN_NOT_ACTIVE' : 'PLAYBACK_TOKEN_INVALID';
+    throw failure;
+  }
 
   const [rows] = await pool.execute(
     `SELECT d.status, d.platform, a.expires_at, u.device_id AS upstream_device_id,
@@ -1421,7 +1432,8 @@ router.get("/playback/hls", async (req, res) => {
       return res.status(400).json({ error: "invalid stream type" });
     }
     if (err?.status) {
-      return res.status(err.status).json({ error: err.message || "playback failed" });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(err.status).json({ error: err.message || "playback failed", ...(err.playbackCode ? { code: err.playbackCode } : {}) });
     }
     return sendInternalError(req, res, "playback/hls", err);
   }
@@ -1516,7 +1528,8 @@ router.get("/playback/hls-asset", async (req, res) => {
       url: summarizeUrlForLog(err?.url || ""),
     });
     if (err?.status) {
-      return res.status(err.status).json({ error: err.message || "playback failed" });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(err.status).json({ error: err.message || "playback failed", ...(err.playbackCode ? { code: err.playbackCode } : {}) });
     }
     return sendInternalError(req, res, "playback/hls-asset", err);
   }
@@ -1555,10 +1568,10 @@ router.get("/playback/stream", async (req, res) => {
       return res.status(400).json({ error: "invalid stream type" });
     }
     if (err?.status) {
-      return res.status(err.status).json({ error: err.message || "playback failed" });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(err.status).json({ error: err.message || "playback failed", ...(err.playbackCode ? { code: err.playbackCode } : {}) });
     }
-    console.error("[playback/stream] error:", err);
-    return res.status(401).json({ error: "invalid token" });
+    return sendInternalError(req, res, "playback/stream", err);
   }
 });
 
@@ -1599,7 +1612,8 @@ router.get("/playback/embedded-hls", async (req, res) => {
       return res.status(400).json({ error: "invalid stream type" });
     }
     if (err?.status) {
-      return res.status(err.status).json({ error: err.message || "playback failed" });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(err.status).json({ error: err.message || "playback failed", ...(err.playbackCode ? { code: err.playbackCode } : {}) });
     }
     return sendInternalError(req, res, "playback/embedded-hls", err);
   }
@@ -1643,7 +1657,8 @@ router.get("/playback/embedded-hls-asset", async (req, res) => {
     return res.send(asset.buffer);
   } catch (err) {
     if (err?.status) {
-      return res.status(err.status).json({ error: err.message || "playback failed" });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(err.status).json({ error: err.message || "playback failed", ...(err.playbackCode ? { code: err.playbackCode } : {}) });
     }
     return sendInternalError(req, res, "playback/embedded-hls-asset", err);
   }
