@@ -50,25 +50,12 @@ No database migration, dependency installation or mobile rebuild is required.
 
 ### Downstream cancellation follow-up
 
-Both asset routes now bind an AbortController to the HTTP response's `close`
-event while the handler is running. An unfinished response closing aborts the
-asset reader, including DNS waits, redirects and an in-flight body. Closing a
-normally completed response does not cancel it. Listeners are removed on all
-handler exit paths; cancellation does not attempt to write a response to a
-disconnected client or log an internal server failure. If a client disconnects
-while authorization is pending, no asset download starts afterward.
-
-For this follow-up, deploy the updated `src/routes/playback.routes.cjs` over the
-previous security-stage deployment and restart Passenger. The existing
-`playbackAssetHttp.cjs` already supports the propagated AbortSignal.
-
-This does not track/enforce a current channel per device, change playback
-limits, or switch buffered responses to streaming. It applies only to asset
-requests already handled by the API, not direct provider segment requests or
-the separate manifest-fetch routes. Detection depends on the reverse proxy
-propagating the downstream disconnect; a switch that leaves the old request
-open does not itself trigger cancellation. Provider connection counts still
-need separate observation.
+The response-close cancellation follow-up was rolled back at the user's request.
+The asset reader still supports caller cancellation, but the asset routes no
+longer bind it to response-close events. To apply this rollback over that
+follow-up, deploy `src/routes/playback.routes.cjs` and restart Passenger.
+The earlier destination security policy remains intact. Playback limits,
+buffering and direct provider segment routing remain unchanged.
 
 If a legacy asset caller redirects to an additional CDN origin, explicitly set
 the API process environment variable, for example:
