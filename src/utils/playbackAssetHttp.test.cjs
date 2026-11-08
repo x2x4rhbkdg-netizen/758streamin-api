@@ -6,7 +6,7 @@ const zlib = require('node:zlib');
 const { createPlaybackAssetReader, legacyAssetOrigins } = require('./playbackAssetHttp.cjs');
 
 function fixture(responses = [], addresses = [{ address: '93.184.216.34', family: 4 }]) {
-  const calls = [], lookups = [];
+  const calls = [], lookups = [], openedResponses = [];
   const get = (url, options, callback) => {
     calls.push({ url: url.href, options });
     const request = new EventEmitter();
@@ -15,6 +15,7 @@ function fixture(responses = [], addresses = [{ address: '93.184.216.34', family
       if (options.signal.aborted) { request.emit('error', new Error('aborted')); return; }
       const spec = responses.shift() || {};
       const response = new PassThrough();
+      openedResponses.push(response);
       response.statusCode = spec.status || 200;
       response.headers = spec.headers || {};
       const abort = () => response.destroy(new Error('aborted'));
@@ -29,7 +30,7 @@ function fixture(responses = [], addresses = [{ address: '93.184.216.34', family
     requestHttp: get, requestHttps: get,
     async lookup(hostname) { lookups.push(hostname); return typeof addresses === 'function' ? addresses(hostname) : addresses; },
   });
-  return { read, calls, lookups };
+  return { read, calls, lookups, openedResponses };
 }
 
 test('preserves binary bytes, range metadata, custom upstream ports and pins checked DNS', async () => {
@@ -133,4 +134,18 @@ test('total deadline covers stalled DNS and stalled bodies, and caller cancellat
   await assert.rejects(fixture([{ hang: true }]).read('https://upstream.example/a', {}, { timeoutMs: 10 }), error => error.status === 504);
   const controller = new AbortController(); controller.abort();
   await assert.rejects(fixture().read('https://upstream.example/a', { signal: controller.signal }), error => error.status === 504);
+});
+
+test('caller cancellation destroys an in-flight response and returns before its deadline', async () => {
+  const f = fixture([{ hang: true }]);
+  const controller = new AbortController();
+  const pending = f.read('https://upstream.example/a', { signal: controller.signal }, { timeoutMs: 12000 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.openedResponses.length, 1);
+  f.openedResponses[0].write(Buffer.from('partial segment'));
+  const rejection = assert.rejects(pending, error => error.status === 504);
+  controller.abort();
+  await rejection;
+  assert.equal(f.calls[0].options.signal.aborted, true);
+  assert.equal(f.openedResponses[0].destroyed, true);
 });

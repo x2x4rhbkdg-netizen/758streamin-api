@@ -1410,7 +1410,11 @@ router.get("/playback/hls", async (req, res) => {
 });
 
 router.get("/playback/hls-asset", async (req, res) => {
+  const controller = new AbortController();
+  const onClose = () => { if (!res.writableFinished) controller.abort(); };
+  res.once("close", onClose);
   try {
+    if (res.destroyed) return;
     const token = String(req.query.token || "").trim();
     const assetId = String(req.query.asset || "").trim();
     if (!token) return res.status(400).json({ error: "token required" });
@@ -1439,6 +1443,7 @@ router.get("/playback/hls-asset", async (req, res) => {
     if (!isHttpUrl(targetUrl)) {
       return res.status(400).json({ error: "invalid playback asset url" });
     }
+    if (controller.signal.aborted || res.destroyed) return;
 
     logPlaybackDebug("hls_asset_request", {
       token: playbackTokenHash,
@@ -1452,6 +1457,7 @@ router.get("/playback/hls-asset", async (req, res) => {
 
     const asset = await fetchBinaryWithResolvedUrl(targetUrl, {
       method: "GET",
+      signal: controller.signal,
       headers: {
         "User-Agent": "streamin-api/1.0",
         ...(req.headers.range ? { Range: String(req.headers.range) } : {}),
@@ -1459,6 +1465,7 @@ router.get("/playback/hls-asset", async (req, res) => {
     }, {
       timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
     });
+    if (controller.signal.aborted || res.destroyed) return;
 
     res.setHeader("Cache-Control", "no-store");
 
@@ -1491,6 +1498,7 @@ router.get("/playback/hls-asset", async (req, res) => {
     res.setHeader("Content-Type", asset.contentType || inferContentType(asset.url));
     return res.status(asset.status || 200).send(asset.buffer);
   } catch (err) {
+    if (controller.signal.aborted || res.destroyed) return;
     logPlaybackDebug("hls_asset_error", {
       token: hashPlaybackToken(String(req.query.token || "")),
       message: err?.message || String(err || ""),
@@ -1502,6 +1510,8 @@ router.get("/playback/hls-asset", async (req, res) => {
       return res.status(err.status).json({ error: err.message || "playback failed", ...(err.playbackCode ? { code: err.playbackCode } : {}) });
     }
     return sendInternalError(req, res, "playback/hls-asset", err);
+  } finally {
+    res.removeListener("close", onClose);
   }
 });
 
@@ -1590,7 +1600,11 @@ router.get("/playback/embedded-hls", async (req, res) => {
 });
 
 router.get("/playback/embedded-hls-asset", async (req, res) => {
+  const controller = new AbortController();
+  const onClose = () => { if (!res.writableFinished) controller.abort(); };
+  res.once("close", onClose);
   try {
+    if (res.destroyed) return;
     const token = String(req.query.token || "").trim();
     const targetUrl = String(req.query.url || "").trim();
     if (!token) return res.status(400).json({ error: "token required" });
@@ -1606,14 +1620,17 @@ router.get("/playback/embedded-hls-asset", async (req, res) => {
     if (!needsEmbeddedHlsManifest(device.platform)) {
       return res.status(404).json({ error: "embedded hls not enabled for this platform" });
     }
+    if (controller.signal.aborted || res.destroyed) return;
 
     const asset = await fetchBinaryWithResolvedUrl(targetUrl, {
       method: "GET",
+      signal: controller.signal,
       headers: { "User-Agent": "streamin-api/1.0" },
     }, {
       timeoutMs: env.XUI_REQUEST_TIMEOUT_MS,
       allowedOrigins: legacyAssetOrigins(upstream.upstream_base_url),
     });
+    if (controller.signal.aborted || res.destroyed) return;
 
     res.setHeader("Cache-Control", "no-store");
 
@@ -1627,11 +1644,14 @@ router.get("/playback/embedded-hls-asset", async (req, res) => {
     res.setHeader("Content-Type", asset.contentType || inferContentType(asset.url));
     return res.send(asset.buffer);
   } catch (err) {
+    if (controller.signal.aborted || res.destroyed) return;
     if (err?.status) {
       res.setHeader('Cache-Control', 'no-store');
       return res.status(err.status).json({ error: err.message || "playback failed", ...(err.playbackCode ? { code: err.playbackCode } : {}) });
     }
     return sendInternalError(req, res, "playback/embedded-hls-asset", err);
+  } finally {
+    res.removeListener("close", onClose);
   }
 });
 

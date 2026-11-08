@@ -2,15 +2,25 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
 const jwt = require('jsonwebtoken');
 const { legacyAssetOrigins } = require('../utils/playbackAssetHttp.cjs');
 const source = fs.readFileSync(require.resolve('./playback.routes.cjs'), 'utf8');
 const secret = 'playback-expiry-test-only';
 const paths = ['/playback/hls', '/playback/hls-asset', '/playback/stream', '/playback/embedded-hls', '/playback/embedded-hls-asset'];
+function responseFixture() {
+  return Object.assign(new EventEmitter(), {
+    headers: {}, code: 200, writableFinished: false, destroyed: false, writes: 0,
+    setHeader(k, v) { this.headers[k] = v; },
+    status(code) { this.code = code; return this; },
+    json(body) { this.writes++; this.body = body; this.writableFinished = true; return this; },
+    send(body) { this.writes++; this.body = body; this.writableFinished = true; this.emit('close'); return this; },
+  });
+}
 function fixture() {
   const handlers = new Map();
   const state = { reads: 0, serverErrors: 0, row: { status: 'active', platform: 'android_tv', upstream_device_id: 7 }, dbFailure: false, fetches: [], assetToken: null };
-  const context = vm.createContext({ jwt, env: { JWT_SECRET: secret }, PLAYBACK_AUD: 'playback', PLAYBACK_ISS: 'streamin-api',
+  const context = vm.createContext({ AbortController, jwt, env: { JWT_SECRET: secret }, PLAYBACK_AUD: 'playback', PLAYBACK_ISS: 'streamin-api',
     pool: { async execute() {
       state.reads++; if (state.dbFailure) throw new Error('database failure');
       return [state.row ? [state.row] : []];
@@ -36,9 +46,7 @@ function fixture() {
     const end = next < 0 ? source.indexOf('\nmodule.exports', start) : next;
     vm.runInContext(source.slice(start, end), context);
   }
-  return { state, context, async request(path, token) {
-    const res = { headers: {}, code: 200, setHeader(k, v) { this.headers[k] = v; },
-      status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; }, send(body) { this.body = body; return this; } };
+  return { state, context, async request(path, token, res = responseFixture()) {
     await handlers.get(path)({ headers: {}, query: { token, asset: 'fixture', url: 'https://upstream.example/segment.ts' } }, res);
     return res;
   } };
@@ -114,3 +122,49 @@ test('opaque assets remain bound to the issuing playback token and ignore arbitr
   assert.equal((await f.request('/playback/hls-asset', value)).code, 401);
   assert.equal(f.state.fetches.length, 1);
 });
+
+for (const path of ['/playback/hls-asset', '/playback/embedded-hls-asset']) {
+  test(`${path}: disconnect aborts an in-flight asset without writing or logging a server error`, async () => {
+    const f = fixture(); const value = token(); f.state.assetToken = value;
+    const res = responseFixture();
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
+    let signal;
+    f.context.fetchBinaryWithResolvedUrl = async (_url, init) => {
+      signal = init.signal; started();
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }));
+    };
+    const pending = f.request(path, value, res);
+    await ready;
+    res.destroyed = true; res.emit('close');
+    await pending;
+    assert.equal(signal.aborted, true); assert.equal(res.writes, 0);
+    assert.equal(f.state.serverErrors, 0); assert.equal(res.listenerCount('close'), 0);
+    assert.equal(f.state.reads, 1);
+  });
+
+  test(`${path}: disconnect during authorization never starts a download`, async () => {
+    const f = fixture(); const value = token(); f.state.assetToken = value;
+    const res = responseFixture();
+    let authorize;
+    f.context.resolvePlaybackContext = () => new Promise(resolve => { authorize = resolve; });
+    const pending = f.request(path, value, res);
+    res.destroyed = true; res.emit('close');
+    authorize({ payload: { type: 'live' }, device: { platform: 'android_tv' }, upstream: { upstream_base_url: 'https://upstream.example' } });
+    await pending;
+    assert.equal(f.state.fetches.length, 0); assert.equal(res.writes, 0);
+    assert.equal(res.listenerCount('close'), 0);
+  });
+
+  test(`${path}: normal completion and authorization failures detach listeners`, async () => {
+    const f = fixture(); const value = token(); f.state.assetToken = value;
+    const res = await f.request(path, value);
+    assert.equal(res.code, 200); assert.equal(res.writes, 1);
+    assert.equal(f.state.fetches[0][1].signal.aborted, false);
+    assert.equal(res.listenerCount('close'), 0);
+    f.state.row = null;
+    const denied = await f.request(path, value);
+    assert.equal(denied.code, 401); assert.equal(denied.listenerCount('close'), 0);
+    assert.equal(f.state.fetches.length, 1);
+  });
+}
