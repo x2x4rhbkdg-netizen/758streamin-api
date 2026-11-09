@@ -29,9 +29,26 @@ const adminHomeAdsRoutes = require("./routes/admin.homeAds.routes.cjs");
 const adminUploadsRoutes = require("./routes/admin.uploads.routes.cjs");
 
 const app = express();
-const stopTransferCleanup = require('./utils/deviceTransferCleanup.cjs').startDeviceTransferCleanup(require('./db/pool.cjs').pool);
-const stopWhmcsSync = require('./utils/whmcsStatusSync.cjs').createWhmcsStatusSync({ pool: require('./db/pool.cjs').pool, env }).start();
-app.locals.stopBackgroundJobs = () => { stopTransferCleanup(); stopWhmcsSync(); };
+const pool = require('./db/pool.cjs').pool;
+
+const backgroundJobsEnabled =
+  process.env.DISABLE_BACKGROUND_JOBS !== '1';
+
+const stopTransferCleanup = backgroundJobsEnabled
+  ? require('./utils/deviceTransferCleanup.cjs')
+      .startDeviceTransferCleanup(pool)
+  : () => {};
+
+const stopWhmcsSync = backgroundJobsEnabled
+  ? require('./utils/whmcsStatusSync.cjs')
+      .createWhmcsStatusSync({ pool, env })
+      .start()
+  : () => {};
+
+app.locals.stopBackgroundJobs = () => {
+  stopTransferCleanup();
+  stopWhmcsSync();
+};
 
 const homeAdsUploadStaticDir = String(process.env.HOME_AD_UPLOAD_DIR || path.join(__dirname, "..", "tmp", "uploads", "home-ads")).trim();
 if (homeAdsUploadStaticDir) {
