@@ -31,12 +31,42 @@ const adminUploadsRoutes = require("./routes/admin.uploads.routes.cjs");
 const app = express();
 const pool = require('./db/pool.cjs').pool;
 
+// const backgroundJobsEnabled =
+//   process.env.DISABLE_BACKGROUND_JOBS !== '1';
+
+// const stopTransferCleanup = require('./utils/deviceTransferCleanup.cjs').startDeviceTransferCleanup(require('./db/pool.cjs').pool);
+// const stopWhmcsSync = require('./utils/whmcsStatusSync.cjs').createWhmcsStatusSync({ pool: require('./db/pool.cjs').pool, env }).start();
+// app.locals.stopBackgroundJobs = () => { stopTransferCleanup(); stopWhmcsSync(); };
+
 const backgroundJobsEnabled =
   process.env.DISABLE_BACKGROUND_JOBS !== '1';
 
-const stopTransferCleanup = require('./utils/deviceTransferCleanup.cjs').startDeviceTransferCleanup(require('./db/pool.cjs').pool);
-const stopWhmcsSync = require('./utils/whmcsStatusSync.cjs').createWhmcsStatusSync({ pool: require('./db/pool.cjs').pool, env }).start();
-app.locals.stopBackgroundJobs = () => { stopTransferCleanup(); stopWhmcsSync(); };
+let stopTransferCleanup = () => {};
+let stopWhmcsSync = () => {};
+
+if (backgroundJobsEnabled) {
+
+  stopTransferCleanup =
+    require('./utils/deviceTransferCleanup.cjs')
+      .startDeviceTransferCleanup(pool);
+
+  stopWhmcsSync =
+    require('./utils/whmcsStatusSync.cjs')
+      .createWhmcsStatusSync({ pool, env })
+      .start();
+
+  console.log('[background] Background jobs enabled');
+
+} else {
+
+  console.log('[background] Background jobs disabled');
+
+}
+
+app.locals.stopBackgroundJobs = () => {
+  stopTransferCleanup();
+  stopWhmcsSync();
+};
 
 const homeAdsUploadStaticDir = String(process.env.HOME_AD_UPLOAD_DIR || path.join(__dirname, "..", "tmp", "uploads", "home-ads")).trim();
 if (homeAdsUploadStaticDir) {
