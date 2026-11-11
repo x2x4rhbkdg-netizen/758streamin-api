@@ -1,6 +1,4 @@
 ---
 deployment:
   tasks:
-    - export DEPLOYPATH=/home/streamin758/standalone-api
-    - /bin/mkdir -p $DEPLOYPATH
-    - /usr/bin/rsync -a --exclude=".git/" --exclude="node_modules/" --exclude=".env" --exclude=".env.*" --exclude="tmp/" --exclude="*.log" ./ $DEPLOYPATH/
+    - DEPLOY_TARGET=/home/streamin758/standalone-api node scripts/deploy.cjs

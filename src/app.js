@@ -106,6 +106,7 @@ const corsOptionsDelegate = (req, cb) => {
 
 app.use(cors(corsOptionsDelegate));
 app.options("*", cors(corsOptionsDelegate));
+app.get("/health", require('./utils/health.cjs').createHealthHandler({ pool }));
 
 /** =========================================
  *  ROOT
