@@ -19,7 +19,19 @@ function responseFixture() {
 }
 function fixture() {
   const handlers = new Map();
-  const state = { reads: 0, serverErrors: 0, row: { status: 'active', platform: 'android_tv', upstream_device_id: 7 }, dbFailure: false, fetches: [], assetToken: null };
+  const state = {
+  reads: 0,
+  serverErrors: 0,
+  row: {
+    status: 'active',
+    platform: 'android_tv',
+    upstream_device_id: 7
+  },
+  dbFailure: false,
+  fetches: [],
+  assetToken: null,
+  assetPayload: null
+};
   const context = vm.createContext({ AbortController, jwt, env: { JWT_SECRET: secret }, PLAYBACK_AUD: 'playback', PLAYBACK_ISS: 'streamin-api',
     pool: { async execute() {
       state.reads++; if (state.dbFailure) throw new Error('database failure');
@@ -32,7 +44,8 @@ function fixture() {
     needsEmbeddedHlsManifest: platform => platform === 'android_tv',
     getPlaybackTokenExpiresAtMs: () => Date.now() + 3600000,
     getCachedPlaybackAsset: () => state.assetToken ? { playbackToken: state.assetToken, targetUrl: 'https://cdn.example/segment.ts' } : null,
-    decodePlaybackAssetToken: () => ({ h: 'wrong-token' }),
+    decodePlaybackAssetToken: () =>
+  state.assetPayload || { h: 'wrong-token' },
     classifyPlaybackAssetKind: () => 'segment',
     async fetchBinaryWithResolvedUrl(...args) { state.fetches.push(args); return { buffer: Buffer.from('video'), url: args[0], status: 200 }; },
     isM3uManifest: () => false, inferContentType: () => 'video/mp2t',
@@ -121,3 +134,127 @@ test('opaque assets remain bound to the issuing playback token and ignore arbitr
   assert.equal((await f.request('/playback/hls-asset', value)).code, 401);
   assert.equal(f.state.fetches.length, 1);
 });
+/**
+ * ============================================================
+ * 758 StreamIN - HLS Asset Expiration & Token Binding Tests
+ * ============================================================
+ *
+ * Ensures that:
+ * - Missing expiration timestamps are rejected.
+ * - Invalid expiration timestamps are rejected.
+ * - Expired assets cannot be fetched.
+ * - Assets remain bound to their playback tokens.
+ * - Valid assets continue working.
+ *
+ * These tests do not require a production database.
+ */
+
+test(
+  'encrypted HLS assets require a valid future expiry and the issuing playback-token hash',
+  async () => {
+
+    const f = fixture();
+
+    const value = token();
+
+    const targetUrl = 'https://cdn.example/segment.ts';
+
+    /**
+     * Test invalid expiration timestamps.
+     */
+    const invalidExpirations = [
+      undefined,
+      null,
+      0,
+      -1,
+      NaN,
+      Infinity,
+      Date.now() - 1000
+    ];
+
+    for (const expiresAt of invalidExpirations) {
+
+      f.state.assetPayload = {
+        h: 'fixture-hash',
+        u: targetUrl,
+        e: expiresAt
+      };
+
+      const res = await f.request(
+        '/playback/hls-asset',
+        value
+      );
+
+      assert.equal(
+        res.code,
+        404,
+        `Invalid expiration accepted: ${String(expiresAt)}`
+      );
+    }
+
+    /**
+     * No upstream fetch should have occurred.
+     */
+    assert.equal(
+      f.state.fetches.length,
+      0
+    );
+
+    /**
+     * Test incorrect playback-token hash.
+     */
+    f.state.assetPayload = {
+      h: 'wrong-token',
+      u: targetUrl,
+      e: Date.now() + 60000
+    };
+
+    const invalidTokenResponse = await f.request(
+      '/playback/hls-asset',
+      value
+    );
+
+    assert.equal(
+      invalidTokenResponse.code,
+      404
+    );
+
+    assert.equal(
+      f.state.fetches.length,
+      0
+    );
+
+    /**
+     * Test a valid encrypted asset payload.
+     */
+    f.state.assetPayload = {
+      h: 'fixture-hash',
+      u: targetUrl,
+      e: Date.now() + 60000
+    };
+
+    const validResponse = await f.request(
+      '/playback/hls-asset',
+      value
+    );
+
+    assert.equal(
+      validResponse.code,
+      200
+    );
+
+    /**
+     * The upstream URL must match the issued asset.
+     */
+    assert.equal(
+      f.state.fetches.length,
+      1
+    );
+
+    assert.equal(
+      f.state.fetches[0][0],
+      targetUrl
+    );
+
+  }
+);

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test src/utils/*.test.cjs src/routes/*.test.cjs src/middleware/*.test.cjs",
+    "test:hls:process": "node --test test/integration/hls-process.test.cjs",
     "cleanup:device-transfers": "node scripts/cleanup-device-transfers.cjs",
     "sync:whmcs-status": "node scripts/sync-whmcs-status.cjs"
   },

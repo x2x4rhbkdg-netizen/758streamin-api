@@ -254,10 +254,18 @@ function getOrCreatePlaybackAssetId({ playbackToken, targetUrl, expiresAtMs, cac
     playbackAssetCacheByRequestKey.delete(requestKey);
   }
 
-  const normalizedExpiresAtMs = Number(expiresAtMs || 0) > Date.now()
-    ? Number(expiresAtMs)
-    : Date.now() + 5 * 60 * 1000;
-  const assetId = randomUUID();
+  const normalizedExpiresAtMs = Number(expiresAtMs);
+  if (
+    !Number.isSafeInteger(normalizedExpiresAtMs) ||
+    normalizedExpiresAtMs <= Date.now()
+  ) {
+    return "";
+  }
+  const assetId = encodePlaybackAssetToken({
+    h: hashPlaybackToken(playbackToken),
+    u: String(targetUrl || "").trim(),
+    e: normalizedExpiresAtMs,
+  });
   const entry = {
     assetId,
     playbackToken: String(playbackToken || "").trim(),
@@ -310,21 +318,33 @@ function encodePlaybackAssetToken(payload) {
 }
 
 function decodePlaybackAssetToken(value) {
-  const parts = String(value || "").trim().split(".");
-  if (parts.length !== 3) {
+  try {
+    const raw = String(value || "").trim();
+    const parts = raw.split(".");
+    if (raw.length > 32768 || parts.length !== 3 ||
+        parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) {
+      throw new Error("invalid asset encoding");
+    }
+
+    const [iv, authTag, ciphertext] = parts.map(decodeBase64Url);
+    if (iv.length !== 12 || authTag.length !== 16 || !ciphertext.length ||
+        [iv, authTag, ciphertext].some((part, index) => encodeBase64Url(part) !== parts[index])) {
+      throw new Error("invalid asset encoding");
+    }
+
+    const decipher = createDecipheriv("aes-256-gcm", playbackAssetCryptoKey, iv);
+    decipher.setAuthTag(authTag);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+    const payload = JSON.parse(plaintext);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new Error("invalid asset payload");
+    }
+    return payload;
+  } catch {
     const err = new Error("invalid playback asset token");
     err.status = 400;
     throw err;
   }
-
-  const iv = decodeBase64Url(parts[0]);
-  const authTag = decodeBase64Url(parts[1]);
-  const ciphertext = decodeBase64Url(parts[2]);
-
-  const decipher = createDecipheriv("aes-256-gcm", playbackAssetCryptoKey, iv);
-  decipher.setAuthTag(authTag);
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
-  return JSON.parse(plaintext);
 }
 
 function summarizeUrlForLog(value) {
@@ -1429,9 +1449,14 @@ router.get("/playback/hls-asset", async (req, res) => {
       if (String(assetPayload?.h || "") !== playbackTokenHash) {
         return res.status(404).json({ error: "playback asset not found" });
       }
-      const assetExpiresAtMs = Number(assetPayload?.e || 0);
-      if (assetExpiresAtMs > 0 && assetExpiresAtMs < Date.now()) {
-        return res.status(404).json({ error: "playback asset expired" });
+      const assetExpiresAtMs = Number(assetPayload?.e);
+      if (
+        !Number.isSafeInteger(assetExpiresAtMs) ||
+        assetExpiresAtMs <= Date.now()
+      ) {
+        return res.status(404).json({
+          error: "playback asset expired"
+        });
       }
       targetUrl = String(assetPayload?.u || "").trim();
     }
