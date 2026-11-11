@@ -15,9 +15,14 @@ const server = app.listen(port, host, () => {
  *  ========================================= */
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
+  process.exitCode = 1;
+  server.close(() => process.exit(1));
+  setTimeout(() => process.exit(1), 5000).unref();
 });
+
 process.on("uncaughtException", (err) => {
   console.error("[uncaughtException]", err);
+  process.exit(1);
 });
 
 module.exports = server;
