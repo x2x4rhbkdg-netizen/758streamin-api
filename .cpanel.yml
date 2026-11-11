@@ -1,4 +1,5 @@
 ---
 deployment:
   tasks:
-    - DEPLOY_TARGET=/home/streamin758/standalone-api node scripts/deploy.cjs
+    - export PATH=/opt/cpanel/ea-nodejs20/bin:$PATH
+    - DEPLOY_TARGET=/home/streamin758/standalone-api /opt/cpanel/ea-nodejs20/bin/node scripts/deploy.cjs
