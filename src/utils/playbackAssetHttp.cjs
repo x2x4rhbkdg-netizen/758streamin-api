@@ -4,6 +4,7 @@ const http = require('node:http');
 const https = require('node:https');
 const zlib = require('node:zlib');
 const { publicAddress } = require('./scraperHttp.cjs');
+const { createPinnedLookup } = require('./pinnedLookup.cjs');
 // Isolated pools contain only sockets opened through the validated lookup below.
 const httpAgent = new http.Agent({ keepAlive: true });
 const httpsAgent = new https.Agent({ keepAlive: true });
@@ -61,14 +62,14 @@ function createPlaybackAssetReader({ lookup = dns.lookup, requestHttp = http.get
         throw failure('private playback asset destination blocked');
       }
       if (controller.signal.aborted) throw failure('playback asset request aborted', 504);
-      const selected = addresses[0];
       return Promise.race([aborted, new Promise((resolve, reject) => {
         const request = (url.protocol === 'https:' ? requestHttps : requestHttp)(url, {
           signal: controller.signal,
+          autoSelectFamily: true,
           agent: url.protocol === 'https:' ? httpsAgent : httpAgent,
           headers: { ...init.headers, 'Accept-Encoding': 'identity' },
           // Pin only checked addresses, retaining dual-stack connection fallback.
-          lookup: (_host, opts, callback) => opts?.all ? callback(null, addresses) : callback(null, selected.address, selected.family),
+          lookup: createPinnedLookup(addresses),
         }, response => {
           const status = Number(response.statusCode);
           if ([301, 302, 303, 307, 308].includes(status)) {

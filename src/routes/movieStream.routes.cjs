@@ -3,6 +3,7 @@ const https = require('node:https');
 const dns = require('node:dns/promises');
 const { pipeline } = require('node:stream/promises');
 const { publicAddress } = require('../utils/scraperHttp.cjs');
+const { createPinnedLookup } = require('../utils/pinnedLookup.cjs');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { readMovieSettings } = require('../utils/movieSettings.cjs');
 const { requireCatalogAccess } = require('../utils/animeCatalog.cjs');
@@ -16,10 +17,9 @@ async function openStream(value, method, headers, signal, redirects = 0) {
   if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) throw new Error('Invalid stream URL');
   const addresses = await dns.lookup(url.hostname.replace(/^\[|\]$/g, ''), { all: true });
   if (signal.aborted || !addresses.length || addresses.some(({ address }) => !publicAddress(address))) throw new Error('Invalid stream destination');
-  const selected = addresses[0];
   return new Promise((resolve, reject) => {
-    const request = https.request(url, { method, headers, signal,
-      lookup: (_host, options, callback) => options?.all ? callback(null, [selected]) : callback(null, selected.address, selected.family),
+    const request = https.request(url, { method, headers, signal, autoSelectFamily: true,
+      lookup: createPinnedLookup(addresses),
     }, (response) => {
       if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
         response.resume();

@@ -43,12 +43,12 @@ test('preserves binary bytes, range metadata, custom upstream ports and pins che
   assert.equal(result.contentLength, '3'); assert.equal(result.acceptRanges, 'bytes');
   assert.equal(f.calls[0].options.headers.Range, 'bytes=0-2');
   assert.equal(f.calls[0].options.agent.options.keepAlive, true);
-  f.calls[0].options.lookup('upstream.example', {}, (error, address, family) => {
-    assert.equal(error, null); assert.equal(address, '93.184.216.34'); assert.equal(family, 4);
-  });
-  f.calls[0].options.lookup('upstream.example', { all: true }, (error, addresses) => {
-    assert.equal(error, null); assert.deepEqual(addresses, [{ address: '93.184.216.34', family: 4 }]);
-  });
+  const single = await new Promise((resolve, reject) => f.calls[0].options.lookup('upstream.example', {},
+    (error, address, family) => error ? reject(error) : resolve({ address, family })));
+  assert.deepEqual(single, { address: '93.184.216.34', family: 4 });
+  const all = await new Promise((resolve, reject) => f.calls[0].options.lookup('upstream.example', { all: true },
+    (error, addresses) => error ? reject(error) : resolve(addresses)));
+  assert.deepEqual(all, [{ address: '93.184.216.34', family: 4 }]);
   assert.equal(f.lookups.length, 1);
 });
 
@@ -66,9 +66,9 @@ test('retains all validated public addresses for dual-stack connection fallback'
   const addresses = [{ address: '2606:4700:4700::1111', family: 6 }, { address: '1.1.1.1', family: 4 }];
   const f = fixture([], addresses);
   await f.read('https://upstream.example/a');
-  f.calls[0].options.lookup('upstream.example', { all: true }, (error, result) => {
-    assert.equal(error, null); assert.deepEqual(result, addresses);
-  });
+  const result = await new Promise((resolve, reject) => f.calls[0].options.lookup('upstream.example', { all: true },
+    (error, value) => error ? reject(error) : resolve(value)));
+  assert.deepEqual(result, [addresses[1], addresses[0]]);
 });
 
 test('rejects mixed public/private DNS answers and later private redirect resolutions', async () => {

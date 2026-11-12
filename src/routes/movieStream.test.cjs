@@ -6,16 +6,18 @@ const { EventEmitter } = require('node:events');
 const { Readable, PassThrough } = require('node:stream');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { publicAddress } = require('../utils/scraperHttp.cjs');
-function fixture({ enabled = true, anime_enabled = false, adult_enabled = false, pinFingerprint = 'pin-one', redirect, content = 'video', mime = 'video/mp4' } = {}) {
+function fixture({ enabled = true, anime_enabled = false, adult_enabled = false, pinFingerprint = 'pin-one', redirect, content = 'video', mime = 'video/mp4', requestFailures = [], addresses } = {}) {
   let handler, calls = [];
   const context = { module: { exports: {} }, process: { env: { JWT_SECRET: 'test-secret' } }, Buffer, URL, AbortController, setTimeout, clearTimeout,
     require(name) {
       if (name === 'express') return { Router: () => ({ get(_path, callback) { handler = callback; } }) };
-      if (name === 'node:dns/promises') return { lookup: async (hostname) => [{ address: hostname === 'private.example' ? '127.0.0.1' : '8.8.8.8', family: 4 }] };
+      if (name === 'node:dns/promises') return { lookup: async (hostname) => addresses || [{ address: hostname === 'private.example' ? '127.0.0.1' : '8.8.8.8', family: 4 }] };
       if (name === 'node:https') return { request(url, options, callback) {
         calls.push({ url, options });
         const request = new EventEmitter(); request.setTimeout = () => {};
         request.end = () => {
+          const code = requestFailures.shift();
+          if (code) { queueMicrotask(() => request.emit('error', Object.assign(new Error('private upstream diagnostic'), { code }))); return; }
           const response = Readable.from(redirect ? [] : [content]);
           response.statusCode = redirect ? 302 : 206;
           response.headers = redirect ? { location: redirect } : { 'content-type': mime, 'content-range': 'bytes 0-4/5', 'content-length': String(Buffer.byteLength(content)) };
@@ -49,8 +51,8 @@ test('protected stream forwards range, pipes content and never forwards credenti
   assert.equal(result.headers['content-range'], 'bytes 0-4/5');
   assert.equal(JSON.stringify(result).includes('private-key'), false);
   assert.equal(calls[0].options.headers.Range, 'bytes=0-4');
-  let pinned;
-  calls[0].options.lookup('cdn.example', {}, (_error, address) => { pinned = address; });
+  const pinned = await new Promise((resolve, reject) => calls[0].options.lookup('cdn.example', {},
+    (error, address) => error ? reject(error) : resolve(address)));
   assert.equal(pinned, '8.8.8.8');
 });
 
@@ -102,4 +104,22 @@ test('protected anime tickets enforce independent device permission on every str
   assert.equal((await fixture({ enabled: false, anime_enabled: true }).run(url, undefined, ticket)).code, 206);
   assert.equal((await fixture({ enabled: true, anime_enabled: false }).run(url, undefined, ticket)).code, 403);
   assert.equal((await fixture({ enabled: false, anime_enabled: true }).run(url)).code, 403);
+});
+
+test('upstream network failures return 502, release capacity and do not break the next request', async () => {
+  const f = fixture({ requestFailures: Array(20).fill('ENETUNREACH') });
+  for (let i = 0; i < 20; i++) {
+    const response = await f.run('https://cdn.example/movie.mp4?secret=private');
+    assert.equal(response.code, 502);
+    assert.equal(response.body, JSON.stringify({ error: 'Movie stream temporarily unavailable' }));
+    assert.equal(response.body.includes('private'), false);
+  }
+  const next = await f.run('https://cdn.example/movie.mp4');
+  assert.equal(next.code, 206); assert.equal(next.body, 'video');
+});
+
+test('dual-stack fallback still rejects a mixed public/private DNS answer before connecting', async () => {
+  const f = fixture({ addresses: [{ address: '8.8.8.8', family: 4 }, { address: '::1', family: 6 }] });
+  assert.equal((await f.run('https://cdn.example/movie.mp4')).code, 502);
+  assert.equal(f.calls.length, 0);
 });

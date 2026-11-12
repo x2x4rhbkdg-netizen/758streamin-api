@@ -2,6 +2,7 @@ const dns = require('node:dns/promises');
 const net = require('node:net');
 const http = require('node:http');
 const https = require('node:https');
+const { createPinnedLookup } = require('./pinnedLookup.cjs');
 
 function publicAddress(address) {
   if (net.isIP(address) === 4) {
@@ -45,13 +46,13 @@ async function readText(value, { signal, redirects = 0, accept = 'application/js
       }),
     ]);
     if (!addresses.length || addresses.some(({ address }) => !publicAddress(address))) throw new Error('Private scraper destination blocked');
-    const selected = addresses[0];
     return await new Promise((resolve, reject) => {
       const request = (url.protocol === 'https:' ? https : http).get(url, {
         signal: controller.signal,
+        autoSelectFamily: true,
         headers: { 'User-Agent': 'StreamIN-Scraper/1.0', Accept: accept, 'Accept-Encoding': 'identity' },
-        // Pin the validated DNS result to prevent rebinding between lookup and connection.
-        lookup: (_host, options, callback) => options?.all ? callback(null, [selected]) : callback(null, selected.address, selected.family),
+        // Pin only validated results and retain both families for fallback.
+        lookup: createPinnedLookup(addresses),
       }, (response) => {
         if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
           response.resume();
