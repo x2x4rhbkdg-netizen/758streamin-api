@@ -176,6 +176,16 @@ Response 200:
 ```
 
 ## Playback
+
+Public API playback links (including nested HLS playlists, segments, keys and
+initialization maps served by the API) use HTTPS even when the reverse proxy
+forwards the request to standalone Node over HTTP. `PLAYBACK_BASE_URL` takes precedence over the
+request host; set it to `https://api.758streamin.com` in production to pin the
+public playback origin. HTTP remains supported for loopback development hosts.
+This does not upgrade provider URLs, change provider delivery, or bypass device
+authorization. Deploy using the standalone systemd activation and health-check
+procedure in [DEPLOYMENT.md](DEPLOYMENT.md), not a Passenger restart;
+existing mobile release installations do not need an APK update for this fix.
 ### POST /v1/playback/token
 Returns signed playback URLs and expiry.
 

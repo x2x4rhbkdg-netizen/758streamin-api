@@ -60,8 +60,8 @@ async function createUpstream(t) {
   return { base: await listen(t, server), responses, requests };
 }
 
-async function createWorker(t, upstream, platform = "web") {
-  const state = { deviceStatus: "active", databaseReads: 0, assetRequests: [], internalErrors: [], logs: [] };
+async function createWorker(t, upstream, platform = "web", publicHost = "") {
+  const state = { deviceStatus: "active", deviceDeleted: false, databaseReads: 0, assetRequests: [], internalErrors: [], logs: [] };
   const logger = { log: (tag, value) => state.logs.push({ tag, ...JSON.parse(value) }),
     warn: (tag, value) => state.logs.push({ tag, ...JSON.parse(value) }) };
   const logging = createPlaybackLogging({ logger, secret: 'fixture-logging-only' });
@@ -87,7 +87,7 @@ async function createWorker(t, upstream, platform = "web") {
     "../middleware/authJwt.cjs": { authJwt: (_req, _res, next) => next() },
     "../db/pool.cjs": { pool: { async execute(_sql, params) {
       state.databaseReads++;
-      return [[{ status: state.deviceStatus, platform, upstream_device_id: params[0], upstream_base_url: ORIGIN }]];
+      return [state.deviceDeleted ? [] : [{ status: state.deviceStatus, platform, upstream_device_id: params[0], upstream_base_url: ORIGIN }]];
     } } },
     "../utils/upstreamAuth.cjs": { resolveDeviceUpstreamRow: row => row && ({ ...row,
       username: "test-user", password: "test-password" }) },
@@ -116,10 +116,12 @@ async function createWorker(t, upstream, platform = "web") {
   // Load the complete CommonJS router, including its real crypto and helpers.
   // Test-only hooks allow expired fixtures to use the same production encoder.
   vm.runInContext(source + `\nmodule.exports.testHooks = {
-    encodePlaybackAssetToken, hashPlaybackToken, playbackAssetCacheById
+    encodePlaybackAssetToken, hashPlaybackToken, playbackAssetCacheById,
+    getPlaybackBaseUrl, buildPlaybackResponseUrls
   };`, context, { filename });
   const router = context.module.exports;
   const app = express();
+  if (publicHost) app.use((req, _res, next) => { req.headers.host = publicHost; next(); });
   app.use("/v1", router);
   return { state, hooks: router.testHooks, base: await listen(t, http.createServer(app)) };
 }
@@ -147,10 +149,10 @@ async function playlist(worker, token, path = "/playback/hls") {
 
 const mediaLinks = text => text.split(/\r?\n/).filter(line => line && !line.startsWith("#"));
 
-async function fixture(t, platform = "web") {
+async function fixture(t, platform = "web", publicHost = "") {
   const upstream = await createUpstream(t);
-  const a = await createWorker(t, upstream, platform);
-  const b = await createWorker(t, upstream, platform);
+  const a = await createWorker(t, upstream, platform, publicHost);
+  const b = await createWorker(t, upstream, platform, publicHost);
   return { upstream, a, b, token: createToken() };
 }
 
@@ -222,6 +224,58 @@ test("Suspended device cannot retrieve HLS segments", async t => {
   assert.equal(response.status, 403);
   assert.equal(upstream.requests.length, count);
   assert.equal(b.state.assetRequests.length, 0);
+});
+
+test('mobile HLS emits HTTPS nested playlists, segments, keys and maps behind an HTTP reverse-proxy hop', async t => {
+  const { upstream, a, b, token } = await fixture(t, 'android_mobile', 'api.758streamin.com');
+  upstream.responses.set(ROOT, manifestSpec('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nvariants/low.m3u8'));
+  upstream.responses.set(VARIANT_PATH, manifestSpec('#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="../channel.key"\n#EXT-X-MAP:URI="../init.mp4"\n#EXTINF:6,\n../segment100.ts'));
+  upstream.responses.set('/live/test-user/test-password/channel.key', { body: KEY });
+  upstream.responses.set('/live/test-user/test-password/init.mp4', { body: SEGMENT, type: 'video/mp4' });
+  const headers = { 'X-Forwarded-Proto': 'http' };
+  const master = await fetch(`${a.base}/v1/playback/hls?token=${token}`, { headers });
+  assert.equal(master.status, 200);
+  const variantLink = mediaLinks(await master.text())[0];
+  assert.equal(new URL(variantLink).origin, 'https://api.758streamin.com');
+  const variant = await fetch(onWorker(variantLink, b), { headers });
+  assert.equal(variant.status, 200);
+  const text = await variant.text();
+  const links = [...mediaLinks(text), ...[...text.matchAll(/URI="([^"]+)"/g)].map(match => match[1])];
+  assert.equal(links.length, 3);
+  for (const [index, link] of links.entries()) {
+    const url = new URL(link);
+    assert.equal(url.origin, 'https://api.758streamin.com');
+    assert.equal(url.pathname, '/v1/playback/hls-asset');
+    assert.equal(url.searchParams.get('token'), token);
+    const response = await fetch(onWorker(link, a), { headers });
+    assert.equal(response.status, 200);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), index === 1 ? KEY : SEGMENT);
+  }
+  const count = upstream.requests.length;
+  a.state.deviceDeleted = true;
+  assert.equal((await fetch(onWorker(links[0], a), { headers })).status, 401);
+  a.state.deviceDeleted = false;
+  a.state.deviceStatus = 'suspended';
+  assert.equal((await fetch(onWorker(links[0], a), { headers })).status, 403);
+  assert.equal(upstream.requests.length, count);
+});
+
+test('token response URLs stay HTTPS without changing platform routes or token values', async t => {
+  const { a, token } = await fixture(t);
+  const base = a.hooks.getPlaybackBaseUrl({ protocol: 'http', headers: { host: 'api.758streamin.com' } });
+  for (const platform of ['android_mobile', 'android_tv', 'samsung_tizen_web', 'ios']) {
+    for (const type of ['live', 'vod', 'series']) {
+      const urls = a.hooks.buildPlaybackResponseUrls(base, token, type, platform);
+      for (const value of Object.values(urls)) {
+        const url = new URL(value);
+        assert.equal(url.origin, 'https://api.758streamin.com');
+        assert.equal(url.searchParams.get('token'), token);
+      }
+      const expected = type !== 'live' ? '/v1/playback/stream'
+        : ['android_tv', 'samsung_tizen_web'].includes(platform) ? '/v1/playback/embedded-hls' : '/v1/playback/hls';
+      assert.equal(new URL(urls.hls).pathname, expected);
+    }
+  }
 });
 
 test("Expired playback token is rejected", async t => {

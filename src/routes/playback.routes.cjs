@@ -441,13 +441,19 @@ function getPlaybackBaseUrl(req) {
     .split(",")[0]
     .trim();
   const host = String(req?.headers?.host || "").trim() || forwardedHost;
-  const proto = forwardedProto || String(req?.protocol || "").trim() || "https";
-
-  if (host) {
-    return normalizeBaseUrl(`${proto}://${host}`);
+  const proto = forwardedProto === "https" || req?.protocol === "https" ? "https" : "http";
+  const base = normalizeBaseUrl(env.PLAYBACK_BASE_URL || (host ? `${proto}://${host}` : ""));
+  if (!base) return "";
+  const url = new URL(base);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("invalid playback base URL");
   }
-
-  return normalizeBaseUrl(env.PLAYBACK_BASE_URL || "");
+  const local = url.hostname === "localhost" || url.hostname.endsWith(".localhost") ||
+    url.hostname === "[::1]" || /^127\./.test(url.hostname);
+  // A reverse proxy may use HTTP internally when the device connected over TLS.
+  // Never emit public HTTP API links; keep loopback HTTP for local development.
+  if (!local) url.protocol = "https:";
+  return normalizeBaseUrl(url.href);
 }
 
 function normalizeLiveOutput(v) {
