@@ -54,6 +54,7 @@ function createPlaybackAssetReader({ lookup = dns.lookup, requestHttp = http.get
 
     async function visit(target, redirects = 0) {
       const url = assetUrl(target, options.allowedOrigins);
+      try { options.onDestination?.(url.href); } catch { /* Diagnostics are non-fatal. */ }
       const hostname = url.hostname.replace(/^\[|\]$/g, '');
       const literalFamily = net.isIP(hostname);
       const addresses = literalFamily ? [{ address: hostname, family: literalFamily }] :

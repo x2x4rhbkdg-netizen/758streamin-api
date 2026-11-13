@@ -14,13 +14,17 @@ const {
   fetchJsonWithFallback,
 } = require("../utils/xui.cjs");
 const { pool } = require("../db/pool.cjs");
-const { sendInternalError } = require("../utils/errorResponse.cjs");
+const { sendInternalError: originalSendInternalError } = require("../utils/errorResponse.cjs");
+const { playbackLogging } = require('../utils/playbackLogging.cjs');
+const sendInternalError = (req, res, scope, err) => originalSendInternalError(req, res, scope, err,
+  { logRecord: { ...playbackLogging.context(), message: 'playback internal failure' } });
 const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
 const hlsUpstreamDiagnostics = createHlsUpstreamDiagnostics();
 const { createPlaybackAssetReader, legacyAssetOrigins } = require('../utils/playbackAssetHttp.cjs');
 const readPlaybackAsset = createPlaybackAssetReader();
 
 const router = Router();
+router.use(playbackLogging.middleware);
 
 const PLAYBACK_AUD = "playback";
 const PLAYBACK_ISS = "streamin-api";
@@ -348,15 +352,7 @@ function decodePlaybackAssetToken(value) {
 }
 
 function summarizeUrlForLog(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  try {
-    const url = new URL(raw);
-    const tail = (url.pathname || "/").split("/").filter(Boolean).slice(-2).join("/") || "/";
-    return `${url.protocol}//${url.host}/.../${tail}`;
-  } catch {
-    return raw.slice(0, 120);
-  }
+  return playbackLogging.source(value).source_ref || '';
 }
 
 function classifyPlaybackAssetKind(value) {
@@ -371,16 +367,7 @@ function classifyPlaybackAssetKind(value) {
 }
 
 function logPlaybackDebug(event, details = {}) {
-  try {
-    const payload = {
-      event,
-      at: new Date().toISOString(),
-      ...details,
-    };
-    console.log(`[playback-debug] ${JSON.stringify(payload)}`);
-  } catch (err) {
-    console.log(`[playback-debug] ${event}`);
-  }
+  playbackLogging.debug(event, details);
 }
 
 function pruneEmbeddedHlsVariantCache(nowMs = Date.now()) {
@@ -577,11 +564,20 @@ async function fetchXuiJson(upstream, action, params = {}) {
     return url.toString();
   });
 
-  return fetchJsonWithFallback(
-    requestUrls,
-    { method: "GET", headers: { "User-Agent": "streamin-api/1.0" } },
-    { timeoutMs: env.XUI_REQUEST_TIMEOUT_MS }
-  );
+  playbackLogging.stage('source_lookup');
+  playbackLogging.target(requestUrls[0]);
+  const startedAt = hlsUpstreamDiagnostics.now();
+  try {
+    return await fetchJsonWithFallback(
+      requestUrls,
+      { method: "GET", headers: { "User-Agent": "streamin-api/1.0" } },
+      { timeoutMs: env.XUI_REQUEST_TIMEOUT_MS }
+    );
+  } catch (err) {
+    hlsUpstreamDiagnostics.failure(err, { startedAt, targetUrl: err?.url || requestUrls[0],
+      timeoutMs: env.XUI_REQUEST_TIMEOUT_MS });
+    throw err;
+  }
 }
 
 async function resolveLiveDirectSource(upstream, streamId, options = {}) {
@@ -900,6 +896,7 @@ function pickStableEmbeddedVariant(variants, caps) {
 }
 
 async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
+  playbackLogging.stage(options.stage || 'manifest');
   const list = Array.isArray(urls) ? urls.filter(Boolean) : [urls].filter(Boolean);
   if (!list.length) throw new Error("No upstream URL candidates");
 
@@ -908,6 +905,7 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
 
   for (let i = 0; i < list.length; i += 1) {
     const targetUrl = list[i];
+    playbackLogging.target(targetUrl);
     const startedAt = hlsUpstreamDiagnostics.now();
     let timedOut = false;
     const controller = timeoutMs > 0 ? new AbortController() : null;
@@ -919,12 +917,13 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
         redirect: "follow",
         signal: controller?.signal || init.signal,
       });
+      playbackLogging.target(response.url || targetUrl);
       const text = await response.text();
 
       if (!response.ok) {
         const err = new Error("upstream failed");
         err.status = response.status;
-        err.url = targetUrl;
+        err.url = response.url || targetUrl;
         err.body = text.slice(0, 200);
         throw err;
       }
@@ -936,7 +935,7 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
       };
     } catch (err) {
       lastErr = err;
-      hlsUpstreamDiagnostics.failure(err, { startedAt, timedOut, candidate: i + 1, totalCandidates: list.length, timeoutMs });
+      hlsUpstreamDiagnostics.failure(err, { startedAt, timedOut, candidate: i + 1, totalCandidates: list.length, timeoutMs, targetUrl: err?.url || targetUrl });
       const status = Number(err?.status || 0);
       if (i < list.length - 1 && (!status || status >= 500)) continue;
       throw err;
@@ -949,10 +948,21 @@ async function fetchTextWithResolvedUrl(urls, init = {}, options = {}) {
 }
 
 async function fetchBinaryWithResolvedUrl(url, init = {}, options = {}) {
-  return readPlaybackAsset(url, init, options);
+  playbackLogging.stage(classifyPlaybackAssetKind(url));
+  playbackLogging.target(url);
+  const startedAt = hlsUpstreamDiagnostics.now();
+  let destination = url;
+  try {
+    return await readPlaybackAsset(url, init, { ...options,
+      onDestination: value => { destination = value; playbackLogging.target(value); } });
+  } catch (err) {
+    hlsUpstreamDiagnostics.failure(err, { startedAt, targetUrl: destination, timeoutMs: options.timeoutMs });
+    throw err;
+  }
 }
 
 async function resolveEmbeddedHlsManifest(urls, options = {}) {
+  playbackLogging.stage('manifest');
   const requestInit = {
     method: "GET",
     headers: { "User-Agent": "streamin-api/1.0" },
@@ -994,10 +1004,11 @@ async function resolveEmbeddedHlsManifest(urls, options = {}) {
     }
 
     try {
-      manifest = await fetchTextWithResolvedUrl([selectedUrl], requestInit, requestOptions);
+      playbackLogging.stage('nested_manifest');
+      manifest = await fetchTextWithResolvedUrl([selectedUrl], requestInit, { ...requestOptions, stage: 'nested_manifest' });
     } catch (err) {
       deleteCachedEmbeddedHlsVariant(parentUrl);
-      console.warn("[playback/embedded-hls] stable variant fetch failed:", err?.message || err);
+      logPlaybackDebug('variant_failed');
       return {
         text: manifestText,
         url: parentUrl,
@@ -1056,6 +1067,7 @@ async function resolvePlaybackContext(token) {
     }
   }
 
+  playbackLogging.identify(payload, device, token);
   const upstream = resolveDeviceUpstreamRow(device.upstream_device_id == null ? null : device);
   if (!upstream) {
     const err = new Error("no upstream configured for device");
@@ -1095,10 +1107,10 @@ async function resolveLivePlaybackCandidates(upstream, payload, format, options 
           return { urls: [direct], sourceMode, sawDirect, usedDirect };
         }
 
-        console.warn("[playback/stream] skipping non-web-playable direct source:", direct);
+        logPlaybackDebug('direct_source_skipped');
       }
     } catch (err) {
-      console.warn("[playback/stream] live source lookup failed:", err?.message || err);
+      logPlaybackDebug('live_lookup_failed');
     }
 
     if (sourceMode === "stream_source") {
@@ -1549,6 +1561,7 @@ router.get("/playback/stream", async (req, res) => {
 
     const source = await resolveLivePlaybackCandidates(upstream, payload, format);
     const url = source.urls[0];
+    playbackLogging.target(url);
     if (!url) {
       return res.status(502).json({ error: "playback source unavailable" });
     }

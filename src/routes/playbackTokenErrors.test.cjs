@@ -33,6 +33,7 @@ function fixture() {
   assetPayload: null
 };
   const context = vm.createContext({ AbortController, jwt, env: { JWT_SECRET: secret }, PLAYBACK_AUD: 'playback', PLAYBACK_ISS: 'streamin-api',
+    playbackLogging: { identify() {} },
     pool: { async execute() {
       state.reads++; if (state.dbFailure) throw new Error('database failure');
       return [state.row ? [state.row] : []];

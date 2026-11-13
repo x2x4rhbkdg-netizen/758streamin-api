@@ -21,7 +21,8 @@ test('classifies failures with elapsed time and safe fields, never raw provider 
     time += 125;
     diagnostics.failure({ message: 'https://private.example/user/secret?token=secret', url: 'private', body: 'private', ...error },
       { startedAt: time - 125, candidate: 2, totalCandidates: 3, timeoutMs: 12000, ...options });
-    const [tag, record] = logs.at(-1);
+    const [tag, encoded] = logs.at(-1);
+    const record = JSON.parse(encoded);
     assert.equal(tag, '[hls-upstream-failure]'); assert.equal(record.failure_type, expected);
     assert.equal(record.elapsed_ms, 125); assert.equal(record.timeout_ms, 12000);
     assert.equal(record.candidate, 2); assert.equal(record.totalCandidates, 3);
@@ -31,7 +32,7 @@ test('classifies failures with elapsed time and safe fields, never raw provider 
 
 test('bounded per-worker rate includes suppressed count on the next emitted log', () => {
   let time = 0; const logs = [];
-  const diagnostics = createHlsUpstreamDiagnostics({ now: () => time, maxPerMinute: 2, logger: { warn: (_tag, value) => logs.push(value) } });
+  const diagnostics = createHlsUpstreamDiagnostics({ now: () => time, maxPerMinute: 2, logger: { warn: (_tag, value) => logs.push(JSON.parse(value)) } });
   for (let i = 0; i < 5; i++) diagnostics.failure({}, { startedAt: 0, candidate: 1, totalCandidates: 1 });
   assert.equal(logs.length, 2);
   time = 60000;
@@ -51,6 +52,7 @@ function fetchFixture(results) {
   const end = source.indexOf('\nasync function fetchBinaryWithResolvedUrl(', start);
   const calls = [], failures = [];
   const context = vm.createContext({ AbortController, setTimeout, clearTimeout,
+    playbackLogging: { stage() {}, target() {} },
     hlsUpstreamDiagnostics: { now: () => 0, failure: (error, details) => failures.push({ error, details }) },
     fetch: async (url, init) => {
       calls.push({ url, init }); const value = results.shift();

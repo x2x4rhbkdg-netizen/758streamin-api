@@ -36,7 +36,7 @@ function buildInternalError(req, err, extra = {}) {
 
 function sendInternalError(req, res, scope, err, extra = {}) {
   if (isDatabaseBusy(err)) return sendDatabaseBusy(res);
-  console.error(`[${scope}] error:`, err);
+  console.error(`[${scope}] error:`, extra.logRecord || err);
   return res.status(extra.status || 500).json(
     buildInternalError(req, err, {
       ...extra,

@@ -9,6 +9,8 @@ const { createRequire } = require("node:module");
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const { createPlaybackAssetReader, legacyAssetOrigins } = require("../utils/playbackAssetHttp.cjs");
+const { createPlaybackLogging } = require('../utils/playbackLogging.cjs');
+const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
 const filename = require.resolve("./playback.routes.cjs");
 const source = fs.readFileSync(filename, "utf8");
 const routeRequire = createRequire(filename);
@@ -45,6 +47,7 @@ async function createUpstream(t) {
     if (spec.redirect) { res.writeHead(302, { Location: spec.redirect }); res.end(); return; }
     const body = Buffer.isBuffer(spec.body) ? spec.body : Buffer.from(spec.body);
     const headers = { "Content-Type": spec.type || "application/octet-stream", "Accept-Ranges": "bytes" };
+    if (spec.status) { res.writeHead(spec.status); res.end(body); return; }
     if (req.headers.range === "bytes=1-4") {
       const partial = body.subarray(1, 5);
       res.writeHead(206, { ...headers, "Content-Range": `bytes 1-4/${body.length}`, "Content-Length": partial.length });
@@ -58,7 +61,10 @@ async function createUpstream(t) {
 }
 
 async function createWorker(t, upstream, platform = "web") {
-  const state = { deviceStatus: "active", databaseReads: 0, assetRequests: [], internalErrors: [] };
+  const state = { deviceStatus: "active", databaseReads: 0, assetRequests: [], internalErrors: [], logs: [] };
+  const logger = { log: (tag, value) => state.logs.push({ tag, ...JSON.parse(value) }),
+    warn: (tag, value) => state.logs.push({ tag, ...JSON.parse(value) }) };
+  const logging = createPlaybackLogging({ logger, secret: 'fixture-logging-only' });
   // Only DNS and transport are fixtures. The production reader still validates
   // origins, redirects and addresses and processes real HTTP response streams.
   const request = (url, options, callback) => {
@@ -72,6 +78,10 @@ async function createWorker(t, upstream, platform = "web") {
     requestHttp: request, requestHttps: request,
   });
   const modules = {
+    '../utils/playbackLogging.cjs': { playbackLogging: logging },
+    '../utils/hlsUpstreamDiagnostics.cjs': {
+      createHlsUpstreamDiagnostics: () => createHlsUpstreamDiagnostics({ logger, logging }),
+    },
     "../config/env.cjs": { env: { JWT_SECRET: SECRET, XUI_REQUEST_TIMEOUT_MS: 2000,
       LIVE_SOURCE_MODE: "path", LIVE_HLS_OUTPUT: "m3u8", XUI_HTTP_FALLBACK: false } },
     "../middleware/authJwt.cjs": { authJwt: (_req, _res, next) => next() },
@@ -142,6 +152,51 @@ async function fixture(t, platform = "web") {
   const a = await createWorker(t, upstream, platform);
   const b = await createWorker(t, upstream, platform);
   return { upstream, a, b, token: createToken() };
+}
+
+test('embedded manifest failures identify stream and source without leaking credentials', async t => {
+  const { upstream, a, token } = await fixture(t, 'android_tv');
+  upstream.responses.set(ROOT, { status: 503, body: 'PRIVATE-PROVIDER-BODY' });
+  const response = await fetch(`${a.base}/v1/playback/embedded-hls?token=${encodeURIComponent(token)}`);
+  assert.equal(response.status, 503); await response.text();
+  const attempt = a.state.logs.find(log => log.tag === '[hls-upstream-failure]');
+  const final = a.state.logs.find(log => log.event === 'request_complete');
+  assert.equal(attempt.stream_id, '100'); assert.equal(attempt.stage, 'manifest');
+  assert.equal(attempt.request_id, final.request_id); assert.equal(final.outcome, 'failed');
+  assert.match(attempt.source_ref, /^[a-f0-9]{24}$/);
+  const encoded = JSON.stringify(a.state.logs);
+  for (const secret of [token, 'test-user', 'test-password', 'upstream.example', 'PRIVATE-PROVIDER-BODY']) {
+    assert.ok(!encoded.includes(secret), secret);
+  }
+});
+
+test('embedded asset redirect failures identify the destination and preserve playback HTTP status', async t => {
+  const { upstream, a, token } = await fixture(t, 'android_tv');
+  const target = `${ORIGIN}/asset.ts`;
+  upstream.responses.set('/asset.ts', { redirect: `${ORIGIN}/broken.ts` });
+  upstream.responses.set('/broken.ts', { status: 503, body: 'PRIVATE-PROVIDER-BODY' });
+  const response = await fetch(`${a.base}/v1/playback/embedded-hls-asset?token=${encodeURIComponent(token)}&url=${encodeURIComponent(target)}`);
+  assert.equal(response.status, 503); await response.text();
+  const attempt = a.state.logs.find(log => log.tag === '[hls-upstream-failure]');
+  const final = a.state.logs.find(log => log.event === 'request_complete');
+  assert.equal(attempt.stage, 'segment_ts'); assert.equal(final.stream_id, '100');
+  assert.equal(attempt.request_id, final.request_id); assert.equal(final.failed_attempts, 1);
+  assert.doesNotMatch(JSON.stringify(a.state.logs), /PRIVATE|broken\.ts|asset\.ts|upstream\.example/);
+});
+
+for (const [path, kind] of [['/encryption.key', 'key'], ['/nested.m3u8', 'manifest']]) {
+  test(`embedded ${kind} failures retain request context without credential output`, async t => {
+    const { upstream, a, token } = await fixture(t, 'android_tv');
+    upstream.responses.set(path, { status: 503, body: 'PRIVATE-PROVIDER-BODY' });
+    const response = await fetch(`${a.base}/v1/playback/embedded-hls-asset?token=${encodeURIComponent(token)}&url=${encodeURIComponent(ORIGIN + path)}`);
+    assert.equal(response.status, 503); await response.text();
+    const attempt = a.state.logs.find(log => log.tag === '[hls-upstream-failure]');
+    const final = a.state.logs.find(log => log.event === 'request_complete');
+    assert.equal(attempt.stage, kind); assert.equal(attempt.stream_id, '100');
+    assert.equal(final.request_id, attempt.request_id); assert.equal(final.outcome, 'failed');
+    assert.ok(!JSON.stringify(a.state.logs).includes(token));
+    assert.doesNotMatch(JSON.stringify(a.state.logs), /PRIVATE|test-password|upstream\.example/);
+  });
 }
 
 test("Worker A playlist assets are accessible from Worker B", async t => {

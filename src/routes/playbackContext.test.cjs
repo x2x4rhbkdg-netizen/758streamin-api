@@ -10,6 +10,7 @@ test('playback context uses one joined read per request while retaining deletion
   let device = { status: 'active', platform: 'android', upstream_device_id: 7, enc_username: 'encrypted' };
   let reads = 0, resolves = 0, invalidToken = false;
   const context = { env: { JWT_SECRET: 'fixture' }, PLAYBACK_AUD: 'playback', PLAYBACK_ISS: 'streamin-api',
+    playbackLogging: { identify() {} },
     jwt: { verify() { if (invalidToken) throw new Error('expired token'); return { device_id: 7 }; } },
     pool: { async execute(sql, params) {
       reads++; assert.match(sql, /LEFT JOIN device_upstream/); assert.match(sql, /WHERE d.id=\?/);

@@ -1,4 +1,5 @@
 const { performance } = require('node:perf_hooks');
+const { playbackLogging } = require('./playbackLogging.cjs');
 
 const NETWORK_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET',
   'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_CONNECT_TIMEOUT',
@@ -7,11 +8,12 @@ const NETWORK_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNR
   'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID']);
 const ERROR_NAMES = new Set(['Error', 'TypeError', 'AbortError', 'TimeoutError']);
 
-function createHlsUpstreamDiagnostics({ logger = console, now = () => performance.now(), maxPerMinute = 20 } = {}) {
+function createHlsUpstreamDiagnostics({ logger = console, now = () => performance.now(), maxPerMinute = 20, logging = playbackLogging } = {}) {
   let windowStart = now(), emitted = 0, suppressed = 0;
   return {
     now,
-    failure(error, { startedAt, timedOut = false, candidate, totalCandidates, timeoutMs }) {
+    failure(error, { startedAt, timedOut = false, candidate, totalCandidates, timeoutMs, targetUrl }) {
+      const context = logging.failure(targetUrl);
       const time = now();
       if (time - windowStart >= 60000) { windowStart = time; emitted = 0; }
       if (emitted >= maxPerMinute) { suppressed++; return; }
@@ -29,12 +31,12 @@ function createHlsUpstreamDiagnostics({ logger = console, now = () => performanc
       else if (code && /CERT|TLS|SIGNATURE/.test(code)) { type = 'tls'; message = 'upstream TLS verification failed'; }
       else if (code) { type = 'connection'; message = 'upstream connection failed'; }
       // Never log raw messages, bodies, paths or URLs: provider credentials can occur in any of them.
-      const record = { failure_type: type, status: status || 'network-error',
+      const record = { ...context, failure_type: type, status: status || 'network-error',
         error: ERROR_NAMES.has(error?.name) ? error.name : 'Error', code, message,
         elapsed_ms: Math.max(0, Math.round(time - startedAt)), timeout_ms: timeoutMs > 0 ? timeoutMs : null,
         candidate, totalCandidates, suppressed_since_last_log: suppressed };
       suppressed = 0;
-      try { logger.warn('[hls-upstream-failure]', record); } catch { /* Diagnostics must not change playback. */ }
+      try { logger.warn('[hls-upstream-failure]', JSON.stringify(record)); } catch { /* Diagnostics must not change playback. */ }
     },
   };
 }
