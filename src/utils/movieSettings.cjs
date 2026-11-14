@@ -212,7 +212,9 @@ async function saveGlobalMovieSettings(input) {
 function adminGlobalSettings(settings) {
   const result = { ...publicSettings(settings), scraper_url: settings.scraper_url, secondary_scraper_url: settings.secondary_scraper_url,
     sports_broadcaster_aliases: settings.sports_broadcaster_aliases || [],
-    stremio_addons: publicAddons(settings.stremio_addons) };
+    stremio_addons: publicAddons(settings.stremio_addons).map((addon, index) => ({
+      ...addon, manifest_url: settings.stremio_addons[index].manifest_url,
+    })) };
   for (const key of ACCESS_KEYS) delete result[key];
   return result;
 }

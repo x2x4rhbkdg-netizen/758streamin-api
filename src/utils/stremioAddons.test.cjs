@@ -58,7 +58,7 @@ test('Adult connection test accepts separate catalog and stream type declaration
 });
 test('rejects invalid, duplicate and oversized settings', () => {
   const good = addon('one');
-  for (const input of [null, {}, Array.from({ length: 11 }, (_, i) => addon(`a${i}`)), [good, good],
+  for (const input of [null, {}, Array.from({ length: 21 }, (_, i) => addon(`a${i}`)), [good, good],
     [{ ...good, scopes: [] }], [{ ...good, scopes: ['live'] }], [{ ...good, enabled: 'true' }],
     [{ ...good, manifest_url: 'http://one.example/manifest.json' }], [{ ...good, manifest_url: 'file:///manifest.json' }],
     [{ ...good, manifest_url: 'https://user:password@one.example/manifest.json' }],
@@ -136,6 +136,13 @@ test('concurrency is bounded to four add-ons', async () => {
     await new Promise((resolve) => setTimeout(resolve, 5)); active--;
     return JSON.stringify(url.endsWith('manifest.json') ? manifest : { streams: [] });
   };
-  await discoverAddons({ stremio_addons: Array.from({ length: 10 }, (_, i) => addon(`a${i}`)) }, { type: 'movie', imdb_id: 'tt1234567' }, { fetchText });
+  const result = await discoverAddons({ stremio_addons: Array.from({ length: 20 }, (_, i) => addon(`a${i}`)) }, { type: 'movie', imdb_id: 'tt1234567' }, { fetchText });
   assert.equal(peak, 4);
+  assert.equal(result.diagnostics.length, 20);
+});
+
+test('twenty general media add-ons survive normalized and masked settings roundtrips', () => {
+  const addons = Array.from({ length: 20 }, (_, i) => addon(`general${i}`));
+  assert.deepEqual(normalizeAddons(addons), addons);
+  assert.deepEqual(normalizeAddons(publicAddons(addons), addons), addons);
 });

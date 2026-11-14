@@ -131,14 +131,14 @@ test('device access defaults disabled and saves independently from global settin
   assert.equal((await api.readGlobalMovieSettings()).debrid_token, 'private-key');
 });
 
-test('global add-on settings roundtrip encrypted with masked URLs and preserve legacy configuration', async () => {
+test('global add-on settings expose URLs only to admins and preserve encrypted configuration', async () => {
   const { api } = fixture();
   const addon = { id: 'fixture', name: 'Fixture', enabled: true, scopes: ['movie'], manifest_url: 'https://fixture.example/private-key/manifest.json' };
   await api.saveGlobalMovieSettings({ scraper_url: 'https://scraper.example', stremio_addons: [addon] });
   const raw = await api.readGlobalMovieSettings();
   const admin = api.adminGlobalSettings(raw);
   assert.equal(admin.stremio_addons[0].manifest_configured, true);
-  assert.equal(JSON.stringify(admin).includes('private-key'), false);
+  assert.equal(admin.stremio_addons[0].manifest_url, addon.manifest_url);
   assert.equal(JSON.stringify(api.publicSettings(raw)).includes('private-key'), false);
   await api.saveGlobalMovieSettings({ stremio_addons: admin.stremio_addons });
   assert.equal((await api.readGlobalMovieSettings()).stremio_addons[0].manifest_url, addon.manifest_url);

@@ -1,6 +1,6 @@
 const { createHash } = require('node:crypto');
 const { readText } = require('./scraperHttp.cjs');
-const { readAddonJson } = require('./stremioAddons.cjs');
+const { MAX_ADDONS, readAddonJson } = require('./stremioAddons.cjs');
 const { catalogDefinitions } = require('./stremioCatalogManifest.cjs');
 const { safeIds, kitsuId, kitsuItem } = require('./kitsuCatalog.cjs');
 const { tmdb } = require('./tmdbCatalog.cjs');
@@ -18,7 +18,7 @@ async function mapLimit(values, run) {
 async function loadCatalogs(settings, { type, section }, fetchText) {
   if (!['movie', 'series'].includes(type)) throw fail('Invalid catalog type');
   const addons = (settings.stremio_addons || []).filter((a) => a.enabled && !a.scopes.includes('adult') && a.scopes.includes(section === 'anime' ? 'anime' : type));
-  return (await mapLimit(addons.slice(0, 10), async (addon) => {
+  return (await mapLimit(addons.slice(0, MAX_ADDONS), async (addon) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     try {

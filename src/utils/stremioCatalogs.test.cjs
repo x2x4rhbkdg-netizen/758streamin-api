@@ -14,6 +14,15 @@ function fixture(metas = []) {
   const request = async (_settings, path) => ({ movie_results: [{ id: Number(path.match(/\d+/)[0]), title: 'Verified', adult: false, poster_path: '/art.jpg' }], tv_results: [] });
   return { settings, fetchText, urls, request };
 }
+test('catalog discovery includes all twenty configured general media add-ons', async () => {
+  const f = fixture();
+  f.settings.stremio_addons = Array.from({ length: 20 }, (_, i) => ({ ...addon,
+    id: `catalog${i}`, manifest_url: `https://catalog${i}.example/manifest.json` }));
+  const result = await listAddonCatalogs(f.settings, { type: 'movie' }, f);
+  assert.equal(new Set(result.catalogs.map(catalog => catalog.key)).size, 40);
+  assert.equal(result.catalogs.length, 40);
+  assert.equal(f.urls.length, 20);
+});
 test('catalog-only manifests test successfully and list choices without exposing configuration URLs', async () => {
   const f = fixture();
   const status = await testAddon(addon, f);

@@ -3,9 +3,10 @@ const { createHash } = require('node:crypto');
 const { adultCatalogs } = require('./adultAddons.cjs');
 const { catalogDefinitions } = require('./stremioCatalogManifest.cjs');
 const cache = new Map();
+const MAX_ADDONS = 20;
 function invalid(message) { throw Object.assign(new Error(message), { status: 400 }); }
 function normalizeAddons(input, previous = []) {
-  if (!Array.isArray(input) || input.length > 10) invalid('Configure at most 10 Stremio add-ons');
+  if (!Array.isArray(input) || input.length > MAX_ADDONS) invalid(`Configure at most ${MAX_ADDONS} Stremio add-ons`);
   const ids = new Set(), urls = new Set();
   return input.map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) invalid('Invalid add-on');
@@ -111,4 +112,4 @@ async function discoverAddons(settings, query, { fetchText = readText } = {}) {
   }));
   return { sources: results.flatMap((r) => r.sources), diagnostics: results.map((r) => r.diagnostic) };
 }
-module.exports = { normalizeAddons, publicAddons, supports, testAddon, discoverAddons, readAddonJson: json };
+module.exports = { MAX_ADDONS, normalizeAddons, publicAddons, supports, testAddon, discoverAddons, readAddonJson: json };
