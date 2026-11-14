@@ -8,7 +8,7 @@ function fixture({ owner = 2, status = 'active', claimRows = 1, serviceFound = t
   const start = source.indexOf('router.post("/devices/:code/whmcs-sync",');
   const end = source.indexOf('\n/**', start);
   const queries = [], fetched = [], access = [];
-  const device = { id: 10, device_code: 'FIX123', reseller_admin_id: owner, status, whmcs_service_id: 100 };
+  const device = { id: 10, device_code: 'FIX123', reseller_admin_id: owner, status, whmcs_service_id: 100, trial_expires_at: '2026-01-01' };
   let handler;
   vm.runInNewContext(source.slice(start, end), {
     adminAuth() {}, router: { post(_path, _auth, callback) { handler = callback; } },
@@ -20,6 +20,7 @@ function fixture({ owner = 2, status = 'active', claimRows = 1, serviceFound = t
       }
       if (sql.trim().startsWith('SELECT')) return [[device]];
       if (sql.includes('status=CASE LOWER(TRIM(?))')) {
+        if (sql.includes('trial_expires_at=NULL')) device.trial_expires_at = null;
         const value = String(params.at(-2)).trim().toLowerCase();
         if (['active', 'suspended'].includes(value)) device.status = value;
       }
@@ -44,6 +45,16 @@ test('resellers can sync their own device and retain plan access updates', async
   assert.equal(result.code, 200); assert.deepEqual(fetched, [1965]);
   assert.equal(result.body.whmcs.service_id, 1965);
   assert.deepEqual(access.map(value => Array.from(value)), [[10, 'Premium no XXX']]);
+});
+test('verified WHMCS sync clears the local trial and returns its explicit null value', async () => {
+  const { sync, queries } = fixture();
+  const result = await sync();
+  assert.equal(result.code, 200);
+  assert.equal(result.body.device.trial_expires_at, null);
+  assert.ok(queries.some(({ sql }) => sql.includes('SELECT') && sql.includes('d.trial_expires_at')));
+  const update = queries.find(({ sql }) => sql.includes('status=CASE'));
+  assert.match(update.sql, /trial_expires_at=NULL/);
+  assert.doesNotMatch(update.sql, /device_access|DELETE/);
 });
 test('Active WHMCS billing activates suspended/pending devices; Suspended suspends them', async () => {
   for (const status of ['pending', 'suspended']) {

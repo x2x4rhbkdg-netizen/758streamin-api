@@ -53,7 +53,7 @@ function fixture() {
   return { state, options };
 }
 
-test('workers share a durable due slot; status-only writes preserve plans, expiry and credentials', async () => {
+test('workers share a durable due slot; verified services clear local trials but preserve other access', async () => {
   const { state, options } = fixture();
   const a = createWhmcsStatusSync(options), b = createWhmcsStatusSync(options);
   await Promise.all([a.run(), a.run(), b.run()]);
@@ -64,7 +64,9 @@ test('workers share a durable due slot; status-only writes preserve plans, expir
     assert.match(sql, /whmcs_service_id IN \(\?\)/);
     assert.match(sql, /status IN \('active', 'suspended'\)/);
     assert.match(sql, /whmcs_billing_status <=>/);
-    assert.doesNotMatch(sql, /plan_name|device_access|expires_at|upstream|DELETE|device_code/);
+    assert.match(sql, /trial_expires_at=NULL/);
+    assert.match(sql, /OR trial_expires_at IS NOT NULL/);
+    assert.doesNotMatch(sql.replaceAll('trial_expires_at', ''), /plan_name|device_access|expires_at|upstream|DELETE|device_code/);
     assert.equal(params[0], params.at(-4));
     assert.match(sql, /next_run_at=\? AND next_run_at>UTC_TIMESTAMP/);
   }

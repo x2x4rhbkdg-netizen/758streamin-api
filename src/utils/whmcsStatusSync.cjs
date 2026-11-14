@@ -67,16 +67,16 @@ function createWhmcsStatusSync({ pool, env, fetcher = fetch, logger = console })
       connection.release(); connection = null;
       const statuses = ids.length ? await fetchServiceStatuses(env, ids, fetcher) : new Map();
       let changed = 0;
-      // Only changed states are written; unknown/missing/failed services are never suspended.
+      // Verified WHMCS services replace local trials; unknown/missing/failed services stay untouched.
       for (const status of ['active', 'suspended']) {
         const matching = [...statuses].filter(([, state]) => state === status).map(([id]) => id);
         for (let offset = 0; offset < matching.length; offset += 250) {
           const batch = matching.slice(offset, offset + 250);
           const billing = status === 'active' ? 'Active' : 'Suspended';
-          const [result] = await pool.execute(`UPDATE devices SET status=?, whmcs_billing_status=?, updated_at=NOW()
+          const [result] = await pool.execute(`UPDATE devices SET status=?, whmcs_billing_status=?, trial_expires_at=NULL, updated_at=NOW()
             WHERE whmcs_service_id IN (${batch.map(() => '?').join(',')})
               AND status IN ('active', 'suspended')
-              AND (status<>? OR NOT (whmcs_billing_status <=> ?))
+              AND (status<>? OR NOT (whmcs_billing_status <=> ?) OR trial_expires_at IS NOT NULL)
               AND EXISTS (SELECT 1 FROM api_background_jobs WHERE job_name=? AND next_run_at=? AND next_run_at>UTC_TIMESTAMP())`,
             [status, billing, ...batch, status, billing, JOB, lease]);
           changed += Number(result.affectedRows || 0);

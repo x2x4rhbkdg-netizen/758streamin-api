@@ -1738,6 +1738,7 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         whmcs_billing_status=?,
         whmcs_next_due_date=?,
         status=CASE LOWER(TRIM(?)) WHEN 'active' THEN 'active' WHEN 'suspended' THEN 'suspended' ELSE status END,
+        trial_expires_at=NULL,
         whmcs_last_sync_at=NOW(),
         updated_at=NOW()
       WHERE id=?
@@ -1803,7 +1804,8 @@ router.post("/devices/:code/whmcs-sync", adminAuth, async (req, res) => {
         d.whmcs_account_number,
         d.whmcs_billing_status,
         d.whmcs_next_due_date,
-        d.whmcs_last_sync_at
+        d.whmcs_last_sync_at,
+        d.trial_expires_at
       FROM devices d
       WHERE d.id=?
       LIMIT 1

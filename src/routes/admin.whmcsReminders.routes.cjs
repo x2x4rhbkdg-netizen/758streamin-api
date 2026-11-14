@@ -691,6 +691,7 @@ router.post("/whmcs/payments/auto", async (req, res) => {
         whmcs_billing_status=?,
         whmcs_next_due_date=?,
         status=CASE LOWER(TRIM(?)) WHEN 'active' THEN 'active' WHEN 'suspended' THEN 'suspended' ELSE status END,
+        trial_expires_at=NULL,
         whmcs_last_sync_at=NOW(),
         updated_at=NOW()
       WHERE id=?
@@ -718,7 +719,8 @@ router.post("/whmcs/payments/auto", async (req, res) => {
         d.whmcs_service_id,
         d.whmcs_billing_status,
         d.whmcs_next_due_date,
-        d.whmcs_last_sync_at
+        d.whmcs_last_sync_at,
+        d.trial_expires_at
       FROM devices d
       WHERE d.id=?
       LIMIT 1
