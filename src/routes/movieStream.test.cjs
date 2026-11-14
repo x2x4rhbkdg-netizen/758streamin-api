@@ -12,15 +12,16 @@ function fixture({ enabled = true, anime_enabled = false, adult_enabled = false,
     require(name) {
       if (name === 'express') return { Router: () => ({ get(_path, callback) { handler = callback; } }) };
       if (name === 'node:dns/promises') return { lookup: async (hostname) => addresses || [{ address: hostname === 'private.example' ? '127.0.0.1' : '8.8.8.8', family: 4 }] };
-      if (name === 'node:https') return { request(url, options, callback) {
+      if (name === 'node:https' || name === 'node:http') return { request(url, options, callback) {
         calls.push({ url, options });
         const request = new EventEmitter(); request.setTimeout = () => {};
         request.end = () => {
           const code = requestFailures.shift();
           if (code) { queueMicrotask(() => request.emit('error', Object.assign(new Error('private upstream diagnostic'), { code }))); return; }
-          const response = Readable.from(redirect ? [] : [content]);
-          response.statusCode = redirect ? 302 : 206;
-          response.headers = redirect ? { location: redirect } : { 'content-type': mime, 'content-range': 'bytes 0-4/5', 'content-length': String(Buffer.byteLength(content)) };
+          const target = typeof redirect === 'function' ? redirect(url) : redirect;
+          const response = Readable.from(target ? [] : [content]);
+          response.statusCode = target ? 302 : 206;
+          response.headers = target ? { location: target } : { 'content-type': mime, 'content-range': 'bytes 0-4/5', 'content-length': String(Buffer.byteLength(content)) };
           callback(response);
         };
         return request;
@@ -116,6 +117,73 @@ test('upstream network failures return 502, release capacity and do not break th
   }
   const next = await f.run('https://cdn.example/movie.mp4');
   assert.equal(next.code, 206); assert.equal(next.body, 'video');
+});
+
+test('HTTP Adult direct playback retains PIN checks without enabling HTTP for general movies', async () => {
+  const url = 'http://cdn.example/movie.mp4?token=SECRET';
+  const ticket = createPlaybackTickets('test-secret').issue(url, 1, 'adult', 'pin-one');
+  const f = fixture({ adult_enabled: true });
+  const result = await f.run(null, undefined, ticket);
+  assert.equal(result.code, 206); assert.equal(result.body, 'video');
+  assert.equal(f.calls[0].url.protocol, 'http:');
+  assert.equal((await fixture().run(url)).code, 502);
+  for (const options of [{ adult_enabled: false }, { adult_enabled: true, pinFingerprint: 'changed' }]) {
+    const denied = fixture(options);
+    assert.equal((await denied.run(null, undefined, ticket)).code, 403);
+    assert.equal(denied.calls.length, 0);
+  }
+});
+
+test('Adult headers apply to the original origin and same-origin redirects but not other hosts or HTTP downgrades', async () => {
+  const url = 'https://cdn.example/original.mp4';
+  const { adultRequestPolicy } = require('../utils/adultStreamPolicy.cjs');
+  const policy = adultRequestPolicy(url, { 'User-Agent': 'Fixture', Cookie: 'SECRET', Authorization: 'Bearer SECRET', Referer: 'https://site.example/' });
+  const ticket = createPlaybackTickets('test-secret').issue(url, 1, 'adult', 'pin-one', policy);
+  for (const target of ['https://cdn.example/redirect.mp4', 'https://other.example/redirect.mp4', 'http://cdn.example/redirect.mp4']) {
+    const f = fixture({ adult_enabled: true, redirect: source => source.pathname === '/original.mp4' ? target : undefined });
+    const result = await f.run(null, undefined, ticket);
+    assert.equal(result.code, 206); assert.equal(f.calls.length, 2);
+    assert.equal(f.calls[0].options.headers.cookie, 'SECRET');
+    assert.equal(f.calls[1].options.headers.cookie, target.startsWith('https://cdn.example/') ? 'SECRET' : undefined);
+    assert.equal(f.calls[1].options.headers.authorization, target.startsWith('https://cdn.example/') ? 'Bearer SECRET' : undefined);
+    assert.equal(f.calls[1].options.headers.Range, 'bytes=0-4');
+    assert.ok(!JSON.stringify(result).includes('SECRET'));
+  }
+});
+
+test('HTTP Adult redirect destinations remain DNS-validated and unsupported ports/schemes stay blocked', async () => {
+  const url = 'http://cdn.example/original.mp4';
+  const ticket = createPlaybackTickets('test-secret').issue(url, 1, 'adult', 'pin-one');
+  for (const target of ['http://private.example/file', 'https://private.example/file', 'http://cdn.example:3306/file', 'file:///etc/passwd']) {
+    const f = fixture({ adult_enabled: true, redirect: () => target });
+    assert.equal((await f.run(null, undefined, ticket)).code, 502);
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test('Adult HLS child tickets retain the original header scope and require the same PIN', async () => {
+  const { adultRequestPolicy } = require('../utils/adultStreamPolicy.cjs');
+  const url = 'http://cdn.example/master.m3u8';
+  const ticket = createPlaybackTickets('test-secret').issue(url, 1, 'adult', 'pin-one', adultRequestPolicy(url, { Cookie: 'SECRET' }));
+  const f = fixture({ adult_enabled: true, mime: 'application/vnd.apple.mpegurl',
+    content: '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\npart.ts\nhttps://other.example/variant.m3u8\n' });
+  const result = await f.run(null, undefined, ticket);
+  assert.equal(result.code, 200); assert.equal(f.calls[0].options.headers.cookie, 'SECRET');
+  assert.doesNotMatch(result.body, /SECRET|cdn\.example|other\.example/);
+  const links = [...result.body.matchAll(/https:\/\/api\.758streamin\.com\/v1\/movies\/stream\/([A-Za-z0-9_-]+)/g)];
+  assert.equal(links.length, 3);
+  for (const [, child] of links) {
+    const record = createPlaybackTickets('test-secret').read(child);
+    assert.equal(record.requestPolicy.origin, 'http://cdn.example');
+    assert.equal(record.requestPolicy.headers.cookie, 'SECRET');
+    const playlist = record.url.endsWith('.m3u8');
+    const asset = fixture({ adult_enabled: true, ...(playlist ? { mime: 'application/vnd.apple.mpegurl', content: '#EXTM3U\npart.ts\n' } : {}) });
+    assert.equal((await asset.run(null, undefined, child)).code, playlist ? 200 : 206);
+    assert.equal(asset.calls[0].options.headers.cookie, record.url.startsWith('http://cdn.example/') ? 'SECRET' : undefined);
+    const revoked = fixture({ adult_enabled: true, pinFingerprint: null });
+    assert.equal((await revoked.run(null, undefined, child)).code, 403);
+    assert.equal(revoked.calls.length, 0);
+  }
 });
 
 test('dual-stack fallback still rejects a mixed public/private DNS answer before connecting', async () => {

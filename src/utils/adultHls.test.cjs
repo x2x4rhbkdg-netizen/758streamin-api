@@ -12,8 +12,16 @@ test('Adult HLS rewrites variants, segments, encryption keys and subtitle/audio 
 });
 test('Adult HLS rejects non-playlists, unsafe schemes, credentials, ports and oversized input', () => {
   const wrap = () => 'ticket';
-  for (const playlist of ['not HLS', '#EXTM3U\nhttp://cdn.example/file.ts', '#EXTM3U\nfile:///local',
+  for (const playlist of ['not HLS', '#EXTM3U\nfile:///local',
     '#EXTM3U\nhttps://user:pass@cdn.example/file.ts', '#EXTM3U\nhttps://cdn.example:3306/file.ts', `#EXTM3U\n#${'x'.repeat(1024 * 1024)}`]) {
     assert.throws(() => rewriteAdultHls(playlist, 'https://cdn.example/master.m3u8', wrap));
   }
+});
+
+test('Adult HLS supports HTTP media without exposing it in rewritten player links', () => {
+  const targets = [];
+  const result = rewriteAdultHls('#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="http://cdn.example/key"\npart.ts\n',
+    'http://cdn.example/master.m3u8', url => { targets.push(url); return `https://api.example/protected/${targets.length}`; });
+  assert.deepEqual(targets, ['http://cdn.example/key', 'http://cdn.example/part.ts']);
+  assert.equal(result.includes('http://'), false);
 });

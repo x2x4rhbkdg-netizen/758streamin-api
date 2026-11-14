@@ -208,6 +208,35 @@ test('catalog to source to direct playback hides upstream secrets and binds the 
   f.settings.stremio_addons[0].enabled = false;
   assert.equal((await f.invoke('resolve', { unlock_token, source_token })).code, 409);
 });
+test('Adult direct source headers remain encrypted and cannot be replaced by request-body values', async () => {
+  const source = { url: 'http://cdn.example/movie.mp4?key=PRIVATE', request_headers: {
+    'User-Agent': 'Fixture', Cookie: 'PRIVATE-COOKIE', Referer: 'https://site.example/' } };
+  const f = fixture({ client: {
+    catalog: async () => ({ items: [{ id: 'custom:1', addon_id: 'adult',
+      addon_version: addonVersion({}), type: 'movie', title: 'Fixture' }] }),
+    sources: async () => [source],
+  } });
+  const unlock_token = await f.unlock();
+  const catalog = await f.invoke('catalog', { unlock_token });
+  const sources = await f.invoke('sources', { unlock_token, item_token: catalog.body.items[0].item_token });
+  assert.equal(sources.code, 200); assert.equal(sources.body.sources[0].direct, true);
+  assert.doesNotMatch(JSON.stringify(sources.body), /PRIVATE|cdn\.example|request_headers/);
+  const resolved = await f.invoke('resolve', { unlock_token, source_token: sources.body.sources[0].source_token,
+    url: 'http://127.0.0.1/ignored', request_headers: { Cookie: 'ATTACKER' } });
+  assert.equal(resolved.code, 200); assert.equal(f.calls.length, 0);
+  assert.match(resolved.body.playbackUrl, /^https:\/\/api\.758streamin\.com\/v1\/movies\/stream\//);
+  const ticket = resolved.body.playbackUrl.split('/').at(-1);
+  const record = f.tickets.read(ticket);
+  assert.equal(record.url, source.url); assert.equal(record.requestPolicy.origin, 'http://cdn.example');
+  assert.equal(record.requestPolicy.headers.cookie, 'PRIVATE-COOKIE');
+  assert.equal(record.section, 'adult'); assert.equal(record.adultAgeConfirmed, true);
+  assert.equal(record.adultPinFingerprint, 'pin-one'); assert.equal(record.device, '1');
+  assert.doesNotMatch(JSON.stringify(resolved.body), /PRIVATE|ATTACKER|cdn\.example/);
+  assert.equal((await f.invoke('resolve', { unlock_token, source_token: sources.body.sources[0].source_token }, 2)).code, 403);
+  f.setPin({ pin: '9999', fingerprint: 'pin-two' });
+  assert.equal((await f.invoke('resolve', { unlock_token, source_token: sources.body.sources[0].source_token })).code, 403);
+});
+
 test('only the selected signed hash is resolved; manual Real-Debrid preparation is opt-in', async () => {
   const f = fixture();
   const unlock_token = await f.unlock();

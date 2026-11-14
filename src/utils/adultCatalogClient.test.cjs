@@ -32,7 +32,9 @@ test('ThePornDB sources need an explicitly compatible manifest, never title sear
   assert.equal(calls.some(url => url.includes('/stream/')), false);
   prefix = 'tpdb:';
   const sources = await addons.metadataSources(settings, item);
-  assert.equal(sources.length, 1); assert.equal(sources[0].source_addon_id, 'source');
+  assert.equal(sources.length, 2); assert.equal(sources[0].source_addon_id, 'source');
+  assert.equal(sources[1].url, 'http://insecure.example/video');
+  validateAdultSelection(settings, item, sources[1]);
   assert.ok(calls.at(-1).endsWith('/stream/movie/tpdb%3Ascenes%3Afixture-1.json'));
   validateAdultSelection(settings, item, sources[0]);
   assert.throws(() => validateAdultSelection({ ...settings, stremio_addons: [] }, item, sources[0]), { status: 409 });

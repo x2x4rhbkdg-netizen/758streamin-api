@@ -39,7 +39,7 @@ test('Adult add-ons are exclusive and unreachable manifest errors never disclose
   assert.equal(calls, 0);
   await assert.rejects(client.catalogs(settings), (error) => error.status === 502 && !error.message.includes('private-key'));
 });
-test('streams accept provider hashes and HTTPS files but skip unsupported formats', async () => {
+test('streams accept provider hashes, HTTP/HTTPS files and supported request headers', async () => {
   const client = createAdultAddonClient({ fetchText: async (url) => JSON.stringify(url.endsWith('manifest.json') ? manifest : {
     streams: [{ infoHash: 'a'.repeat(40), name: 'Fixture provider', title: 'Fixture release 1080p', behaviorHints: { filename: 'movie.mp4', videoSize: 2500000000 } },
       { url: 'https://cdn.example/movie.mp4?token=secret' }, { url: 'http://cdn.example/movie.mp4' },
@@ -48,13 +48,15 @@ test('streams accept provider hashes and HTTPS files but skip unsupported format
   }) });
   const identity = { addon_id: 'adult', addon_version: addonVersion(settings.stremio_addons[0]) };
   const sources = await client.sources(settings, { ...identity, id: 'fixture:1', type: 'movie' });
-  assert.equal(sources.length, 3);
+  assert.equal(sources.length, 5);
   assert.equal(sources[0].hash, 'a'.repeat(40));
   assert.equal(sources[0].file_name, 'movie.mp4');
   assert.equal(sources[0].title, 'Fixture release 1080p');
   assert.equal(sources[0].scraper, 'Fixture provider');
   assert.equal(sources[0].size_bytes, 2500000000);
   assert.equal(sources[1].url, 'https://cdn.example/movie.mp4?token=secret');
+  assert.equal(sources[2].url, 'http://cdn.example/movie.mp4');
+  assert.equal(sources[4].request_headers.authorization, 'secret');
   await assert.rejects(client.sources(settings, { ...identity, id: 'tt1234567', type: 'movie' }), { status: 409 });
   await assert.rejects(client.sources(settings, { ...identity, addon_version: 'old', id: 'fixture:1', type: 'movie' }), { status: 409 });
 });
@@ -67,6 +69,21 @@ test('series use exact released video IDs, without guessing season numbering', a
   assert.equal(result.videos.length, 1);
   assert.equal(result.videos[0].id, 'fixture:series:2');
   assert.equal(result.videos[0].episode, 3);
+});
+
+test('unsafe Adult direct streams and unsupported proxy-header overrides never become capabilities', async () => {
+  const streams = [
+    { url: 'https://cdn.example/master.mpd' }, { url: 'http://cdn.example:3306/file' },
+    { url: 'https://user:pass@cdn.example/file' }, { url: 'file:///private/file' },
+    { url: 'https://cdn.example/file', behaviorHints: { proxyHeaders: { request: { Host: '127.0.0.1' } } } },
+    { url: 'https://cdn.example/file', behaviorHints: { proxyHeaders: { request: { Cookie: 'a\r\nHost: private' } } } },
+    { url: 'https://cdn.example/file', behaviorHints: { proxyHeaders: { response: { 'Set-Cookie': 'secret' } } } },
+    { externalUrl: 'https://site.example/page' },
+    { url: 'http://cdn.example/video', behaviorHints: { proxyHeaders: { request: { 'User-Agent': 'Fixture' } } } },
+  ];
+  const client = createAdultAddonClient({ fetchText: async url => JSON.stringify(url.endsWith('manifest.json') ? manifest : { streams }) });
+  const sources = await client.sources(settings, { addon_id: 'adult', addon_version: addonVersion(settings.stremio_addons[0]), id: 'fixture:1', type: 'movie' });
+  assert.equal(sources.length, 1); assert.equal(sources[0].request_headers['user-agent'], 'Fixture');
 });
 
 test('provider resolution honors the signed filename instead of a larger different file', () => {

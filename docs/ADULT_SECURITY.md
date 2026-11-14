@@ -18,9 +18,37 @@ Only boolean `true` is accepted. PIN verification remains mandatory. Scoped capa
 include the age-confirmation marker and current PIN fingerprint; older capabilities are rejected.
 
 Protected Adult playback tickets also include the confirmation marker. The stream proxy
-rechecks current entitlement and PIN fingerprint and rejects older tickets. Existing HTTPS,
-private-address rejection, redirect validation and opaque proxy URLs remain in place.
+rechecks current entitlement and PIN fingerprint and rejects older tickets. Public API
+playback links remain HTTPS; private-address rejection, redirect validation and opaque
+proxy URLs remain in place.
 Do not log PINs, unlock tokens, playback tickets or provider credentials.
+
+## Stremio direct media
+
+Adult direct media supports HTTP on port 80 and HTTPS on port 443 through the
+protected API proxy. This does not enable HTTP for general movie/anime playback
+or change the HTTPS manifest configuration requirement. HTTP provider traffic is
+not encrypted between the API and provider; use HTTPS sources when available.
+
+Stremio `behaviorHints.proxyHeaders.request` can contain User-Agent, Referer,
+Origin, Accept, Authorization and Cookie. Header names are normalized, values are
+printable ASCII with strict size limits, and request framing/routing headers such
+as Host, Range, Content-Length and Connection cannot be supplied by an add-on.
+Add-on response-header overrides, DASH/DRM and external webpage URLs remain
+unsupported. Empty proxy-header objects are accepted.
+
+URLs and approved headers remain inside encrypted, device/PIN-scoped capabilities
+and playback tickets. Headers apply only to the original media origin (scheme,
+host and port), never a different redirect/CDN origin or an HTTPS-to-HTTP
+downgrade. Cross-origin media that requires those credentials may still fail;
+do not relax this policy by forwarding credentials to arbitrary destinations.
+
+Each redirect, playlist, key, segment and subtitle/audio playlist still passes
+destination validation and public DNS pinning. HLS child tickets retain the
+original header origin and the existing device/PIN/age marker. The server forwards
+Range itself, preserves existing playback limits, and strips upstream redirect
+and cookie headers from the public response. No raw media URL, header or token
+is added to logs.
 
 PIN management requires device authentication:
 

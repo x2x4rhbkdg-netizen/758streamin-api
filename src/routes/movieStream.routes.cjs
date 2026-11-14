@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const https = require('node:https');
+const http = require('node:http');
 const dns = require('node:dns/promises');
 const { pipeline } = require('node:stream/promises');
 const { publicAddress } = require('../utils/scraperHttp.cjs');
@@ -9,22 +10,25 @@ const { readMovieSettings } = require('../utils/movieSettings.cjs');
 const { requireCatalogAccess } = require('../utils/animeCatalog.cjs');
 const { readAdultPin } = require('../utils/adultAccess.cjs');
 const { rewriteAdultHls } = require('../utils/adultHls.cjs');
+const { adultStreamUrl, headersForDestination } = require('../utils/adultStreamPolicy.cjs');
 const router = Router();
 let active = 0;
 
-async function openStream(value, method, headers, signal, redirects = 0) {
-  const url = new URL(value);
-  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) throw new Error('Invalid stream URL');
+async function openStream(value, method, headers, signal, redirects = 0, adult = false, requestPolicy) {
+  const url = adult ? adultStreamUrl(value) : new URL(value);
+  if (!adult && (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443'))) throw new Error('Invalid stream URL');
   const addresses = await dns.lookup(url.hostname.replace(/^\[|\]$/g, ''), { all: true });
   if (signal.aborted || !addresses.length || addresses.some(({ address }) => !publicAddress(address))) throw new Error('Invalid stream destination');
   return new Promise((resolve, reject) => {
-    const request = https.request(url, { method, headers, signal, autoSelectFamily: true,
+    const scopedHeaders = adult ? headersForDestination(requestPolicy, url.href) : {};
+    const request = (url.protocol === 'https:' ? https : http).request(url, {
+      method, headers: { ...scopedHeaders, ...headers, 'Accept-Encoding': 'identity' }, signal, autoSelectFamily: true,
       lookup: createPinnedLookup(addresses),
     }, (response) => {
       if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
         response.resume();
         if (redirects >= 3 || !response.headers.location) return reject(new Error('Invalid stream redirect'));
-        resolve(openStream(new URL(response.headers.location, url).href, method, headers, signal, redirects + 1));
+        resolve(openStream(new URL(response.headers.location, url).href, method, headers, signal, redirects + 1, adult, requestPolicy));
       } else { response.streaminUrl = url.href; resolve(response); }
     });
     request.setTimeout(30000, () => request.destroy(new Error('Stream timed out')));
@@ -57,7 +61,8 @@ router.get('/movies/stream/:ticket', async (req, res) => {
       }
     }
     catch (error) { if (error.status === 403) return res.sendStatus(403); throw error; }
-    upstream = await openStream(record.url, req.method === 'HEAD' ? 'HEAD' : 'GET', range ? { Range: range } : {}, controller.signal);
+    upstream = await openStream(record.url, req.method === 'HEAD' ? 'HEAD' : 'GET', range ? { Range: range } : {}, controller.signal,
+      0, record.section === 'adult', record.requestPolicy);
     clearTimeout(timer);
     if (![200, 206, 416].includes(upstream.statusCode)) { upstream.destroy(); return res.sendStatus(502); }
     const isAdultHls = record.section === 'adult' && (/(?:mpegurl|m3u8)/i.test(upstream.headers['content-type'] || '') ||
@@ -73,7 +78,7 @@ router.get('/movies/stream/:ticket', async (req, res) => {
       const base = new URL(process.env.MOVIE_PLAYBACK_BASE_URL || 'https://api.758streamin.com');
       if (base.protocol !== 'https:' || base.username || base.password) throw new Error('Invalid playback base URL');
       const rewritten = rewriteAdultHls(Buffer.concat(chunks).toString('utf8'), upstream.streaminUrl || record.url, (url) => {
-        const ticket = createPlaybackTickets(process.env.JWT_SECRET).issue(url, record.device, 'adult', record.adultPinFingerprint);
+        const ticket = createPlaybackTickets(process.env.JWT_SECRET).issue(url, record.device, 'adult', record.adultPinFingerprint, record.requestPolicy);
         return new URL(`/v1/movies/stream/${ticket}`, base).href;
       });
       return res.status(200).set('Content-Type', 'application/vnd.apple.mpegurl').end(rewritten);

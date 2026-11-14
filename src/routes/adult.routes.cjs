@@ -7,6 +7,7 @@ const { addonVersion } = require('../utils/adultAddons.cjs');
 const { createAdultCatalogClient, adultCatalogProviders, validateAdultSelection } = require('../utils/adultCatalogClient.cjs');
 const { lookupProviders, resolveMovieSource } = require('../utils/movieResolver.cjs');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
+const { adultRequestPolicy } = require('../utils/adultStreamPolicy.cjs');
 const { createMediaHistoryStore, normalizeProgress, hash } = require('../utils/mediaHistory.cjs');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
@@ -42,10 +43,10 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
       adultCatalogProviders(req.adultSettings).some(addon => addon.id === record.item?.addon_id && addonVersion(addon) === record.item.addon_version))
       .map(record => ({ ...record.item, resume_position: record.position }));
   }
-  function protectedUrl(req, url) {
+  function protectedUrl(req, url, headers) {
     const base = new URL(process.env.MOVIE_PLAYBACK_BASE_URL || 'https://api.758streamin.com');
     if (base.protocol !== 'https:' || base.username || base.password) throw new Error('Invalid playback base URL');
-    const ticket = tickets().issue(url, req.device.device_id, 'adult', req.adultPin.fingerprint);
+    const ticket = tickets().issue(url, req.device.device_id, 'adult', req.adultPin.fingerprint, adultRequestPolicy(url, headers));
     return new URL(`/v1/movies/stream/${ticket}`, base).href;
   }
   function route(path, run, unlock = true) {
@@ -131,7 +132,7 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
           resume_position: previous?.position >= 10 && previous.position < previous.duration - 30 ? previous.position : 0 };
       } catch { /* Playback remains available before the history migration is deployed. */ }
     }
-    return { playbackUrl: protectedUrl(req, url), provider, ...progress };
+    return { playbackUrl: protectedUrl(req, url, source.url ? source.request_headers : undefined), provider, ...progress };
   });
   route('progress', async (req) => {
     const grant = capability(req, 'progress', req.body?.history_progress_token);

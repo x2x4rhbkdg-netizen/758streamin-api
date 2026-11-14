@@ -1,8 +1,9 @@
+const { adultStreamUrl } = require('./adultStreamPolicy.cjs');
+
 function rewriteAdultHls(text, base, wrap) {
   if (typeof text !== 'string' || !text.trimStart().startsWith('#EXTM3U') || Buffer.byteLength(text) > 1024 * 1024) throw new Error('Invalid HLS playlist');
   const link = (value) => {
-    const url = new URL(value, base);
-    if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.port && url.port !== '443' || url.href.length > 4096) throw new Error('Unsupported HLS URL');
+    const url = adultStreamUrl(new URL(value, base).href);
     return wrap(url.href);
   };
   const result = text.split(/\r?\n/).map((line) => {

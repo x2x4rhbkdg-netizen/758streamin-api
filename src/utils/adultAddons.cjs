@@ -1,5 +1,6 @@
 const { readText, validateUrl } = require('./scraperHttp.cjs');
 const { createHash } = require('node:crypto');
+const { adultStreamUrl, addonRequestHeaders } = require('./adultStreamPolicy.cjs');
 const addonVersion = (addon) => createHash('sha256').update(String(addon.manifest_url || '')).digest('hex');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 const bounded = (value, max = 300) => typeof value === 'string' ? value.slice(0, max) : '';
@@ -67,7 +68,7 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
     if (!Array.isArray(response.streams)) throw fail('Invalid Adult stream response', 502);
     const sources = [];
     for (const stream of response.streams.slice(0, 100)) {
-      if (stream?.behaviorHints?.proxyHeaders || stream?.externalUrl) continue;
+      if (stream?.externalUrl) continue;
       const title = bounded(stream?.title || stream?.behaviorHints?.filename || stream?.name || 'Source');
       const scraper = bounded(stream?.name, 100);
       const size = Number(stream?.behaviorHints?.videoSize);
@@ -79,8 +80,10 @@ function createAdultAddonClient({ fetchText = readText } = {}) {
       if (/^[a-f0-9]{40}$/.test(hash)) sources.push({ hash, title, ...metadata, ...(file_name ? { file_name } : {}) });
       else if (typeof stream?.url === 'string') {
         try {
-          const url = validateUrl(stream.url);
-          if (url.protocol === 'https:' && !url.hash && !/\.mpd$/i.test(url.pathname)) sources.push({ url: url.href, title, ...metadata });
+          const url = adultStreamUrl(stream.url);
+          const request_headers = addonRequestHeaders(stream.behaviorHints?.proxyHeaders);
+          if (!/\.mpd$/i.test(url.pathname)) sources.push({ url: url.href, title, ...metadata,
+            ...(Object.keys(request_headers).length ? { request_headers } : {}) });
         } catch { /* Unsupported streams cannot become playback capabilities. */ }
       }
     }
