@@ -6,11 +6,17 @@ const { EventEmitter } = require('node:events');
 const { Readable, PassThrough } = require('node:stream');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { publicAddress } = require('../utils/scraperHttp.cjs');
-function fixture({ enabled = true, anime_enabled = false, adult_enabled = false, pinFingerprint = 'pin-one', redirect, content = 'video', mime = 'video/mp4', requestFailures = [], addresses } = {}) {
-  let handler, calls = [];
+const { createPlaybackLogging } = require('../utils/playbackLogging.cjs');
+const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
+function fixture({ enabled = true, anime_enabled = false, adult_enabled = false, pinFingerprint = 'pin-one', redirect, content = 'video', mime = 'video/mp4', requestFailures = [], addresses, upstreamStatus = 206 } = {}) {
+  let handler, middleware, calls = [], logs = [];
+  const logger = { log: (tag, value) => logs.push({ tag, ...JSON.parse(value) }), warn: (tag, value) => logs.push({ tag, ...JSON.parse(value) }) };
+  const logging = createPlaybackLogging({ logger, secret: 'logging-fixture-only' });
   const context = { module: { exports: {} }, process: { env: { JWT_SECRET: 'test-secret' } }, Buffer, URL, AbortController, setTimeout, clearTimeout,
     require(name) {
-      if (name === 'express') return { Router: () => ({ get(_path, callback) { handler = callback; } }) };
+      if (name === 'express') return { Router: () => ({ use(value) { middleware = value; }, get(_path, callback) { handler = callback; } }) };
+      if (name === '../utils/playbackLogging.cjs') return { playbackLogging: logging };
+      if (name === '../utils/hlsUpstreamDiagnostics.cjs') return { createHlsUpstreamDiagnostics: options => createHlsUpstreamDiagnostics({ ...options, logger, logging }) };
       if (name === 'node:dns/promises') return { lookup: async (hostname) => addresses || [{ address: hostname === 'private.example' ? '127.0.0.1' : '8.8.8.8', family: 4 }] };
       if (name === 'node:https' || name === 'node:http') return { request(url, options, callback) {
         calls.push({ url, options });
@@ -20,7 +26,7 @@ function fixture({ enabled = true, anime_enabled = false, adult_enabled = false,
           if (code) { queueMicrotask(() => request.emit('error', Object.assign(new Error('private upstream diagnostic'), { code }))); return; }
           const target = typeof redirect === 'function' ? redirect(url) : redirect;
           const response = Readable.from(target ? [] : [content]);
-          response.statusCode = target ? 302 : 206;
+          response.statusCode = target ? 302 : upstreamStatus;
           response.headers = target ? { location: target } : { 'content-type': mime, 'content-range': 'bytes 0-4/5', 'content-length': String(Buffer.byteLength(content)) };
           callback(response);
         };
@@ -34,16 +40,18 @@ function fixture({ enabled = true, anime_enabled = false, adult_enabled = false,
     } };
   vm.runInNewContext(fs.readFileSync(require.resolve('./movieStream.routes.cjs'), 'utf8'), context);
   async function run(url, range = 'bytes=0-4', ticket) {
-    const res = new PassThrough(); let body = ''; res.headers = {}; res.code = 200;
+    const res = new PassThrough(); let body = ''; res.headers = {}; res.code = 200; res.statusCode = 200;
     res.on('data', (chunk) => { body += chunk; });
     res.set = (key, value) => { res.headers[key] = value; return res; };
-    res.status = (code) => { res.code = code; return res; };
+    res.status = (code) => { res.code = code; res.statusCode = code; return res; };
     res.json = (value) => res.end(JSON.stringify(value));
-    res.sendStatus = (code) => { res.code = code; res.end(); };
-    await handler({ params: { ticket: ticket || createPlaybackTickets('test-secret').issue(url, 1) }, method: 'GET', get: () => range }, res);
+    res.sendStatus = (code) => { res.code = code; res.statusCode = code; res.end(); };
+    const value = ticket || createPlaybackTickets('test-secret').issue(url, 1);
+    const req = { path: `/movies/stream/${value}`, params: { ticket: value }, method: 'GET', get: () => range };
+    await new Promise((resolve, reject) => middleware(req, res, () => handler(req, res).then(resolve, reject)));
     return { code: res.code, headers: res.headers, body };
   }
-  return { run, calls };
+  return { run, calls, logs };
 }
 test('protected stream forwards range, pipes content and never forwards credentials in response headers', async () => {
   const { run, calls } = fixture();
@@ -190,4 +198,44 @@ test('dual-stack fallback still rejects a mixed public/private DNS answer before
   const f = fixture({ addresses: [{ address: '8.8.8.8', family: 4 }, { address: '::1', family: 6 }] });
   assert.equal((await f.run('https://cdn.example/movie.mp4')).code, 502);
   assert.equal(f.calls.length, 0);
+});
+
+test('protected stream diagnostics identify upstream rejection, network errors and manifest rewrite failures without secrets', async () => {
+  const cases = [
+    [{ upstreamStatus: 403 }, 'upstream_headers', 403],
+    [{ requestFailures: ['ENETUNREACH'] }, 'connect', 'network-error'],
+    [{ adult_enabled: true, mime: 'application/vnd.apple.mpegurl', content: 'PRIVATE upstream error body' }, 'manifest_rewrite', 'network-error'],
+  ];
+  for (const [options, stage, status] of cases) {
+    const f = fixture(options);
+    const url = 'https://cdn.example/PRIVATE.mp4?token=PRIVATE';
+    const ticket = createPlaybackTickets('test-secret').issue(url, 1, options.adult_enabled ? 'adult' : undefined, options.adult_enabled ? 'pin-one' : undefined);
+    assert.equal((await f.run(null, undefined, ticket)).code, 502);
+    const failure = f.logs.find(log => log.tag === '[movie-upstream-failure]');
+    assert.ok(failure); assert.equal(failure.stage, stage); assert.equal(failure.status, status);
+    assert.equal(failure.route, '/movies/stream/:ticket');
+    assert.match(failure.request_id, /^[a-f0-9-]{36}$/);
+    assert.match(failure.source_ref, /^[a-f0-9]{24}$/);
+    const encoded = JSON.stringify(f.logs);
+    assert.doesNotMatch(encoded, /PRIVATE|cdn\.example|pin-one/);
+    assert.ok(!encoded.includes(ticket));
+  }
+});
+
+test('HTML responses and cross-origin header stripping are visible without dumping content or credentials', async () => {
+  const url = 'https://cdn.example/start';
+  const { adultRequestPolicy } = require('../utils/adultStreamPolicy.cjs');
+  const ticket = createPlaybackTickets('test-secret').issue(url, 1, 'adult', 'pin-one', adultRequestPolicy(url, { Cookie: 'PRIVATE' }));
+  const f = fixture({ adult_enabled: true, upstreamStatus: 200, mime: 'text/html; PRIVATE', content: 'PRIVATE body',
+    redirect: target => target.hostname === 'cdn.example' ? 'https://other.example/player' : undefined });
+  const result = await f.run(null, undefined, ticket);
+  // Diagnostic-only change: do not alter provider response behavior in this patch.
+  assert.equal(result.code, 200);
+  const responses = f.logs.filter(log => log.event === 'stream_response');
+  assert.equal(responses.length, 2);
+  assert.equal(responses[0].addon_headers_applied, true);
+  assert.equal(responses[1].addon_headers_applied, false);
+  assert.equal(responses[1].redirect_count, 1); assert.equal(responses[1].response_kind, 'html');
+  assert.equal(responses[0].request_id, responses[1].request_id);
+  assert.doesNotMatch(JSON.stringify(f.logs), /PRIVATE|cdn\.example|other\.example/);
 });

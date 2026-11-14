@@ -64,3 +64,30 @@ a sanitized record while retaining the original error for existing response/DB
 handling. This does not audit Apache access logs, other routers, or explicit API
 debug-error response settings. Do not enable verbose credential-bearing logging
 to diagnose failures.
+
+## Protected direct streams
+
+The `/movies/stream/:ticket` route uses the same safe request context. Its route
+label is fixed: the actual encrypted ticket, Adult title/ID, PIN fingerprint,
+device ID and URL path are never printed. `media_type` identifies Adult, anime
+or regular video; `source_ref` identifies only the opaque provider origin.
+
+`[movie-upstream-failure]` is rate-limited separately from HLS attempts and records
+sanitized status/error-code categories. Stages distinguish ticket_validation,
+authorization, destination_validation, dns, request_headers, connect, redirect,
+upstream_headers, manifest_rewrite and body_transfer. A failed native HTTP request
+can contain a TLS error even at the connect stage; consult its safe error code.
+
+`stream_response` records upstream status, a MIME category (`hls`, `video`,
+`audio`, `html`, `json`, `binary`, `other`), redirect count, whether add-on headers
+were applied and whether a range was requested. It never prints raw header names
+or values, MIME parameters, Location, cookies or response bodies. For example,
+upstream 403 followed by terminal 502 shows a provider rejection, while upstream
+200 with `html` shows that a webpage was returned instead of video. Neither proves
+why the provider behaved that way. An origin change with
+`addon_headers_applied:false` confirms header isolation, not that credentials
+should be forwarded to the new destination.
+
+Authorization and ticket denials appear as terminal 403 before an upstream call;
+valid media responses and transfer completion do not prove playback decoded on
+the physical TV. This patch adds diagnostics only, not a verified provider fix.

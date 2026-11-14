@@ -7,6 +7,8 @@ const express = require('express');
 const { createRequire } = require('node:module');
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { adultRequestPolicy } = require('../utils/adultStreamPolicy.cjs');
+const { createPlaybackLogging } = require('../utils/playbackLogging.cjs');
+const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
 
 async function listen(t, server) {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -16,8 +18,12 @@ async function listen(t, server) {
 
 test('real HTTP Adult direct media preserves ranges, rewrites HLS and revokes child access', async t => {
   const received = [];
+  const logs = [];
+  const logger = { log: (tag, value) => logs.push({ tag, ...JSON.parse(value) }), warn: (tag, value) => logs.push({ tag, ...JSON.parse(value) }) };
+  const logging = createPlaybackLogging({ logger, secret: 'logging-fixture-only' });
   const upstream = await listen(t, http.createServer((req, res) => {
     received.push({ path: req.url, headers: req.headers });
+    if (req.url === '/blocked') { res.writeHead(403, { 'Content-Type': 'text/html' }); res.end('SESSION-SECRET blocked'); return; }
     if (req.url === '/redirect') { res.writeHead(302, { Location: 'http://cdn.example/video.mp4' }); res.end(); return; }
     if (req.url === '/cross-origin') { res.writeHead(302, { Location: 'https://other.example/video.mp4' }); res.end(); return; }
     if (req.url === '/master.m3u8') {
@@ -40,6 +46,8 @@ test('real HTTP Adult direct media preserves ranges, rewrites HLS and revokes ch
     { method: options.method, headers: options.headers, signal: options.signal, agent: false }, callback) };
   const context = vm.createContext({ module: { exports: {} }, process: { env: { JWT_SECRET: 'fixture-only-key' } },
     Buffer, URL, AbortController, setTimeout, clearTimeout, require: id => {
+      if (id === '../utils/playbackLogging.cjs') return { playbackLogging: logging };
+      if (id === '../utils/hlsUpstreamDiagnostics.cjs') return { createHlsUpstreamDiagnostics: options => createHlsUpstreamDiagnostics({ ...options, logger, logging }) };
       if (id === 'node:http' || id === 'node:https') return transport;
       if (id === 'node:dns/promises') return { lookup: async () => [{ address: '8.8.8.8', family: 4 }] };
       if (id === '../utils/movieSettings.cjs') return { readMovieSettings: async () => ({ adult_enabled: allowed }) };
@@ -78,4 +86,18 @@ test('real HTTP Adult direct media preserves ranges, rewrites HLS and revokes ch
   const revoked = await fetch(`${api}/v1/movies/stream/${links[1][1]}`);
   assert.equal(revoked.status, 403); await revoked.text();
   assert.equal(received.length, before);
+  const denial = logs.find(log => log.event === 'request_complete' && log.status === 403);
+  assert.equal(denial.stage, 'authorization');
+  allowed = true;
+  const blockedUrl = wrap('http://cdn.example/blocked');
+  const blocked = await fetch(blockedUrl); await blocked.text();
+  assert.equal(blocked.status, 502);
+  const failure = logs.find(log => log.tag === '[movie-upstream-failure]');
+  assert.equal(failure.status, 403); assert.equal(failure.stage, 'upstream_headers');
+  const outcome = logs.find(log => log.event === 'request_complete' && log.request_id === failure.request_id);
+  assert.equal(outcome.status, 502); assert.equal(outcome.outcome, 'failed');
+  assert.equal(outcome.media_type, 'adult'); assert.equal(outcome.route, '/movies/stream/:ticket');
+  const encoded = JSON.stringify(logs);
+  assert.doesNotMatch(encoded, /SESSION-SECRET|cdn\.example|other\.example|pin-one/);
+  assert.ok(!encoded.includes(new URL(blockedUrl).pathname));
 });

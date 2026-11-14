@@ -5,10 +5,10 @@ const NETWORK_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNR
   'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
   'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
-  'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID']);
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ABORT_ERR', 'ERR_STREAM_PREMATURE_CLOSE']);
 const ERROR_NAMES = new Set(['Error', 'TypeError', 'AbortError', 'TimeoutError']);
 
-function createHlsUpstreamDiagnostics({ logger = console, now = () => performance.now(), maxPerMinute = 20, logging = playbackLogging } = {}) {
+function createHlsUpstreamDiagnostics({ logger = console, now = () => performance.now(), maxPerMinute = 20, logging = playbackLogging, movieStream = false } = {}) {
   let windowStart = now(), emitted = 0, suppressed = 0;
   return {
     now,
@@ -36,7 +36,7 @@ function createHlsUpstreamDiagnostics({ logger = console, now = () => performanc
         elapsed_ms: Math.max(0, Math.round(time - startedAt)), timeout_ms: timeoutMs > 0 ? timeoutMs : null,
         candidate, totalCandidates, suppressed_since_last_log: suppressed };
       suppressed = 0;
-      try { logger.warn('[hls-upstream-failure]', JSON.stringify(record)); } catch { /* Diagnostics must not change playback. */ }
+      try { logger.warn(movieStream ? '[movie-upstream-failure]' : '[hls-upstream-failure]', JSON.stringify(record)); } catch { /* Diagnostics must not change playback. */ }
     },
   };
 }

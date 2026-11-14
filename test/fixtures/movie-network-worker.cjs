@@ -28,7 +28,9 @@ const filename = require.resolve('../../src/routes/movieStream.routes.cjs');
 const context = {
   module: { exports: {} }, URL, AbortController,
   require(name) {
-    if (name === 'express') return { Router: () => ({ get() {} }) };
+    if (name === 'express') return { Router: () => ({ use() {}, get() {} }) };
+    if (name === '../utils/playbackLogging.cjs') return require('../../src/utils/playbackLogging.cjs');
+    if (name === '../utils/hlsUpstreamDiagnostics.cjs') return require('../../src/utils/hlsUpstreamDiagnostics.cjs');
     if (name === 'node:dns/promises') return { lookup: async () => addresses };
     if (name === '../utils/scraperHttp.cjs') return { publicAddress };
     if (name === '../utils/pinnedLookup.cjs') return require('../../src/utils/pinnedLookup.cjs');

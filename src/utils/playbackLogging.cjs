@@ -33,7 +33,7 @@ function createPlaybackLogging({ logger = console, secret = process.env.PLAYBACK
     if (!state) return;
     const id = String(payload.stream_id || payload.episode_id || '');
     state.stream_id = /^\d{1,20}$/.test(id) ? id : undefined;
-    state.media_type = ['live', 'vod', 'series'].includes(payload.type) ? payload.type : 'unknown';
+    state.media_type = ['live', 'vod', 'series', 'adult', 'anime'].includes(payload.type) ? payload.type : 'unknown';
     state.platform = ['android_tv', 'samsung', 'samsung_tv', 'samsung_tizen_web', 'tizen', 'android', 'ios', 'web'].includes(device.platform) ? device.platform : 'other';
     const fingerprint = createHash('sha256').update(String(token).trim()).digest().subarray(0, 16).toString('base64url');
     state.session_ref = ref('session', fingerprint);
@@ -42,12 +42,14 @@ function createPlaybackLogging({ logger = console, secret = process.env.PLAYBACK
   function target(url) { const state = storage.getStore(); if (state) state.destination = source(url); }
   function failure(url) {
     const state = storage.getStore();
-    if (state) { state.failures++; state.last_failed_source_ref = source(url).source_ref; }
-    return { ...context(), ...source(url) };
+    const destination = url ? source(url) : state?.destination || {};
+    if (state) { state.failures++; state.last_failed_source_ref = destination.source_ref; }
+    return { ...context(), ...destination };
   }
   function middleware(req, res, next) {
-    const route = String(req.path || '');
-    if (!/^\/playback\/(?:hls|hls-asset|embedded-hls|embedded-hls-asset|stream)$/.test(route)) return next();
+    // Never retain a protected ticket from the dynamic movie-stream path.
+    const route = /^\/movies\/stream\/[^/]+$/.test(req.path || '') ? '/movies/stream/:ticket' : String(req.path || '');
+    if (route !== '/movies/stream/:ticket' && !/^\/playback\/(?:hls|hls-asset|embedded-hls|embedded-hls-asset|stream)$/.test(route)) return next();
     const started = now();
     const state = { request_id: randomUUID(), route, stage: 'authorization', failures: 0 };
     storage.run(state, () => {
@@ -68,13 +70,19 @@ function createPlaybackLogging({ logger = console, secret = process.env.PLAYBACK
   }
   function debug(event, details = {}) {
     // Do not forward arbitrary strings, URLs, headers, messages or customer identifiers.
-    if (!/^(?:playback_token_(?:issued|cached)|hls_(?:request|manifest_ok|manifest_error|asset_request|asset_manifest_ok|asset_ok|asset_error)|direct_source_skipped|live_lookup_failed|variant_failed)$/.test(event)) return;
+    if (!/^(?:stream_response|playback_token_(?:issued|cached)|hls_(?:request|manifest_ok|manifest_error|asset_request|asset_manifest_ok|asset_ok|asset_error)|direct_source_skipped|live_lookup_failed|variant_failed)$/.test(event)) return;
     if (event === 'hls_asset_ok' || event === 'hls_asset_request') return;
     const fields = { ...context() };
     const stream = String(details.streamId || '');
     if (/^\d{1,20}$/.test(stream)) fields.stream_id = stream;
     if (!fields.session_ref && details.token) fields.session_ref = ref('session', String(details.token));
     if (Number.isInteger(details.status) && details.status >= 100 && details.status <= 599) fields.status = details.status;
+    if (event === 'stream_response') {
+      if (['hls', 'video', 'audio', 'html', 'json', 'binary', 'other'].includes(details.responseKind)) fields.response_kind = details.responseKind;
+      if (typeof details.rangeRequested === 'boolean') fields.range_requested = details.rangeRequested;
+      if (typeof details.headersApplied === 'boolean') fields.addon_headers_applied = details.headersApplied;
+      if (Number.isInteger(details.redirects) && details.redirects >= 0 && details.redirects <= 3) fields.redirect_count = details.redirects;
+    }
     emit(event, fields);
   }
   return { middleware, identify, stage, target, failure, context, source, debug };
