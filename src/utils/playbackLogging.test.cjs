@@ -113,3 +113,12 @@ test('logger exceptions never change request execution', async () => {
   const res = Object.assign(new EventEmitter(), { statusCode: 503, writableFinished: true });
   assert.doesNotThrow(() => logging.middleware({ path: '/playback/hls' }, res, () => res.emit('finish')));
 });
+
+test('Live TV failure traffic cannot exhaust Adult resolve diagnostic budgets', async () => {
+  const f = fixture();
+  for (let i = 0; i < 65; i++) await f.request('/playback/embedded-hls', res => f.finish(res, 401));
+  const before = f.logs.length;
+  await f.request('/adult/resolve', res => f.finish(res, 403));
+  assert.deepEqual(f.logs.slice(before).map(log => log.event), ['adult_resolve_started', 'request_complete']);
+  assert.equal(f.logs.at(-1).status, 403);
+});

@@ -9,12 +9,13 @@ const { lookupProviders, resolveMovieSource } = require('../utils/movieResolver.
 const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { adultRequestPolicy } = require('../utils/adultStreamPolicy.cjs');
 const { createMediaHistoryStore, normalizeProgress, hash } = require('../utils/mediaHistory.cjs');
+const { playbackLogging } = require('../utils/playbackLogging.cjs');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
 function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, readPin = readAdultPin,
   client = createAdultCatalogClient(), lookup = lookupProviders, resolve = resolveMovieSource,
   tokens = () => createAdultTokens(process.env.JWT_SECRET), tickets = () => createPlaybackTickets(process.env.JWT_SECRET),
-  history = createMediaHistoryStore(), now = Date.now } = {}) {
+  history = createMediaHistoryStore(), now = Date.now, logging = playbackLogging } = {}) {
   const router = Router();
   const attempts = new Map(), requests = new Map(), active = new Set();
   function rate(map, device, max, window) {
@@ -50,19 +51,26 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
     return new URL(`/v1/movies/stream/${ticket}`, base).href;
   }
   function route(path, run, unlock = true) {
-    router.post(`/adult/${path}`, auth, async (req, res) => {
+    router.post(`/adult/${path}`, ...(path === 'resolve' ? [logging.middleware] : []), auth, async (req, res) => {
       res.set('Cache-Control', 'private, no-store');
       const device = String(req.device.device_id);
       let reserved = false;
+      // Instrument only resolve; do not trace unlock inputs or browsing/history data.
+      const stage = value => { if (path === 'resolve') logging.stage(value); };
       try {
+        if (path === 'resolve') logging.identify({ type: 'adult' }, req.device);
+        stage('entitlement');
         req.adultSettings = await readSettings(device);
         if (req.adultSettings.adult_enabled !== true) throw fail('Adult Content is disabled for this device', 403);
+        stage('request_limits');
         if (active.has(device) || active.size >= 8) throw fail('Adult requests are busy. Try again shortly.', 429);
         active.add(device); reserved = true;
         rate(requests, device, 60, 60000);
         if (path === 'unlock') rate(attempts, device, 5, 5 * 60000);
+        stage('pin_configuration');
         req.adultPin = await readPin(device);
         if (!req.adultPin) throw fail('Set a parental PIN before opening Adult Content', 409);
+        stage('unlock_validation');
         if (unlock) capability(req, 'unlock', req.body?.unlock_token);
         return res.json(await run(req));
       } catch (error) {
@@ -109,10 +117,14 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
       source_token: issue(req, 'source', { item: historyItem(item), source }) })) };
   });
   route('resolve', async (req) => {
+    logging.stage('source_validation');
     const { item, source } = capability(req, 'source', req.body?.source_token);
+    logging.stage('selection_validation');
     validateAdultSelection(req.adultSettings, item, source);
+    logging.resolveSource(source.url ? 'direct' : 'provider');
     let url = source.url, provider = '';
     if (!url) {
+      logging.stage('provider_resolution');
       if (item.type === 'series' && (!Number.isInteger(item.season) || !Number.isInteger(item.episode))) throw fail('This add-on did not identify the episode for provider playback', 409);
       // A title-search result must never pick the largest file from an ambiguous multi-video pack.
       const customType = source.source_kind === 'shared_scraper' || !['movie', 'series'].includes(item.type);
@@ -121,6 +133,8 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
         provider: req.body?.provider || 'auto', allow_uncached_rd: req.body?.allow_uncached_rd === true, allow_uncached_ad: req.body?.allow_uncached_ad === true });
       url = result.protectedPlaybackUrl || result.playbackUrl; provider = result.provider;
     }
+    logging.target(url);
+    logging.stage('history_lookup');
     let progress = {};
     if (item.id) {
       try {
@@ -132,7 +146,13 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
           resume_position: previous?.position >= 10 && previous.position < previous.duration - 30 ? previous.position : 0 };
       } catch { /* Playback remains available before the history migration is deployed. */ }
     }
-    return { playbackUrl: protectedUrl(req, url, source.url ? source.request_headers : undefined), provider, ...progress };
+    logging.stage('protected_link');
+    const playbackUrl = protectedUrl(req, url, source.url ? source.request_headers : undefined);
+    // Correlate resolution with subsequent media requests via an opaque ticket reference.
+    logging.identify({ type: 'adult' }, req.device, new URL(playbackUrl).pathname.split('/').pop());
+    logging.debug('adult_resolve_result', { protectedLinkIssued: true });
+    logging.stage('resolved');
+    return { playbackUrl, provider, ...progress };
   });
   route('progress', async (req) => {
     const grant = capability(req, 'progress', req.body?.history_progress_token);

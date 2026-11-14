@@ -91,3 +91,38 @@ should be forwarded to the new destination.
 Authorization and ticket denials appear as terminal 403 before an upstream call;
 valid media responses and transfer completion do not prove playback decoded on
 the physical TV. This patch adds diagnostics only, not a verified provider fix.
+
+## Adult Resolve Handoff
+
+`POST /v1/adult/resolve` emits `adult_resolve_started` before device authentication,
+`adult_resolve_result` after a protected playback URL is built, and one
+`request_complete` record on completion/abort. Multiple mounted routers retain one
+request ID rather than duplicating outcomes. Raw request bodies, PINs, device
+identifiers, content titles/IDs, provider names, cookies, source/unlock/progress
+tokens, and returned URLs/tickets are not logged.
+
+Failure stages distinguish authorization (device JWT middleware), entitlement,
+request_limits, pin_configuration, unlock_validation, source_validation,
+selection_validation, provider_resolution, history_lookup and protected_link.
+Successful completion has stage `resolved`. HTTP status is the status actually
+sent by the route; no arbitrary exception message is copied into the record.
+`source_kind` distinguishes direct links from provider resolution after the signed
+source has been validated. History failures retain their existing non-fatal
+behavior and may still yield a successful resolve.
+
+`protected_link_issued:true` with the fixed
+`playback_route:"/v1/movies/stream/:ticket"` confirms a protected link was created,
+not that the TV fetched or decoded it. Its opaque `session_ref` matches the
+subsequent protected stream's reference in the same worker (or across workers
+with the same `PLAYBACK_LOG_SECRET`). Pre-link denials have no ticket reference.
+Adult resolve has separate routine/failure budgets of 60 records per minute each
+per worker, so unrelated Live TV logging cannot consume its allowance. Suppressed
+counts appear on the next emitted record; records can still be suppressed under
+load, so absence alone is not proof that no request was made.
+
+After an approved deployment, capture without exposing bodies or tickets:
+
+```bash
+journalctl -u 758streamin-api.service --since "now" -f -o cat |
+  grep --line-buffered -E '"route":"/adult/resolve"|"route":"/movies/stream/:ticket"'
+```
