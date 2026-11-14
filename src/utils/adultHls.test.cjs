@@ -25,3 +25,10 @@ test('Adult HLS supports HTTP media without exposing it in rewritten player link
   assert.deepEqual(targets, ['http://cdn.example/key', 'http://cdn.example/part.ts']);
   assert.equal(result.includes('http://'), false);
 });
+
+test('extensionless variant/audio/subtitle playlist links retain HLS type but segments, keys and maps do not', () => {
+  const links = [];
+  rewriteAdultHls('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI="audio"\n#EXT-X-MEDIA:TYPE=SUBTITLES,URI="subtitles"\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nvariant\n#EXT-X-KEY:METHOD=AES-128,URI="key"\n#EXT-X-MAP:URI="init"\nsegment.ts\n',
+    'https://cdn.example/master', (url, playlist) => { links.push({ url, playlist }); return 'protected'; });
+  assert.deepEqual(links.map(link => link.playlist), [true, true, true, false, false, false]);
+});

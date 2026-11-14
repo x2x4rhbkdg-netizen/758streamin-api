@@ -6,7 +6,8 @@ const { createAdultTokens, readAdultPin } = require('../utils/adultAccess.cjs');
 const { addonVersion } = require('../utils/adultAddons.cjs');
 const { createAdultCatalogClient, adultCatalogProviders, validateAdultSelection } = require('../utils/adultCatalogClient.cjs');
 const { lookupProviders, resolveMovieSource } = require('../utils/movieResolver.cjs');
-const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
+const { createPlaybackTickets, playbackTicketValue } = require('../utils/moviePlaybackTickets.cjs');
+const { probeAdultStreamFormat } = require('../utils/adultStreamFormat.cjs');
 const { adultRequestPolicy } = require('../utils/adultStreamPolicy.cjs');
 const { createMediaHistoryStore, normalizeProgress, hash } = require('../utils/mediaHistory.cjs');
 const { playbackLogging } = require('../utils/playbackLogging.cjs');
@@ -15,7 +16,7 @@ const fail = (message, status = 400) => Object.assign(new Error(message), { stat
 function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, readPin = readAdultPin,
   client = createAdultCatalogClient(), lookup = lookupProviders, resolve = resolveMovieSource,
   tokens = () => createAdultTokens(process.env.JWT_SECRET), tickets = () => createPlaybackTickets(process.env.JWT_SECRET),
-  history = createMediaHistoryStore(), now = Date.now, logging = playbackLogging } = {}) {
+  history = createMediaHistoryStore(), now = Date.now, logging = playbackLogging, probeFormat = probeAdultStreamFormat } = {}) {
   const router = Router();
   const attempts = new Map(), requests = new Map(), active = new Set();
   function rate(map, device, max, window) {
@@ -44,11 +45,11 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
       adultCatalogProviders(req.adultSettings).some(addon => addon.id === record.item?.addon_id && addonVersion(addon) === record.item.addon_version))
       .map(record => ({ ...record.item, resume_position: record.position }));
   }
-  function protectedUrl(req, url, headers) {
+  function protectedUrl(req, url, headers, format) {
     const base = new URL(process.env.MOVIE_PLAYBACK_BASE_URL || 'https://api.758streamin.com');
     if (base.protocol !== 'https:' || base.username || base.password) throw new Error('Invalid playback base URL');
     const ticket = tickets().issue(url, req.device.device_id, 'adult', req.adultPin.fingerprint, adultRequestPolicy(url, headers));
-    return new URL(`/v1/movies/stream/${ticket}`, base).href;
+    return new URL(`/v1/movies/stream/${ticket}${format === 'hls' ? '.m3u8' : ''}`, base).href;
   }
   function route(path, run, unlock = true) {
     router.post(`/adult/${path}`, ...(path === 'resolve' ? [logging.middleware] : []), auth, async (req, res) => {
@@ -134,6 +135,8 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
       url = result.protectedPlaybackUrl || result.playbackUrl; provider = result.provider;
     }
     logging.target(url);
+    logging.stage('format_probe');
+    const format = await probeFormat(url, source.url ? source.request_headers : undefined);
     logging.stage('history_lookup');
     let progress = {};
     if (item.id) {
@@ -147,12 +150,12 @@ function createAdultRouter({ auth = authJwt, readSettings = readMovieSettings, r
       } catch { /* Playback remains available before the history migration is deployed. */ }
     }
     logging.stage('protected_link');
-    const playbackUrl = protectedUrl(req, url, source.url ? source.request_headers : undefined);
+    const playbackUrl = protectedUrl(req, url, source.url ? source.request_headers : undefined, format);
     // Correlate resolution with subsequent media requests via an opaque ticket reference.
-    logging.identify({ type: 'adult' }, req.device, new URL(playbackUrl).pathname.split('/').pop());
-    logging.debug('adult_resolve_result', { protectedLinkIssued: true });
+    logging.identify({ type: 'adult' }, req.device, playbackTicketValue(new URL(playbackUrl).pathname.split('/').pop()));
+    logging.debug('adult_resolve_result', { protectedLinkIssued: true, playbackFormat: format });
     logging.stage('resolved');
-    return { playbackUrl, provider, ...progress };
+    return { playbackUrl, provider, ...(format === 'hls' ? { format: 'hls', mimeType: 'application/vnd.apple.mpegurl' } : {}), ...progress };
   });
   route('progress', async (req) => {
     const grant = capability(req, 'progress', req.body?.history_progress_token);

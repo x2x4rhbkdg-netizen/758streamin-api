@@ -50,6 +50,36 @@ Range itself, preserves existing playback limits, and strips upstream redirect
 and cookie headers from the public response. No raw media URL, header or token
 is added to logs.
 
+### Protected HLS format handoff
+
+Confirmed HLS resolve results return `/v1/movies/stream/<encrypted-ticket>.m3u8`
+with additive `format: "hls"` and `mimeType: "application/vnd.apple.mpegurl"`
+metadata. The suffix lets URI-based players select HLS instead of attempting a
+progressive-file extractor. It is not an authorization capability: the original
+encrypted ticket, age marker, current device permission and PIN checks are still
+required on every request. Legacy extensionless tickets remain valid.
+
+For sources without a recognizable playlist path, resolve performs a best-effort
+HEAD probe, followed by a GET-headers-only probe if HEAD is unsupported or
+inconclusive. Both share a four-second deadline; no movie body is buffered. The
+probe uses validated public DNS pinning, standard Adult HTTP/HTTPS port rules,
+at most three redirects, and origin-scoped headers. It runs only after all
+resolve authentication, device, unlock/PIN, source and selection checks succeed.
+It may add latency and provider requests; failures retain the existing untyped
+URL rather than guessing that an MP4 is HLS. No probe cache or new secret is used.
+
+Nested variant/audio/subtitle playlists also retain `.m3u8` on their encrypted
+proxy links, including extensionless URIs identified by playlist tags. Keys,
+maps and media segments are not mislabeled as playlists. The actual upstream
+response, not a caller-supplied suffix, determines whether the proxy rewrites HLS.
+Opaque headers and credentials are never included in the player URL or logs.
+Android's HLS selection requirements are documented in the
+[Media3 source factory reference](https://developer.android.com/reference/androidx/media3/exoplayer/source/DefaultMediaSourceFactory).
+
+After deploying this change, reopen the source selection to obtain a new typed
+playback link; an already issued extensionless link does not change retroactively.
+Provider/physical-TV playback must still be verified after deployment.
+
 PIN management requires device authentication:
 
 - `POST /v1/device/adult/set`: `{ "pin": "<new PIN>" }` for initial setup.

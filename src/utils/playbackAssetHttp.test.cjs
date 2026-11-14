@@ -52,6 +52,29 @@ test('preserves binary bytes, range metadata, custom upstream ports and pins che
   assert.equal(f.lookups.length, 1);
 });
 
+test('format probes read HEAD/GET headers only and destroy rather than buffer large media', async () => {
+  for (const method of ['HEAD', 'GET']) {
+    const f = fixture([{ headers: { 'content-type': 'application/vnd.apple.mpegurl', 'content-length': '999999999' }, hang: true }]);
+    const result = await f.read('https://cdn.example/opaque', { method }, { headersOnly: true });
+    assert.equal(f.calls[0].options.method, method);
+    assert.equal(result.contentType, 'application/vnd.apple.mpegurl');
+    assert.equal(result.buffer, undefined); assert.equal(f.openedResponses[0].destroyed, true);
+  }
+});
+
+test('header probes bound redirects and scope headers per destination', async () => {
+  const f = fixture([{ status: 302, headers: { location: 'https://other.example/final' } }, { headers: { 'content-type': 'video/mp4' }, hang: true }]);
+  const result = await f.read('https://cdn.example/start', { method: 'HEAD' }, {
+    headersOnly: true, maxRedirects: 3,
+    destinationHeaders: url => new URL(url).origin === 'https://cdn.example' ? { Cookie: 'SECRET' } : {},
+  });
+  assert.equal(result.url, 'https://other.example/final');
+  assert.equal(f.calls[0].options.headers.Cookie, 'SECRET'); assert.equal(f.calls[1].options.headers.Cookie, undefined);
+  const capped = fixture(Array.from({ length: 4 }, () => ({ status: 302, headers: { location: '/next' } })));
+  await assert.rejects(capped.read('https://cdn.example/start', { method: 'HEAD' }, { headersOnly: true, maxRedirects: 3 }), { status: 502 });
+  assert.equal(capped.calls.length, 4);
+});
+
 test('blocks private, loopback, metadata, mapped IPv4 and special IPv6 literals before connection', async () => {
   for (const host of ['127.0.0.1', '127.1', '2130706433', '0x7f000001', '10.0.0.1', '172.16.0.1',
     '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '[::1]', '[fc00::1]', '[fe80::1]',

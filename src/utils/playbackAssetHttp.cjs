@@ -66,9 +66,10 @@ function createPlaybackAssetReader({ lookup = dns.lookup, requestHttp = http.get
       return Promise.race([aborted, new Promise((resolve, reject) => {
         const request = (url.protocol === 'https:' ? requestHttps : requestHttp)(url, {
           signal: controller.signal,
+          method: options.headersOnly && init.method !== 'GET' ? 'HEAD' : 'GET',
           autoSelectFamily: true,
           agent: url.protocol === 'https:' ? httpsAgent : httpAgent,
-          headers: { ...init.headers, 'Accept-Encoding': 'identity' },
+          headers: { ...init.headers, ...(options.destinationHeaders ? options.destinationHeaders(url.href) : {}), 'Accept-Encoding': 'identity' },
           // Pin only checked addresses, retaining dual-stack connection fallback.
           lookup: createPinnedLookup(addresses),
         }, response => {
@@ -76,7 +77,8 @@ function createPlaybackAssetReader({ lookup = dns.lookup, requestHttp = http.get
           if ([301, 302, 303, 307, 308].includes(status)) {
             const location = response.headers.location;
             response.destroy();
-            if (redirects >= 5 || !location) return reject(failure('invalid playback asset redirect', 502));
+            const maxRedirects = Number.isInteger(options.maxRedirects) ? Math.max(0, Math.min(5, options.maxRedirects)) : 5;
+            if (redirects >= maxRedirects || !location) return reject(failure('invalid playback asset redirect', 502));
             let next;
             try { next = new URL(location, url).href; } catch { return reject(failure('invalid playback asset redirect', 502)); }
             resolve(visit(next, redirects + 1));
@@ -84,6 +86,10 @@ function createPlaybackAssetReader({ lookup = dns.lookup, requestHttp = http.get
           }
           if (status < 200 || status >= 300) {
             response.destroy(); reject(failure('upstream failed', status || 502)); return;
+          }
+          if (options.headersOnly) {
+            const result = { url: url.href, status, contentType: String(response.headers['content-type'] || '') };
+            response.destroy(); resolve(result); return;
           }
           if (Number(response.headers['content-length']) > maxBytes) {
             response.destroy(); reject(failure('playback asset response too large', 502)); return;

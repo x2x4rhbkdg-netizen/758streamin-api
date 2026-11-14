@@ -9,6 +9,10 @@ const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
 const { adultRequestPolicy } = require('../utils/adultStreamPolicy.cjs');
 const { createPlaybackLogging } = require('../utils/playbackLogging.cjs');
 const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
+const { createPlaybackAssetReader } = require('../utils/playbackAssetHttp.cjs');
+const { probeAdultStreamFormat } = require('../utils/adultStreamFormat.cjs');
+const { createAdultTokens } = require('../utils/adultAccess.cjs');
+const { addonVersion } = require('../utils/adultAddons.cjs');
 
 async function listen(t, server) {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -26,6 +30,16 @@ test('real HTTP Adult direct media preserves ranges, rewrites HLS and revokes ch
     if (req.url === '/blocked') { res.writeHead(403, { 'Content-Type': 'text/html' }); res.end('SESSION-SECRET blocked'); return; }
     if (req.url === '/redirect') { res.writeHead(302, { Location: 'http://cdn.example/video.mp4' }); res.end(); return; }
     if (req.url === '/cross-origin') { res.writeHead(302, { Location: 'https://other.example/video.mp4' }); res.end(); return; }
+    if (req.url === '/opaque') { res.writeHead(302, { Location: 'https://cdn.example/hop' }); res.end(); return; }
+    if (req.url === '/hop') { res.writeHead(302, { Location: 'https://other.example/manifest' }); res.end(); return; }
+    if (req.url === '/manifest') {
+      res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
+      res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nvariant\n'); return;
+    }
+    if (req.url === '/variant') {
+      res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
+      res.end('#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\nsegment.ts\n'); return;
+    }
     if (req.url === '/master.m3u8') {
       res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
       res.end('#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\nsegment.ts\n'); return;
@@ -56,6 +70,28 @@ test('real HTTP Adult direct media preserves ranges, rewrites HLS and revokes ch
     } });
   vm.runInContext(fs.readFileSync(filename, 'utf8'), context, { filename });
   const app = express(); app.use('/v1', context.module.exports);
+  const reader = createPlaybackAssetReader({ lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+    requestHttp: (url, options, callback) => { const req = transport.request(url, options, callback); req.end(); return req; },
+    requestHttps: (url, options, callback) => { const req = transport.request(url, options, callback); req.end(); return req; } });
+  const adultFile = require.resolve('./adult.routes.cjs');
+  const adultRequire = createRequire(adultFile);
+  const adultContext = vm.createContext({ module: { exports: {} }, Buffer, URL, process: { env: { JWT_SECRET: 'fixture-only-key' } },
+    require: id => {
+      if (id === '../middleware/authJwt.cjs') return { authJwt: (_req, _res, next) => next() };
+      if (id === '../utils/movieSettings.cjs') return { readMovieSettings: async () => ({}) };
+      return adultRequire(id);
+    } });
+  vm.runInContext(fs.readFileSync(adultFile, 'utf8'), adultContext, { filename: adultFile });
+  const addon = { id: 'fixture', enabled: true, scopes: ['adult'], manifest_url: 'https://addon.example/manifest.json' };
+  const tokens = createAdultTokens('fixture-only-key');
+  app.use(express.json());
+  app.use('/v1', adultContext.module.exports.createAdultRouter({ logging,
+    auth: (req, _res, next) => { req.device = { device_id: 7 }; next(); },
+    readSettings: async () => ({ adult_enabled: allowed, stremio_addons: [addon] }),
+    readPin: async () => ({ fingerprint, pin: '1234' }), tokens: () => tokens,
+    probeFormat: (url, headers) => probeAdultStreamFormat(url, headers, { reader }),
+    history: { owner: async () => 'owner', list: async () => [] },
+  }));
   const api = await listen(t, http.createServer(app));
   const tickets = createPlaybackTickets('fixture-only-key');
   const wrap = url => `${api}/v1/movies/stream/${tickets.issue(url, 7, 'adult', 'pin-one',
@@ -100,4 +136,35 @@ test('real HTTP Adult direct media preserves ranges, rewrites HLS and revokes ch
   const encoded = JSON.stringify(logs);
   assert.doesNotMatch(encoded, /SESSION-SECRET|cdn\.example|other\.example|pin-one/);
   assert.ok(!encoded.includes(new URL(blockedUrl).pathname));
+  const grant = data => tokens.issue(data.source ? 'source' : 'unlock', 7,
+    { ...data, fingerprint: 'pin-one', age_confirmed: true });
+  const resolveResponse = await fetch(`${api}/v1/adult/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ unlock_token: grant({}), source_token: grant({
+      item: { addon_id: 'fixture', addon_version: addonVersion(addon), id: 'PRIVATE-ID', type: 'movie' },
+      source: { url: 'http://cdn.example/opaque', request_headers: { Cookie: 'SESSION-SECRET' } },
+    }) }) });
+  assert.equal(resolveResponse.status, 200);
+  const resolved = await resolveResponse.json();
+  assert.equal(resolved.format, 'hls'); assert.equal(resolved.mimeType, 'application/vnd.apple.mpegurl');
+  assert.ok(resolved.playbackUrl.endsWith('.m3u8'));
+  const toApi = link => api + new URL(link).pathname;
+  const master = await fetch(toApi(resolved.playbackUrl)); assert.equal(master.status, 200);
+  const masterText = await master.text();
+  const variantLink = masterText.split('\n').find(line => line.startsWith('https://'));
+  assert.ok(variantLink.endsWith('.m3u8'));
+  const variant = await fetch(toApi(variantLink)); assert.equal(variant.status, 200);
+  const variantText = await variant.text();
+  const childLinks = [...variantText.matchAll(/https:\/\/api\.758streamin\.com\/v1\/movies\/stream\/([A-Za-z0-9_-]+)/g)];
+  assert.equal(childLinks.length, 2);
+  for (const [, ticket] of childLinks) {
+    const asset = await fetch(`${api}/v1/movies/stream/${ticket}`);
+    assert.equal(asset.status, 200); await asset.arrayBuffer();
+  }
+  const count = received.length;
+  fingerprint = 'rotated';
+  const rotated = await fetch(toApi(resolved.playbackUrl)); assert.equal(rotated.status, 403); await rotated.text();
+  fingerprint = 'pin-one'; allowed = false;
+  const removed = await fetch(toApi(variantLink)); assert.equal(removed.status, 403); await removed.text();
+  assert.equal(received.length, count);
+  assert.doesNotMatch(JSON.stringify(logs), /SESSION-SECRET|PRIVATE-ID|cdn\.example|other\.example/);
 });

@@ -99,6 +99,7 @@ function createPlaybackLogging({ logger = console, secret = process.env.PLAYBACK
     if (event === 'adult_resolve_result' && fields.route === '/adult/resolve' && details.protectedLinkIssued === true) {
       fields.protected_link_issued = true;
       fields.playback_route = '/v1/movies/stream/:ticket';
+      if (['hls', 'file', 'unknown'].includes(details.playbackFormat)) fields.playback_format = details.playbackFormat;
     }
     emit(event, fields);
   }

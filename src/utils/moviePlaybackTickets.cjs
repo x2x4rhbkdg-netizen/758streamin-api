@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const playbackTicketValue = value => typeof value === 'string' ? value.replace(/\.m3u8$/, '') : value;
 function createPlaybackTickets(secret) {
   if (!secret) throw new Error('Missing movie playback signing key');
   const key = crypto.createHmac('sha256', secret).update('streamin-movie-playback-v1').digest();
@@ -13,6 +14,7 @@ function createPlaybackTickets(secret) {
       return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
     },
     read(ticket) {
+      ticket = playbackTicketValue(ticket);
       if (!/^[a-zA-Z0-9_-]{40,12000}$/.test(ticket || '')) throw new Error('Invalid playback ticket');
       const packed = Buffer.from(ticket, 'base64url');
       const decipher = crypto.createDecipheriv('aes-256-gcm', key, packed.subarray(0, 12));
@@ -23,4 +25,4 @@ function createPlaybackTickets(secret) {
     },
   };
 }
-module.exports = { createPlaybackTickets };
+module.exports = { createPlaybackTickets, playbackTicketValue };

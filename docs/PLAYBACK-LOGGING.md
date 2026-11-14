@@ -103,7 +103,7 @@ tokens, and returned URLs/tickets are not logged.
 
 Failure stages distinguish authorization (device JWT middleware), entitlement,
 request_limits, pin_configuration, unlock_validation, source_validation,
-selection_validation, provider_resolution, history_lookup and protected_link.
+selection_validation, provider_resolution, format_probe, history_lookup and protected_link.
 Successful completion has stage `resolved`. HTTP status is the status actually
 sent by the route; no arbitrary exception message is copied into the record.
 `source_kind` distinguishes direct links from provider resolution after the signed
@@ -119,6 +119,11 @@ Adult resolve has separate routine/failure budgets of 60 records per minute each
 per worker, so unrelated Live TV logging cannot consume its allowance. Suppressed
 counts appear on the next emitted record; records can still be suppressed under
 load, so absence alone is not proof that no request was made.
+
+Resolve results also include the allowlisted `playback_format` diagnostic value
+`hls`, `file` or `unknown`. `hls` results issue a `.m3u8` protected URL; the suffix
+is excluded from the session fingerprint so resolve and media requests still
+correlate. The diagnostic never includes the typed URL or ticket itself.
 
 After an approved deployment, capture without exposing bodies or tickets:
 

@@ -8,6 +8,7 @@ const { createRequire } = require('node:module');
 const { createPlaybackLogging } = require('../utils/playbackLogging.cjs');
 const { createAdultTokens } = require('../utils/adultAccess.cjs');
 const { addonVersion } = require('../utils/adultAddons.cjs');
+const { playbackTicketValue } = require('../utils/moviePlaybackTickets.cjs');
 
 async function fixture(t) {
   const logs = [];
@@ -23,13 +24,14 @@ async function fixture(t) {
     } });
   vm.runInContext(fs.readFileSync(filename, 'utf8'), context, { filename });
   const state = { authorized: true, enabled: true, pin: 'pin-SECRET', providerFailure: false, ticketFailure: false,
-    providerWait: null, providerEntered: false };
+    providerWait: null, providerEntered: false, format: 'unknown', probeCalls: 0 };
   const addon = { id: 'fixture', enabled: true, scopes: ['adult'], manifest_url: 'https://addon.example/SECRET/manifest.json' };
   const settings = { adult_enabled: true, stremio_addons: [addon] };
   const tokens = createAdultTokens('fixture-only-secret');
   const item = { addon_id: addon.id, addon_version: addonVersion(addon), id: 'PRIVATE-ID', type: 'movie', title: 'PRIVATE-TITLE' };
   const source = { url: 'https://media.example/PRIVATE-PATH?token=SECRET', request_headers: { Cookie: 'SECRET-COOKIE' } };
   const router = context.module.exports.createAdultRouter({ logging,
+    probeFormat: async () => { state.probeCalls++; return state.format; },
     auth: (req, res, next) => { if (!state.authorized) return res.status(401).json({ error: 'unauthorized' }); req.device = { device_id: 7, platform: 'android_tv' }; next(); },
     readSettings: async () => ({ ...settings, adult_enabled: state.enabled }),
     readPin: async () => state.pin ? { pin: '1234', fingerprint: state.pin } : null,
@@ -50,7 +52,7 @@ async function fixture(t) {
   // Match the upstream playback router and the route-level middleware observing one request.
   app.use('/v1', logging.middleware); app.use('/v1', router);
   app.get('/v1/movies/stream/:ticket', (req, res) => {
-    logging.identify({ type: 'adult' }, {}, req.params.ticket); res.end('fixture only');
+    logging.identify({ type: 'adult' }, {}, playbackTicketValue(req.params.ticket)); res.end('fixture only');
   });
   const server = http.createServer(app);
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -95,6 +97,19 @@ test('provider resolution success logs a protected handoff without provider iden
   assert.doesNotMatch(JSON.stringify(f.logs), /SECRET|PRIVATE|Fixture|media\.example/);
 });
 
+test('confirmed HLS resolve returns a typed protected URL and retains stream log correlation', async t => {
+  const f = await fixture(t); f.state.format = 'hls';
+  const result = await f.request();
+  assert.equal(result.status, 200); assert.equal(result.body.format, 'hls');
+  assert.equal(result.body.mimeType, 'application/vnd.apple.mpegurl');
+  const url = new URL(result.body.playbackUrl); assert.ok(url.pathname.endsWith('.m3u8'));
+  const issued = f.logs.find(log => log.event === 'adult_resolve_result');
+  assert.equal(issued.playback_format, 'hls');
+  const media = await fetch(f.base + url.pathname); await media.text();
+  assert.equal(f.logs.find(log => log.route === '/movies/stream/:ticket').session_ref, issued.session_ref);
+  assert.doesNotMatch(JSON.stringify(f.logs), /SECRET|PRIVATE|media\.example/);
+});
+
 test('concurrent resolve is logged as busy without bypassing or releasing the first request reservation', { timeout: 5000 }, async t => {
   const f = await fixture(t);
   let release;
@@ -130,6 +145,7 @@ for (const scenario of [
     if (name === 'ticket') f.state.ticketFailure = true;
     const result = await f.request(options);
     assert.equal(result.status, status);
+    if (['auth', 'entitlement', 'pin', 'unlock', 'source', 'selection', 'provider'].includes(name)) assert.equal(f.state.probeCalls, 0);
     const outcomes = f.logs.filter(log => log.event === 'request_complete');
     assert.equal(outcomes.length, 1); assert.equal(outcomes[0].status, status); assert.equal(outcomes[0].stage, stage);
     assert.equal(outcomes[0].outcome, 'failed');

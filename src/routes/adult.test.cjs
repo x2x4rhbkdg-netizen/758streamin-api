@@ -25,6 +25,7 @@ function fixture(overrides = {}) {
   const historyRecords = new Map();
   const historyOwners = { 1: 'account-a', 2: 'account-a', 3: 'account-b' };
   const router = module.exports.createAdultRouter({ readSettings: async () => settings, readPin: async () => pin,
+    probeFormat: async () => 'unknown',
     tokens: () => tokens, tickets: () => tickets, now: () => time,
     history: { owner: async device => historyOwners[device],
       list: async owner => [...historyRecords.values()].filter(record => record.owner === owner).map(record => record.entry),

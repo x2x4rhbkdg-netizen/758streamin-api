@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { Readable, PassThrough } = require('node:stream');
-const { createPlaybackTickets } = require('../utils/moviePlaybackTickets.cjs');
+const { createPlaybackTickets, playbackTicketValue } = require('../utils/moviePlaybackTickets.cjs');
 const { publicAddress } = require('../utils/scraperHttp.cjs');
 const { createPlaybackLogging } = require('../utils/playbackLogging.cjs');
 const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
@@ -34,7 +34,7 @@ function fixture({ enabled = true, anime_enabled = false, adult_enabled = false,
       } };
       if (name === '../utils/movieSettings.cjs') return { readMovieSettings: async () => ({ enabled, anime_enabled, adult_enabled }) };
       if (name === '../utils/adultAccess.cjs') return { readAdultPin: async () => pinFingerprint ? { fingerprint: pinFingerprint } : null };
-      if (name === '../utils/moviePlaybackTickets.cjs') return { createPlaybackTickets };
+      if (name === '../utils/moviePlaybackTickets.cjs') return { createPlaybackTickets, playbackTicketValue };
       if (name === '../utils/scraperHttp.cjs') return { publicAddress };
       return require(name);
     } };
