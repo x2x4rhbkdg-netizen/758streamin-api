@@ -41,6 +41,73 @@ default leaves even the existing on-disk deployment unchanged. This avoids chang
 files a running process might load lazily. The existing service continues using
 its original code and in-memory playback cache.
 
+## Manual Activation Of The Existing Directory
+
+For the current ordinary-directory layout, the reusable activation script is
+`scripts/activate-prepared.sh`. It is separate from cPanel's prepare-only task;
+no automatic activation or Passenger/Apache change has been enabled. It requires
+Bash, rsync, systemctl and Node 20, and should be run as root in the server session.
+
+After **Update from Remote**, confirm the expected commit and use **Deploy HEAD
+Commit** in cPanel to prepare a release. Then check it without copying live files,
+creating a backup/lock, or restarting:
+
+```bash
+bash /home/streamin758/repos/api/scripts/activate-prepared.sh --check
+```
+
+When ready for a restart, activate with one command:
+
+```bash
+bash /home/streamin758/repos/api/scripts/activate-prepared.sh --activate
+```
+
+The default without arguments is `--check`. The script does not git-pull, prepare
+a release, install dependencies, run migrations or configure a logging secret.
+No chmod or executable bit is needed when invoking it through Bash. Use the file
+from the checkout rather than copying a chat-formatted shell block.
+
+Activation selects the latest completed prepared record and checks its marker,
+source tree against the checkout (excluding tmp, uploads and logs), both dependency
+files against checkout and live, all prepared JavaScript syntax, and the current
+service/health release identity. It refuses symlink live targets, unsafe path
+overlap, non-loopback health URLs and state storage with group/world permissions.
+An existing deployment lock is never removed automatically. Runtime differences
+are excluded, not deleted from the checkout.
+
+The activation makes a full protected backup, copies code using checksum-based
+rsync while retaining live secrets/runtime/modules, restarts the system-level
+service and requires the new release ID from `/health`. Failure after copying
+starts, including a handled INT/TERM/HUP, attempts a restore, restart and previous
+release health check. Failed recovery retains the backup and reports that manual
+attention is required. SIGKILL, power loss and machine failure cannot be trapped;
+keep the printed backup path and inspect any stale lock before removing it.
+
+Manual backups include secrets: deployment state must be mode 700, each backup
+is restricted and retained, and storage/retention remain an operator duty. This
+differs from cPanel's preparation backups, which exclude environment files.
+The manual script deliberately refuses dependency-file changes; use a separately
+reviewed dependency-aware deployment for those changes. It does not migrate the
+directory into a managed-release symlink or provide zero-downtime deployment.
+
+**Activation restarts the API and may interrupt customers watching.** Health
+checks verify API readiness and release identity, not movie/live playback. Check
+both after activation. The script prints a no-op message without restarting if
+the selected release ID is already active and healthy.
+
+Server defaults can be overridden explicitly with `DEPLOY_NODE_BIN`,
+`DEPLOY_TARGET`, `DEPLOY_STATE`, `DEPLOY_SYSTEMD_UNIT` and `DEPLOY_HEALTH_URL`;
+the checkout is derived from the script's own location, not the shell's current
+directory. These settings are for operators, not client request inputs.
+
+Local fixture tests (fake service and health probes, real cp/rsync) run with:
+
+```bash
+node --test scripts/activate-prepared.test.cjs
+```
+
+These tests do not execute production commands or prove production recovery.
+
 ## Readiness Endpoint
 
 `GET /health` returns HTTP 200 only after a database `SELECT 1` succeeds. It reports
