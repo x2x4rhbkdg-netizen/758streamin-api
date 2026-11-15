@@ -22,6 +22,49 @@ function fixture() {
   return { logs, logging, diagnostics, request, finish, advance: value => { time = value; } };
 }
 
+test('stream lifecycle logs accept only bounded event names, counters and flags', async () => {
+  const f = fixture();
+  await f.request('/movies/stream/PRIVATE-TICKET', res => {
+    f.logging.debug('stream_lifecycle', { events: [
+      { event: 'socket_timeout', elapsed_ms: 30001, message: 'PRIVATE-URL' },
+      { event: 'PRIVATE-URL', elapsed_ms: 1 },
+      { event: 'upstream_error', elapsed_ms: -1 },
+      { event: 'upstream_error', elapsed_ms: 'PRIVATE' },
+    ], bytes: 123, upstreamComplete: false, downstreamFinished: false,
+    url: 'PRIVATE', headers: { Cookie: 'PRIVATE' } });
+    f.finish(res);
+  });
+  const record = f.logs.find(row => row.event === 'stream_lifecycle');
+  assert.deepEqual(record.events, [{ event: 'socket_timeout', elapsed_ms: 30001 }]);
+  assert.equal(record.upstream_bytes_consumed, 123);
+  assert.equal(record.outcome, 'aborted');
+  assert.doesNotMatch(JSON.stringify(f.logs), /PRIVATE|Cookie/);
+  await f.request('/movies/stream/PRIVATE', res => {
+    f.logging.debug('stream_lifecycle', { events: Array(40).fill({ event: 'request_error', elapsed_ms: 2 }), bytes: Infinity });
+    f.finish(res);
+  });
+  const bounded = f.logs.filter(row => row.event === 'stream_lifecycle').at(-1);
+  assert.equal(bounded.events.length, 16);
+  assert.equal(bounded.upstream_bytes_consumed, undefined);
+});
+
+test('stream lifecycle logging failures never throw and observers remove their listeners', async () => {
+  const { createMovieStreamLifecycle } = require('./movieStreamLifecycle.cjs');
+  const stream = new EventEmitter();
+  const observer = createMovieStreamLifecycle();
+  observer.request(stream); observer.upstream(stream); observer.downstream(stream); observer.body(stream);
+  stream.emit('data', Buffer.from('PRIVATE'));
+  stream.emit('aborted'); stream.emit('aborted');
+  assert.equal(observer.snapshot().bytes, 7);
+  assert.equal(observer.snapshot().events.filter(item => item.event === 'upstream_aborted').length, 1);
+  observer.dispose();
+  assert.equal(stream.eventNames().length, 0);
+  const logging = createPlaybackLogging({ logger: { log() { throw new Error('failed'); } } });
+  const res = new EventEmitter();
+  assert.doesNotThrow(() => logging.middleware({ path: '/movies/stream/PRIVATE' }, res,
+    () => logging.debug('stream_lifecycle', observer.snapshot())));
+});
+
 test('references are credential-free, stable with a key and separated by origin and key', () => {
   const f = fixture();
   const first = f.logging.source('https://USER:PASS@provider.example/live/USER/PASS/12.m3u8?token=SECRET');

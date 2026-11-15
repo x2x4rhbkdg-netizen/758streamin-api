@@ -31,6 +31,7 @@ const context = {
     if (name === 'express') return { Router: () => ({ use() {}, get() {} }) };
     if (name === '../utils/playbackLogging.cjs') return require('../../src/utils/playbackLogging.cjs');
     if (name === '../utils/hlsUpstreamDiagnostics.cjs') return require('../../src/utils/hlsUpstreamDiagnostics.cjs');
+    if (name === '../utils/movieStreamLifecycle.cjs') return require('../../src/utils/movieStreamLifecycle.cjs');
     if (name === 'node:dns/promises') return { lookup: async () => addresses };
     if (name === '../utils/scraperHttp.cjs') return { publicAddress };
     if (name === '../utils/pinnedLookup.cjs') return require('../../src/utils/pinnedLookup.cjs');

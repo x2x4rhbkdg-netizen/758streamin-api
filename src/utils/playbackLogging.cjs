@@ -82,7 +82,7 @@ function createPlaybackLogging({ logger = console, secret = process.env.PLAYBACK
   }
   function debug(event, details = {}) {
     // Do not forward arbitrary strings, URLs, headers, messages or customer identifiers.
-    if (!/^(?:adult_resolve_(?:started|result)|stream_response|playback_token_(?:issued|cached)|hls_(?:request|manifest_ok|manifest_error|asset_request|asset_manifest_ok|asset_ok|asset_error)|direct_source_skipped|live_lookup_failed|variant_failed)$/.test(event)) return;
+    if (!/^(?:adult_resolve_(?:started|result)|stream_lifecycle|stream_response|playback_token_(?:issued|cached)|hls_(?:request|manifest_ok|manifest_error|asset_request|asset_manifest_ok|asset_ok|asset_error)|direct_source_skipped|live_lookup_failed|variant_failed)$/.test(event)) return;
     if (event === 'hls_asset_ok' || event === 'hls_asset_request') return;
     const fields = { ...context() };
     if (event.startsWith('adult_resolve_') && fields.route !== '/adult/resolve') return;
@@ -90,6 +90,20 @@ function createPlaybackLogging({ logger = console, secret = process.env.PLAYBACK
     if (/^\d{1,20}$/.test(stream)) fields.stream_id = stream;
     if (!fields.session_ref && details.token) fields.session_ref = ref('session', String(details.token));
     if (Number.isInteger(details.status) && details.status >= 100 && details.status <= 599) fields.status = details.status;
+    if (event === 'stream_lifecycle') {
+      if (fields.route !== '/movies/stream/:ticket') return;
+      const allowed = new Set(['upstream_headers', 'upstream_aborted', 'upstream_error', 'upstream_end', 'upstream_close',
+        'request_error', 'socket_timeout', 'headers_deadline', 'downstream_finish', 'downstream_error',
+        'downstream_close', 'downstream_disconnect', 'proxy_cleanup']);
+      fields.events = (Array.isArray(details.events) ? details.events : []).slice(0, 16)
+        .filter(item => allowed.has(item?.event) && Number.isSafeInteger(item.elapsed_ms) && item.elapsed_ms >= 0)
+        .map(item => ({ event: item.event, elapsed_ms: item.elapsed_ms }));
+      if (Number.isSafeInteger(details.bytes) && details.bytes >= 0) fields.upstream_bytes_consumed = details.bytes;
+      fields.upstream_complete = details.upstreamComplete === true;
+      fields.downstream_finished = details.downstreamFinished === true;
+      fields.upstream_paused_at_snapshot = details.upstreamPaused === true;
+      fields.outcome = fields.downstream_finished ? 'ok' : 'aborted';
+    }
     if (event === 'stream_response') {
       if (['hls', 'video', 'audio', 'html', 'json', 'binary', 'other'].includes(details.responseKind)) fields.response_kind = details.responseKind;
       if (typeof details.rangeRequested === 'boolean') fields.range_requested = details.rangeRequested;

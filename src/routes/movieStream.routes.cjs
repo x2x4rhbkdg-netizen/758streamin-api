@@ -14,12 +14,13 @@ const { rewriteAdultHls } = require('../utils/adultHls.cjs');
 const { adultStreamUrl, headersForDestination } = require('../utils/adultStreamPolicy.cjs');
 const { playbackLogging } = require('../utils/playbackLogging.cjs');
 const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
+const { createMovieStreamLifecycle } = require('../utils/movieStreamLifecycle.cjs');
 const diagnostics = createHlsUpstreamDiagnostics({ movieStream: true });
 const router = Router();
 router.use(playbackLogging.middleware);
 let active = 0;
 
-async function openStream(value, method, headers, signal, redirects = 0, adult = false, requestPolicy) {
+async function openStream(value, method, headers, signal, redirects = 0, adult = false, requestPolicy, lifecycle) {
   playbackLogging.stage('destination_validation');
   playbackLogging.target(value);
   const url = adult ? adultStreamUrl(value) : new URL(value);
@@ -47,10 +48,14 @@ async function openStream(value, method, headers, signal, redirects = 0, adult =
         playbackLogging.stage('redirect');
         response.resume();
         if (redirects >= 3 || !response.headers.location) return reject(new Error('Invalid stream redirect'));
-        resolve(openStream(new URL(response.headers.location, url).href, method, headers, signal, redirects + 1, adult, requestPolicy));
-      } else { response.streaminUrl = url.href; resolve(response); }
+        resolve(openStream(new URL(response.headers.location, url).href, method, headers, signal, redirects + 1, adult, requestPolicy, lifecycle));
+      } else { lifecycle?.upstream(response); response.streaminUrl = url.href; resolve(response); }
     });
-    request.setTimeout(30000, () => request.destroy(Object.assign(new Error('Stream timed out'), { code: 'ETIMEDOUT' })));
+    lifecycle?.request(request);
+    request.setTimeout(30000, () => {
+      lifecycle?.mark('socket_timeout');
+      request.destroy(Object.assign(new Error('Stream timed out'), { code: 'ETIMEDOUT' }));
+    });
     request.on('error', reject);
     request.end();
   });
@@ -66,11 +71,19 @@ router.get('/movies/stream/:ticket', async (req, res) => {
   if (active >= 16) return res.status(429).json({ error: 'Movie streaming is busy' });
   const range = req.get('range');
   if (range && !/^bytes=(?:\d+-\d*|-\d+)$/.test(range)) return res.sendStatus(416);
+  const requestHeaders = range ? { Range: range } : {};
+  const ifRange = req.get('if-range');
+  // The origin decides whether the validator matches; never manufacture a partial response.
+  if (range && typeof ifRange === 'string' && ifRange) {
+    requestHeaders['If-Range'] = ifRange;
+  }
   active++;
+  const lifecycle = createMovieStreamLifecycle();
+  lifecycle.downstream(res);
   const controller = new AbortController();
   const abort = () => controller.abort();
   res.on('close', abort);
-  const timer = setTimeout(abort, 30000);
+  const timer = setTimeout(() => { lifecycle.mark('headers_deadline'); abort(); }, 30000);
   let upstream;
   try {
     playbackLogging.stage('authorization');
@@ -84,8 +97,8 @@ router.get('/movies/stream/:ticket', async (req, res) => {
     }
     catch (error) { if (error.status === 403) return res.sendStatus(403); throw error; }
     playbackLogging.identify({ type: record.section === 'adult' ? 'adult' : record.section === 'anime' ? 'anime' : 'vod' }, {}, playbackTicketValue(req.params.ticket));
-    upstream = await openStream(record.url, req.method === 'HEAD' ? 'HEAD' : 'GET', range ? { Range: range } : {}, controller.signal,
-      0, record.section === 'adult', record.requestPolicy);
+    upstream = await openStream(record.url, req.method === 'HEAD' ? 'HEAD' : 'GET', requestHeaders, controller.signal,
+      0, record.section === 'adult', record.requestPolicy, lifecycle);
     clearTimeout(timer);
     if (![200, 206, 416].includes(upstream.statusCode)) {
       diagnostics.failure({ status: upstream.statusCode }, { startedAt, targetUrl: upstream.streaminUrl || record.url, timeoutMs: 30000 });
@@ -96,6 +109,7 @@ router.get('/movies/stream/:ticket', async (req, res) => {
       playbackLogging.stage('manifest_rewrite');
       if (req.method === 'HEAD') { upstream.resume(); return res.status(200).set('Content-Type', 'application/vnd.apple.mpegurl').end(); }
       const chunks = []; let length = 0;
+      lifecycle.body(upstream);
       for await (const chunk of upstream) {
         length += Buffer.byteLength(chunk);
         if (length > 1024 * 1024) throw new Error('HLS playlist exceeded its limit');
@@ -110,18 +124,24 @@ router.get('/movies/stream/:ticket', async (req, res) => {
       return res.status(200).set('Content-Type', 'application/vnd.apple.mpegurl').end(rewritten);
     }
     res.status(upstream.statusCode);
-    for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+    for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
       if (upstream.headers[header]) res.set(header, upstream.headers[header]);
     }
     // Pipe with backpressure; never buffer a movie or expose upstream redirects/credentials.
     playbackLogging.stage('body_transfer');
+    lifecycle.body(upstream);
     await pipeline(upstream, res);
   } catch (error) {
     diagnostics.failure(error, { startedAt, targetUrl: upstream?.streaminUrl, timeoutMs: 30000,
       timedOut: controller.signal.aborted && !res.destroyed });
+    lifecycle.mark('proxy_cleanup');
     upstream?.destroy();
     if (!res.headersSent && !res.destroyed) res.status(502).json({ error: 'Movie stream temporarily unavailable' });
     else res.destroy();
-  } finally { clearTimeout(timer); res.off('close', abort); active--; }
+  } finally {
+    clearTimeout(timer); res.off('close', abort); active--;
+    playbackLogging.debug('stream_lifecycle', lifecycle.snapshot());
+    lifecycle.dispose();
+  }
 });
 module.exports = router;

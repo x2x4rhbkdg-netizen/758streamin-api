@@ -47,7 +47,7 @@ function fixture({ enabled = true, anime_enabled = false, adult_enabled = false,
     res.json = (value) => res.end(JSON.stringify(value));
     res.sendStatus = (code) => { res.code = code; res.statusCode = code; res.end(); };
     const value = ticket || createPlaybackTickets('test-secret').issue(url, 1);
-    const req = { path: `/movies/stream/${value}`, params: { ticket: value }, method: 'GET', get: () => range };
+    const req = { path: `/movies/stream/${value}`, params: { ticket: value }, method: 'GET', get: name => name === 'range' ? range : undefined };
     await new Promise((resolve, reject) => middleware(req, res, () => handler(req, res).then(resolve, reject)));
     return { code: res.code, headers: res.headers, body };
   }

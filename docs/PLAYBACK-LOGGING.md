@@ -92,7 +92,39 @@ Authorization and ticket denials appear as terminal 403 before an upstream call;
 valid media responses and transfer completion do not prove playback decoded on
 the physical TV. This patch adds diagnostics only, not a verified provider fix.
 
+## Stream Lifecycle
+
+Protected movie/anime/adult byte transfers forward `If-Range` only alongside a
+valid single `Range` request. Unmodified upstream media responses preserve `ETag`
+and `Last-Modified` for GET/HEAD as well as existing range headers. The origin
+decides whether a validator matches: a full `200` response is never relabeled or
+sliced into `206`, and upstream `416` responses retain their `Content-Range`.
+Rewritten adult HLS manifests do not inherit upstream validators because their
+bytes have changed. Cache policy remains private/no-store; access is checked on
+every request. No validators, range offsets or header values are logged.
+
+Protected movie/anime/adult transfers also emit one bounded `stream_lifecycle`
+record at route cleanup, subject to the existing per-worker logging budgets.
+Its `events` array records observation order and elapsed milliseconds for final
+upstream headers, upstream abort/error/end/close, request errors, downstream
+finish/error/disconnect, and proxy cleanup. `socket_timeout` means the actual
+upstream socket timeout callback fired; `headers_deadline` means the initial
+30-second authorization/connect/headers deadline fired. `timeout_ms` in older
+failure records alone does not establish a timeout. Timeout behavior is unchanged.
+
+`upstream_bytes_consumed` counts body bytes consumed by the proxy, not bytes
+delivered to or decoded by the player. `upstream_complete` is Node's HTTP message
+completeness flag. `downstream_finished` means the response was handed to the
+local transport, not acknowledged by the TV. `upstream_paused_at_snapshot` is
+only a cleanup-time snapshot, not proof of sustained backpressure.
+Only final-response lifecycle events are observed, not redirect response bodies.
+Events following route cleanup are not captured. Event order identifies what
+Node observed first, not the physical cause: pipeline destruction can cascade
+across both streams. A downstream disconnect may be the player or Apache.
+No payloads, URLs, range offsets, headers, device IDs, PINs or tickets are added.
+
 ## Adult Resolve Handoff
+
 
 `POST /v1/adult/resolve` emits `adult_resolve_started` before device authentication,
 `adult_resolve_result` after a protected playback URL is built, and one
