@@ -94,7 +94,7 @@ function createPlaybackLogging({ logger = console, secret = process.env.PLAYBACK
       if (fields.route !== '/movies/stream/:ticket') return;
       const allowed = new Set(['upstream_headers', 'upstream_aborted', 'upstream_error', 'upstream_end', 'upstream_close',
         'request_error', 'socket_timeout', 'headers_deadline', 'downstream_finish', 'downstream_error',
-        'downstream_close', 'downstream_disconnect', 'proxy_cleanup']);
+        'downstream_close', 'downstream_disconnect', 'proxy_cleanup', 'upstream_idle_timeout', 'downstream_stall_timeout']);
       fields.events = (Array.isArray(details.events) ? details.events : []).slice(0, 16)
         .filter(item => allowed.has(item?.event) && Number.isSafeInteger(item.elapsed_ms) && item.elapsed_ms >= 0)
         .map(item => ({ event: item.event, elapsed_ms: item.elapsed_ms }));

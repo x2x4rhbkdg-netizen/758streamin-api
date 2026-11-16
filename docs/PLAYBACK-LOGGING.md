@@ -1,7 +1,9 @@
 # Safe playback diagnostics
 
-These changes are local code only. They do not deploy, restart services or change
-playback authorization, candidate ordering, timeouts, or response status codes.
+These changes are local code only. They do not deploy or restart services.
+Playback authorization and candidate ordering are unchanged. The protected
+movie proxy's backpressure-aware timeout policy is documented below; Live TV
+timeouts are unchanged.
 
 ## Correlating a failure
 
@@ -90,7 +92,7 @@ should be forwarded to the new destination.
 
 Authorization and ticket denials appear as terminal 403 before an upstream call;
 valid media responses and transfer completion do not prove playback decoded on
-the physical TV. This patch adds diagnostics only, not a verified provider fix.
+the physical TV. Diagnostics alone are not a verified provider fix.
 
 ## Stream Lifecycle
 
@@ -110,7 +112,8 @@ upstream headers, upstream abort/error/end/close, request errors, downstream
 finish/error/disconnect, and proxy cleanup. `socket_timeout` means the actual
 upstream socket timeout callback fired; `headers_deadline` means the initial
 30-second authorization/connect/headers deadline fired. `timeout_ms` in older
-failure records alone does not establish a timeout. Timeout behavior is unchanged.
+failure records alone does not establish a timeout. For protected media bodies,
+`upstream_idle_timeout` and `downstream_stall_timeout` distinguish the new policy.
 
 `upstream_bytes_consumed` counts body bytes consumed by the proxy, not bytes
 delivered to or decoded by the player. `upstream_complete` is Node's HTTP message
@@ -122,6 +125,50 @@ Events following route cleanup are not captured. Event order identifies what
 Node observed first, not the physical cause: pipeline destruction can cascade
 across both streams. A downstream disconnect may be the player or Apache.
 No payloads, URLs, range offsets, headers, device IDs, PINs or tickets are added.
+
+## Protected Movie Body Timeouts
+
+Before this fix, local Node 20 tests reproduced the native 30-second socket
+timeout firing while pipeline backpressure intentionally suspended upstream
+reads. Those old `socket_timeout` records did not distinguish source inactivity
+from intentional read suspension. Cleanup-time pause flags alone cannot do so.
+
+The protected movie/anime/adult proxy now uses:
+
+- The existing 30-second overall authorization/connect/final-headers deadline.
+  Per-hop socket timeout remains enabled until headers, then is disabled.
+  Redirect response bodies are destroyed, not drained indefinitely.
+- A 30-second body-idle window measured from consumed body data, not total
+  transfer duration. Body progress refreshes this window.
+- A separate 120-second continuous downstream-drain limit while response writes
+  are backpressured. Source-idle accounting is suspended during this wait.
+  A drain grants a fresh 30-second source-idle window. This is not a total
+  playback/pause limit and cannot observe a TV hidden behind Apache buffering.
+- Protection for final buffered response writes even after the source ends.
+  Disconnection, completion, errors and route cleanup remove watchdog resources.
+
+`upstream_idle_timeout` and `downstream_stall_timeout` lifecycle events are emitted
+before timeout-triggered cancellation. Their failure records have the matching
+`timeout_ms` (30000 or 120000) and `failure_type:"timeout"`, even if pipeline
+reports a consequential reset. No header values, payloads or credentials are
+logged. Authorization, PIN checks, ranges and Live TV routes are unchanged.
+Bounded manifest reads also retain source-idle protection; an async iterator's
+readable pause alone never suspends that protection.
+
+Fast native HTTP tests and deterministic timer tests run with `npm test`.
+The opt-in actual-duration case holds one downstream write for 31 seconds,
+releases the drain, and checks that all 32 MiB arrive intact. It uses a controlled
+write hold with native HTTP on both sides, not a long zero-window TCP pause:
+
+```bash
+MOVIE_PROXY_LONG_IDLE_TEST=1 node --test src/routes/movieStreamBackpressure.test.cjs
+```
+
+The 120-second drain limit is covered with deterministic timing and accelerated
+native HTTP tests. The raw long TCP-pause fixture did not reliably recover even
+with the new watchdog bypassed in the test process, so it is not claimed as a
+passing recovery test. These are local transport tests, not production Apache,
+MariaDB, provider-network or physical-TV playback proof.
 
 ## Adult Resolve Handoff
 

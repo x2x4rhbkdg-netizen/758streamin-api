@@ -59,7 +59,7 @@ test('local native HTTP proxy distinguishes completion, source truncation, deadl
       method: options.method, headers: options.headers, signal: options.signal, agent: false,
     }, callback);
     const nativeTimeout = request.setTimeout.bind(request);
-    request.setTimeout = (_ms, handler) => nativeTimeout(120, handler);
+    request.setTimeout = (ms, handler) => nativeTimeout(ms === 0 ? 0 : 120, handler);
     return request;
   } };
   const context = vm.createContext({ module: { exports: {} }, Buffer, URL, AbortController,
@@ -70,6 +70,8 @@ test('local native HTTP proxy distinguishes completion, source truncation, deadl
       if (id === 'node:dns/promises') return { lookup: async () => [{ address: '8.8.8.8', family: 4 }] };
       if (id === '../utils/playbackLogging.cjs') return { playbackLogging: logging };
       if (id === '../utils/hlsUpstreamDiagnostics.cjs') return { createHlsUpstreamDiagnostics: options => createHlsUpstreamDiagnostics({ ...options, logger, logging }) };
+      if (id === '../utils/movieBodyTimeout.cjs') return { watchMovieBody: (up, down, options) =>
+        routeRequire(id).watchMovieBody(up, down, { ...options, idleMs: 120, stallMs: 500 }) };
       if (id === '../utils/movieSettings.cjs') return { readMovieSettings: async () => ({ anime_enabled: allowed, adult_enabled: allowed }) };
       if (id === '../utils/adultAccess.cjs') return { readAdultPin: async () => ({ fingerprint: pin }) };
       return routeRequire(id);
@@ -112,11 +114,11 @@ test('local native HTTP proxy distinguishes completion, source truncation, deadl
     assert.ok(events(row).indexOf('upstream_aborted') < events(row).indexOf('proxy_cleanup'));
     assert.ok(!events(row).includes('socket_timeout'));
   });
-  await t.test('stalled body records the actual native socket timeout callback', async () => {
+  await t.test('stalled body records its independent upstream idle timeout', async () => {
     const row = await capture('stall', async link => {
       const result = await fetch(link); await assert.rejects(result.arrayBuffer());
     });
-    assert.equal(events(row)[1], 'socket_timeout');
+    assert.equal(events(row)[1], 'upstream_idle_timeout');
     assert.equal(row.upstream_complete, false);
   });
   await t.test('initial deadline has a separate marker from socket timeout', async () => {

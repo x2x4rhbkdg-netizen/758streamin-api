@@ -15,6 +15,7 @@ const { adultStreamUrl, headersForDestination } = require('../utils/adultStreamP
 const { playbackLogging } = require('../utils/playbackLogging.cjs');
 const { createHlsUpstreamDiagnostics } = require('../utils/hlsUpstreamDiagnostics.cjs');
 const { createMovieStreamLifecycle } = require('../utils/movieStreamLifecycle.cjs');
+const { watchMovieBody } = require('../utils/movieBodyTimeout.cjs');
 const diagnostics = createHlsUpstreamDiagnostics({ movieStream: true });
 const router = Router();
 router.use(playbackLogging.middleware);
@@ -37,6 +38,8 @@ async function openStream(value, method, headers, signal, redirects = 0, adult =
       method, headers: { ...scopedHeaders, ...headers, 'Accept-Encoding': 'identity' }, signal, autoSelectFamily: true,
       lookup: createPinnedLookup(addresses),
     }, (response) => {
+      // Socket inactivity cannot distinguish source stalls from intentional read suspension.
+      request.setTimeout(0);
       playbackLogging.stage('upstream_headers');
       const type = String(response.headers['content-type'] || '').toLowerCase();
       const responseKind = /mpegurl|m3u8/.test(type) ? 'hls' : type.startsWith('video/') ? 'video' :
@@ -46,7 +49,7 @@ async function openStream(value, method, headers, signal, redirects = 0, adult =
         rangeRequested: Boolean(headers.Range), headersApplied: Object.keys(scopedHeaders).length > 0, redirects });
       if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
         playbackLogging.stage('redirect');
-        response.resume();
+        response.destroy();
         if (redirects >= 3 || !response.headers.location) return reject(new Error('Invalid stream redirect'));
         resolve(openStream(new URL(response.headers.location, url).href, method, headers, signal, redirects + 1, adult, requestPolicy, lifecycle));
       } else { lifecycle?.upstream(response); response.streaminUrl = url.href; resolve(response); }
@@ -84,7 +87,17 @@ router.get('/movies/stream/:ticket', async (req, res) => {
   const abort = () => controller.abort();
   res.on('close', abort);
   const timer = setTimeout(() => { lifecycle.mark('headers_deadline'); abort(); }, 30000);
-  let upstream;
+  let upstream, bodyWatch, bodyTimeoutMs;
+  function watchBody() {
+    bodyWatch = watchMovieBody(upstream, res, { signal: controller.signal, onTimeout(reason, limit) {
+      bodyTimeoutMs = limit;
+      lifecycle.mark(reason);
+      const error = Object.assign(new Error('Movie transfer timed out'), { code: 'ETIMEDOUT' });
+      controller.abort(error);
+      upstream.destroy(error);
+      if (reason === 'downstream_stall_timeout') res.destroy();
+    } });
+  }
   try {
     playbackLogging.stage('authorization');
     try {
@@ -110,6 +123,7 @@ router.get('/movies/stream/:ticket', async (req, res) => {
       if (req.method === 'HEAD') { upstream.resume(); return res.status(200).set('Content-Type', 'application/vnd.apple.mpegurl').end(); }
       const chunks = []; let length = 0;
       lifecycle.body(upstream);
+      watchBody();
       for await (const chunk of upstream) {
         length += Buffer.byteLength(chunk);
         if (length > 1024 * 1024) throw new Error('HLS playlist exceeded its limit');
@@ -130,16 +144,18 @@ router.get('/movies/stream/:ticket', async (req, res) => {
     // Pipe with backpressure; never buffer a movie or expose upstream redirects/credentials.
     playbackLogging.stage('body_transfer');
     lifecycle.body(upstream);
+    watchBody();
     await pipeline(upstream, res);
   } catch (error) {
-    diagnostics.failure(error, { startedAt, targetUrl: upstream?.streaminUrl, timeoutMs: 30000,
-      timedOut: controller.signal.aborted && !res.destroyed });
+    diagnostics.failure(error, { startedAt, targetUrl: upstream?.streaminUrl, timeoutMs: bodyTimeoutMs || 30000,
+      timedOut: Boolean(bodyWatch?.reason) || (controller.signal.aborted && !res.destroyed) });
     lifecycle.mark('proxy_cleanup');
     upstream?.destroy();
     if (!res.headersSent && !res.destroyed) res.status(502).json({ error: 'Movie stream temporarily unavailable' });
     else res.destroy();
   } finally {
     clearTimeout(timer); res.off('close', abort); active--;
+    bodyWatch?.stop();
     playbackLogging.debug('stream_lifecycle', lifecycle.snapshot());
     lifecycle.dispose();
   }
