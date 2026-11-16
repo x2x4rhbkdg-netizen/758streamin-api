@@ -5,6 +5,44 @@ Playback authorization and candidate ordering are unchanged. The protected
 movie proxy's backpressure-aware timeout policy is documented below; Live TV
 timeouts are unchanged.
 
+## Real-Debrid Account Checks
+
+Both source availability checks and RD playback resolution read the account
+torrent list using `limit=250&page=N`, as supported by the
+[RD API](https://api.real-debrid.com/#torrents). The existing logical list request
+is retained for injected test adapters, but the production adapter sends only
+paginated requests. Concurrent source batches share one walk per search.
+
+Each response retains the 2 MiB cap. Pages run sequentially under the existing
+caller deadline (8 seconds for availability; playback has its existing overall
+and provider deadlines). The walk stops on a short/empty page, retains only
+id/hash/status, deduplicates IDs, and allows at most 40 page requests. A full
+40th page, repeated full page, malformed response, or failed page fails the check
+explicitly; partial results are not cached as ready or uncached. There are no
+automatic HTTP retries or torrent additions during discovery. Large accounts
+can still hit the deadline or page cap; pagination is not an unlimited scan or
+an atomic snapshot of an account that changes during the check.
+
+`[rd-account-check-failure]` emits one safe record per failed walk, subject to a
+20-record/minute worker-wide limit. The next emitted record reports suppression.
+Fields are fixed provider/operation, allowlisted category, page/page size,
+completed-page count, elapsed milliseconds, optional HTTP status, optional
+numeric RD error code, and an allowlisted network code. Categories distinguish
+HTTP, network, timeout, size limit, invalid JSON/response, repeated pages and the
+pagination cap. Raw messages, bodies, URLs, tokens, filenames, hashes, torrent
+IDs, account/device identifiers and authorization headers are never logged.
+Logger failures do not change provider results. Existing public provider-status
+values and credential/rate-limit handling are preserved; other providers and
+device/PIN checks are unchanged.
+
+After an approved deployment, inspect recent RD check failures without dumping
+HTTP payloads or credentials:
+
+```bash
+journalctl -u 758streamin-api.service --since "15 minutes ago" --no-pager -o cat |
+  grep -F '[rd-account-check-failure]'
+```
+
 ## Correlating a failure
 
 `[hls-upstream-failure]` and `[playback]` records contain single-line JSON. Start

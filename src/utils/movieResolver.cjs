@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { createProviderScheduler, createAvailabilityCache } = require('./movieProviderScheduling.cjs');
 const { allDebridFailure, readyHashes: allDebridReadyHashes, resolveAllDebrid } = require('./allDebrid.cjs');
+const { readRdAccountTorrents, rdListError } = require('./rdAccountTorrents.cjs');
 const providerScheduler = createProviderScheduler();
 const providerAvailability = createAvailabilityCache();
 const SUPPORTED_PROVIDERS = ['Real-Debrid', 'AllDebrid', 'Premiumize', 'Torbox', 'EasyDebrid', 'OffCloud'];
@@ -72,6 +73,10 @@ function chooseVideo(files, input) {
 }
 
 async function providerRequest(provider, token, path, form, signal) {
+  if (provider === 'Real-Debrid' && path === 'torrents?limit=5000' && !form) {
+    // Preserve the logical request used by injected adapters; never send this large-page URL to RD.
+    return readRdAccountTorrents(page => providerRequest(provider, token, page, undefined, signal), { signal });
+  }
   const bases = { 'Real-Debrid': 'https://api.real-debrid.com/rest/1.0/', Premiumize: 'https://www.premiumize.me/api/', Torbox: 'https://api.torbox.app/v1/api/',
     EasyDebrid: 'https://easydebrid.com/api/v1/', OffCloud: 'https://offcloud.com/api/', AllDebrid: 'https://api.alldebrid.com/v4/' };
   const url = new URL(path, bases[provider]);
@@ -99,8 +104,22 @@ async function providerRequest(provider, token, path, form, signal) {
   const response = await fetch(url, { method: form ? 'POST' : 'GET', signal, redirect: 'error', headers, body });
   if (!response.ok) {
     const rejected = response.status === 401 || response.status === 403;
+    let rdErrorCode;
+    if (provider === 'Real-Debrid') {
+      // Bounded error parsing: keep only the numeric code, never a provider message/body.
+      try {
+        let size = 0; const chunks = [];
+        for await (const chunk of response.body) {
+          size += chunk.byteLength;
+          if (size > 16384) break;
+          chunks.push(Buffer.from(chunk));
+        }
+        rdErrorCode = JSON.parse(Buffer.concat(chunks).toString('utf8')).error_code;
+      } catch { /* HTTP status remains useful even with an unreadable error body. */ }
+    }
     throw Object.assign(failure(rejected ? `${provider} rejected access. Check its token and account status in Media Settings.` : `${provider} could not resolve this source`, 502),
-      { credentialRejected: rejected, rateLimited: response.status === 429 });
+      { credentialRejected: rejected, rateLimited: response.status === 429,
+        upstreamStatus: response.status, rdErrorCode, rdFailureKind: 'http' });
   }
   let text = '';
   if (response.status !== 204) {
@@ -108,12 +127,18 @@ async function providerRequest(provider, token, path, form, signal) {
     const chunks = [];
     for await (const chunk of response.body) {
       size += chunk.byteLength;
-      if (size > 2 * 1024 * 1024) throw failure(`${provider} response exceeded its limit`, 502);
+      if (size > 2 * 1024 * 1024) throw Object.assign(failure(`${provider} response exceeded its limit`, 502),
+        { rdFailureKind: 'response_too_large', upstreamStatus: response.status });
       chunks.push(Buffer.from(chunk));
     }
     text = Buffer.concat(chunks).toString('utf8');
   }
-  const data = text ? JSON.parse(text) : {};
+  let data;
+  try { data = text ? JSON.parse(text) : {}; }
+  catch (error) {
+    if (provider !== 'Real-Debrid') throw error;
+    throw Object.assign(rdListError('invalid_json'), { upstreamStatus: response.status });
+  }
   if (provider === 'Torbox' && data.success !== true) throw failure('Torbox could not prepare this source', 502);
   if (provider === 'Premiumize' && data.status !== 'success') throw premiumizeFailure(data);
   if (provider === 'AllDebrid' && data.status !== 'success') throw allDebridFailure(data);
